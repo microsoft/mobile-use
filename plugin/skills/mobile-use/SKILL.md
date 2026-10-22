@@ -138,8 +138,12 @@ unless the user approves that specific evidence and destination.
    attempt a lock-screen swipe as a fallback, change security settings, or
    automatically replay an uncertain wake. Do not capture authentication UI.
 5. Call `mobile_observe` on approved, non-sensitive content. Inspect its image,
-   hierarchy status, warnings, display, and element references. Hierarchy and
-   image capture are not atomic.
+   hierarchy and `displayState` statuses, warnings, display, and element
+   references. Hierarchy and image capture are not atomic. Display rotation is
+   verified independently of the hierarchy; missing hierarchy alone does not
+   imply rotation changed. `DISPLAY_STATE_UNAVAILABLE` means normal input is
+   blocked: obtain a fresh observation with verified display state, never
+   assume unknown rotation is zero or reuse an earlier rotation.
 6. Call `mobile_act` with that target token and latest observation ID for one
    justified action. Use an observed element reference when possible; screenshot
    coordinates require a usable screenshot. Do not guess invisible elements.
