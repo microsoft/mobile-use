@@ -109,8 +109,10 @@ An unavailable host server says nothing about the phone's connection state.
 
 The shared server may remain running after the plugin exits, and first startup
 may initialize standard local ADB host keys. No key material is returned.
-The startup path uses `adb -L tcp:127.0.0.1:5037 server nodaemon` in a detached
-process, not the client's `start-server` command, because that command can
+The startup path uses `adb -L tcp:localhost:5037 server nodaemon` in a detached
+process. ADB requires `localhost` rather than a numeric IPv4 address in this
+listener specification; protocol probes still connect to `127.0.0.1:5037`.
+It does not use the client's `start-server` command, because that command can
 automatically kill/restart an incompatible daemon. Readiness and inventory
 checks and ordinary inventory use read-only ADB protocol requests, so even a
 concurrent startup cannot cause these paths to replace another server.

@@ -96,9 +96,10 @@ export class LocalAdbServer {
         "Check the installed Platform-Tools and local execution policy. Do not change firewall settings or automatically retry.",
       ));
       // Unlike start-server, direct server mode cannot kill an incompatible daemon in a startup race.
+      // ADB accepts localhost for listeners, but rejects numeric IPv4 loopback addresses.
       let child: ChildProcess;
       try {
-        child = this.spawnProcess(executable, ["-L", `tcp:${localAdbAddress}`, "server", "nodaemon"], {
+        child = this.spawnProcess(executable, ["-L", "tcp:localhost:5037", "server", "nodaemon"], {
           env, detached: true, windowsHide: true, stdio: "ignore",
         });
       } catch (error) {

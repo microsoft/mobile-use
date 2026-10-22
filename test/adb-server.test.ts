@@ -89,7 +89,7 @@ test("a valid empty inventory is returned without implying any phone is ready", 
   assert.equal(result.inventory.length, 0);
 });
 
-test("a missing server gets one start-only loopback launch followed by readiness and inventory", async (t) => {
+test("a missing server uses ADB's supported localhost listener, then verifies readiness and inventory", async (t) => {
   const fixture = await listener(t);
   fixture.available = false;
   const process = childFixture();
@@ -97,7 +97,7 @@ test("a missing server gets one start-only loopback launch followed by readiness
   const server = new LocalAdbServer(fixture.connect, (executable, args, options) => {
     launches++;
     assert.equal(executable, "C:\\fixture\\adb.exe");
-    assert.deepEqual(args, ["-L", "tcp:127.0.0.1:5037", "server", "nodaemon"]);
+    assert.deepEqual(args, ["-L", "tcp:localhost:5037", "server", "nodaemon"]);
     assert.equal(options.detached, true);
     assert.equal(options.stdio, "ignore");
     assert.equal(options.windowsHide, true);
