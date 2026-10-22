@@ -95,7 +95,7 @@ for (const mode of ["legacy", "auto"]) {
     if (mode === "legacy") await client.ping();
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
-      "mobile_act", "mobile_doctor", "mobile_list_devices", "mobile_observe", "mobile_select_device",
+      "mobile_act", "mobile_doctor", "mobile_list_devices", "mobile_observe", "mobile_select_device", "mobile_wake",
     ]);
     const doctor = await client.callTool({ name: "mobile_doctor", arguments: {} });
     assert.equal(doctor.isError, true);

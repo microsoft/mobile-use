@@ -81,6 +81,67 @@ test("metadata resembling a transport ID cannot redirect selection or input", as
   assert.equal(adb.inputs.length, 1);
 });
 
+test("wake requires explicit selection but no observation and invalidates earlier observations", async (t) => {
+  const { adb, service } = harness(t);
+  await assert.rejects(service.wake("unselected"), hasCode("TARGET_NOT_SELECTED"));
+  assert.equal(adb.calls.length, 0);
+  const selected = await service.selectDevice(USB);
+  Object.assign(adb.keyguard, { showing: true, inputRestricted: true, screenState: "SCREEN_STATE_OFF" });
+  assert.deepEqual(await service.wake(selected.targetToken), { status: "awake-and-unlocked", keyguardDismissed: true });
+  assert.equal(adb.calls.some((call) => call.args.includes("screencap") || call.args.includes("uiautomator")), false);
+  const screen = await service.observe(selected.targetToken);
+  await service.wake(selected.targetToken);
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "key", key: "HOME" }), hasCode("STALE_OBSERVATION"));
+  const fresh = await service.observe(selected.targetToken);
+  await service.act(selected.targetToken, fresh.observation.observationId, { kind: "key", key: "HOME" });
+});
+
+test("wake rejects stale selection, changed physical identity, and lost transport without fallback", async (t) => {
+  const { adb, monitors, service } = harness(t);
+  const usb = await service.selectDevice(USB);
+  const wifi = await service.selectDevice(WIFI);
+  await assert.rejects(service.wake(usb.targetToken), hasCode("STALE_TARGET"));
+  adb.properties["ro.serialno"] = "ANOTHER_PHONE";
+  await assert.rejects(service.wake(wifi.targetToken), hasCode("TRANSPORT_LOST"));
+  adb.properties["ro.serialno"] = USB;
+  const selected = await service.selectDevice(USB);
+  monitors.disconnect();
+  await assert.rejects(service.wake(selected.targetToken), hasCode("TRANSPORT_LOST"));
+  assert.equal(adb.inputs.length, 0);
+});
+
+test("wake failure clears old observations and reports a post-wake disconnect as uncertain", async (t) => {
+  const { adb, monitors, service } = harness(t);
+  const { selected, screen } = await ready(service);
+  Object.assign(adb.keyguard, { showing: true, secure: true, inputRestricted: true });
+  await assert.rejects(service.wake(selected.targetToken), hasCode("MANUAL_UNLOCK_REQUIRED"));
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "key", key: "HOME" }), hasCode("STALE_OBSERVATION"));
+  Object.assign(adb.keyguard, { showing: false, inputRestricted: false });
+  let inventories = 0;
+  adb.handler = (call) => {
+    if (call.args[0] === "devices" && ++inventories === 2) {
+      monitors.disconnect();
+      throw new MobileUseError("TRANSPORT_LOST", "Fixture disconnected.", "Reselect.");
+    }
+    return undefined;
+  };
+  await assert.rejects(service.wake(selected.targetToken), (error: unknown) => {
+    hasCode("TRANSPORT_LOST")(error);
+    assert.ok(error instanceof MobileUseError && error.actionMayHaveRun && !error.retryable);
+    return true;
+  });
+});
+
+test("wake cancellation before dispatch performs no device commands", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  const count = adb.calls.length;
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(service.wake(selected.targetToken, controller.signal), hasCode("CANCELLED"));
+  assert.equal(adb.calls.length, count);
+});
+
 test("a semantic tap is revalidated, returns a new observation, and never claims semantic success", async (t) => {
   const { adb, service } = harness(t);
   const { selected, screen } = await ready(service);

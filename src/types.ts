@@ -38,6 +38,11 @@ export interface SelectedTarget {
   identity: DeviceIdentity;
 }
 
+export interface WakeResult {
+  status: "awake-and-unlocked";
+  keyguardDismissed: boolean;
+}
+
 export interface ReadStatus {
   status: "ok" | "unavailable";
   error: ErrorInfo | null;

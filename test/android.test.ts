@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { parseDeviceList } from "../src/adb.js";
-import { AndroidBackend, parseHierarchy, validatePng, validateText } from "../src/android.js";
+import { AndroidBackend, parseHierarchy, parseKeyguardState, validatePng, validateText } from "../src/android.js";
+import { MobileUseError } from "../src/errors.js";
 import { actionSchema } from "../src/types.js";
-import { FakeAdb, editField, hasCode, hierarchy, node, png, USB, WIFI } from "./helpers.js";
+import { FakeAdb, editField, hasCode, hierarchy, keyguardPolicy, node, png, USB, WIFI } from "./helpers.js";
 
 test("PNG validation preserves binary data and handles rotated dimensions", () => {
   assert.deepEqual(validatePng(png()), { width: 80, height: 160 });
@@ -104,6 +105,163 @@ function backend(adb: FakeAdb, endpointId = USB): AndroidBackend {
   assert.ok(endpoint);
   return new AndroidBackend(adb, endpoint, new AbortController().signal, () => {});
 }
+
+test("keyguard diagnostics distinguish unsecured, secure, and SIM-locked states", () => {
+  assert.deepEqual(parseKeyguardState(keyguardPolicy()), {
+    showing: false, secure: false, inputRestricted: false, screenOn: true, userId: 0,
+  });
+  assert.equal(parseKeyguardState(keyguardPolicy({ secure: "true" })).secure, true);
+  assert.equal(parseKeyguardState(keyguardPolicy({ mSimSecure: "true" })).secure, true);
+  assert.equal(parseKeyguardState(keyguardPolicy({ screenState: "SCREEN_STATE_OFF" })).screenOn, false);
+  assert.equal(parseKeyguardState(keyguardPolicy({ currentUser: "10", mCurrentUserId: "10" })).userId, 10);
+  assert.deepEqual(parseKeyguardState(keyguardPolicy({
+    showing: "true", inputRestricted: "false", currentUser: "-10000",
+    mIsShowing: "true", mInputRestricted: "true", mCurrentUserId: "0",
+    screenState: "SCREEN_STATE_OFF",
+  })), { showing: true, secure: false, inputRestricted: true, screenOn: false, userId: 0 });
+});
+
+test("unknown, oversized, contradictory, and ambiguous keyguard diagnostics fail closed", () => {
+  for (const output of [
+    "", "Permission Denial", " ".repeat(128 * 1024 + 1),
+    keyguardPolicy().replace("secure=false", "secure=unknown"),
+    keyguardPolicy().replace("    secure=false\n", ""),
+    keyguardPolicy().replace("      mSimSecure=false\n", ""),
+    keyguardPolicy() + keyguardPolicy(),
+    keyguardPolicy().replace("    secure=false", "    secure=false\n    secure=true"),
+    keyguardPolicy({ mIsShowing: "unknown" }), keyguardPolicy({ mInputRestricted: "unknown" }),
+    keyguardPolicy().replace("    mCurrentUserId=0", "    mCurrentUserId=10"),
+    keyguardPolicy({ currentUser: "10" }), keyguardPolicy({ currentUser: "-1", mCurrentUserId: "-1" }),
+    keyguardPolicy({ bootCompleted: "false" }), keyguardPolicy({ systemIsReady: "false" }),
+    keyguardPolicy({ screenState: "OEM_UNKNOWN" }),
+    "  secure=false\n" + keyguardPolicy().replace("    secure=false\n", ""),
+  ]) assert.throws(() => parseKeyguardState(output), hasCode("KEYGUARD_STATE_UNAVAILABLE"));
+});
+
+test("wake uses a fixed non-toggle key and dismisses only an unsecured keyguard on the exact transport", async () => {
+  const adb = new FakeAdb();
+  Object.assign(adb.keyguard, { showing: true, inputRestricted: true, screenState: "SCREEN_STATE_OFF" });
+  assert.deepEqual(await backend(adb).wake(), { status: "awake-and-unlocked", keyguardDismissed: true });
+  assert.deepEqual(adb.inputs.map((call) => call.args), [
+    ["-t", "7", "shell", "input", "keyevent", "224"],
+    ["-t", "7", "shell", "wm", "dismiss-keyguard"],
+  ]);
+  assert.ok(adb.calls.every((call) => call.args[0] === "-t" && call.args[1] === "7"));
+  assert.equal(adb.calls.some((call) => call.args.includes("screencap") || call.args.includes("uiautomator")), false);
+});
+
+test("an already unlocked phone is woken without dismissing keyguard or changing security", async () => {
+  const adb = new FakeAdb();
+  adb.keyguard.secure = true;
+  assert.deepEqual(await backend(adb).wake(), { status: "awake-and-unlocked", keyguardDismissed: false });
+  assert.equal(adb.inputs.length, 1);
+  assert.deepEqual(adb.inputs[0]?.args.slice(-2), ["keyevent", "224"]);
+});
+
+test("secure credentials and SIM locks require manual unlock without dismissal or capture", async () => {
+  for (const security of [{ secure: true }, { simSecure: true }]) {
+    const adb = new FakeAdb();
+    Object.assign(adb.keyguard, { showing: true, inputRestricted: true, ...security });
+    await assert.rejects(backend(adb).wake(), (error: unknown) => {
+      hasCode("MANUAL_UNLOCK_REQUIRED")(error);
+      assert.ok(error instanceof MobileUseError && error.actionMayHaveRun && !error.retryable);
+      return true;
+    });
+    assert.deepEqual(adb.inputs.map((call) => call.args.slice(2)), [["shell", "input", "keyevent", "224"]]);
+    assert.equal(adb.calls.some((call) => call.args.includes("screencap") || call.args.includes("uiautomator")), false);
+  }
+});
+
+test("unrecognized lock states and dismissal errors are explicit and never replayed", async () => {
+  for (const scenario of ["unknown-state", "rejected-dismissal"]) {
+    const adb = new FakeAdb();
+    Object.assign(adb.keyguard, { showing: true, inputRestricted: true });
+    adb.handler = (call) => {
+      if (scenario === "unknown-state" && call.args.includes("dumpsys")) return Buffer.from("unrecognized OEM output");
+      if (scenario === "rejected-dismissal" && call.args.includes("dismiss-keyguard")) return Buffer.from("Error: private platform details");
+      return undefined;
+    };
+    await assert.rejects(backend(adb).wake(), (error: unknown) => {
+      hasCode(scenario === "unknown-state" ? "KEYGUARD_STATE_UNAVAILABLE" : "WAKE_FAILED")(error);
+      assert.ok(error instanceof MobileUseError && error.actionMayHaveRun && !error.retryable);
+      assert.doesNotMatch(error.message, /private platform details/);
+      return true;
+    });
+    assert.equal(adb.inputs.filter((call) => call.args.includes("dismiss-keyguard")).length, scenario === "unknown-state" ? 0 : 1);
+  }
+});
+
+test("wake verifies dismissal instead of trusting the command's zero exit status", async () => {
+  const adb = new FakeAdb();
+  Object.assign(adb.keyguard, { showing: true, inputRestricted: true });
+  adb.handler = (call) => call.args.includes("dismiss-keyguard") ? Buffer.alloc(0) : undefined;
+  await assert.rejects(backend(adb).wake(), hasCode("WAKE_FAILED"));
+  assert.equal(adb.inputs.filter((call) => call.args.includes("dismiss-keyguard")).length, 1);
+  assert.equal(adb.calls.filter((call) => call.args.includes("dumpsys")).length, 10);
+});
+
+test("wake waits for screen readiness and refuses a user or security change during verification", async () => {
+  const waiting = new FakeAdb();
+  let reads = 0;
+  waiting.handler = (call) => {
+    if (call.args.includes("dumpsys") && reads++ === 0) {
+      return Buffer.from(keyguardPolicy({ screenState: "SCREEN_STATE_TURNING_ON" }));
+    }
+    return undefined;
+  };
+  assert.equal((await backend(waiting).wake()).status, "awake-and-unlocked");
+  assert.equal(reads, 2);
+  for (const change of [{ userId: 10 }, { showing: true, secure: true, inputRestricted: true }]) {
+    const adb = new FakeAdb();
+    Object.assign(adb.keyguard, { showing: true, inputRestricted: true });
+    adb.handler = (call) => {
+      if (call.args.includes("dismiss-keyguard")) {
+        Object.assign(adb.keyguard, change);
+        return Buffer.alloc(0);
+      }
+      return undefined;
+    };
+    await assert.rejects(backend(adb).wake(), hasCode("userId" in change ? "WAKE_FAILED" : "MANUAL_UNLOCK_REQUIRED"));
+    assert.equal(adb.inputs.filter((call) => call.args.includes("dismiss-keyguard")).length, 1);
+  }
+});
+
+test("wake cancellation is reported as uncertain after waking and never dismisses again", async () => {
+  const adb = new FakeAdb();
+  const controller = new AbortController();
+  Object.assign(adb.keyguard, { showing: true, inputRestricted: true });
+  adb.handler = (call) => {
+    if (call.args.includes("dismiss-keyguard")) {
+      setTimeout(() => controller.abort(), 10);
+      return Buffer.alloc(0);
+    }
+    return undefined;
+  };
+  await assert.rejects(backend(adb).wake(controller.signal), (error: unknown) => {
+    hasCode("CANCELLED")(error);
+    assert.ok(error instanceof MobileUseError && error.actionMayHaveRun && !error.retryable);
+    return true;
+  });
+  assert.equal(adb.inputs.length, 2);
+});
+
+test("an interrupted wake dispatch preserves its uncertain-delivery flag", async () => {
+  const adb = new FakeAdb();
+  const controller = new AbortController();
+  adb.handler = (call) => {
+    if (call.options.mutating) {
+      controller.abort();
+      throw new MobileUseError("CANCELLED", "Delivery is uncertain.", "Check the phone.", false, true);
+    }
+    return undefined;
+  };
+  await assert.rejects(backend(adb).wake(controller.signal), (error: unknown) => {
+    hasCode("CANCELLED")(error);
+    assert.ok(error instanceof MobileUseError && error.actionMayHaveRun && !error.retryable);
+    return true;
+  });
+  assert.equal(adb.calls.length, 1);
+});
 
 test("hierarchy capture forces a remote terminal while PNG capture remains binary-safe raw output", async () => {
   const adb = new FakeAdb();

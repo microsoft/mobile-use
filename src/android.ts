@@ -1,8 +1,9 @@
 import { crc32, inflateSync } from "node:zlib";
+import { setTimeout } from "node:timers/promises";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import type { AdbConnection, RunOptions } from "./adb.js";
-import { isRecord, MobileUseError } from "./errors.js";
-import type { DeviceEndpoint, DeviceIdentity, Rect, ScreenElement } from "./types.js";
+import { checkCancelled, isRecord, MobileUseError, publicError } from "./errors.js";
+import type { DeviceEndpoint, DeviceIdentity, Rect, ScreenElement, WakeResult } from "./types.js";
 
 export interface Hierarchy {
   rotation: number;
@@ -13,6 +14,74 @@ export interface Screenshot {
   image: Buffer;
   width: number;
   height: number;
+}
+
+export interface KeyguardState {
+  showing: boolean;
+  secure: boolean;
+  inputRestricted: boolean;
+  screenOn: boolean;
+  userId: number;
+}
+
+export function parseKeyguardState(output: string): KeyguardState {
+  const unavailable = (): never => {
+    throw new MobileUseError(
+      "KEYGUARD_STATE_UNAVAILABLE",
+      "The device's lock-screen state could not be established.",
+      "Wake and unlock the phone manually. Unrecognized OEM lock-screen diagnostics are not safe to dismiss.",
+    );
+  };
+  if (Buffer.byteLength(output) > 128 * 1024) unavailable();
+  const section = (lines: string[], name: string): string[] => {
+    const headings = lines.flatMap((line, index) => line.trim() === name ? [index] : []);
+    const start = headings.length === 1 ? headings[0] : undefined;
+    if (start === undefined) return unavailable();
+    const indentation = lines[start]?.search(/\S/) ?? -1;
+    const body: string[] = [];
+    for (const line of lines.slice(start + 1)) {
+      if (!line.trim()) continue;
+      if (line.search(/\S/) <= indentation) break;
+      body.push(line);
+    }
+    return body;
+  };
+  const fields = (lines: string[]): Map<string, string> => {
+    const indentation = lines.reduce((minimum, line) => Math.min(minimum, line.search(/\S/)), Infinity);
+    const values = new Map<string, string>();
+    for (const line of lines) {
+      if (line.search(/\S/) !== indentation) continue;
+      const match = /^\s*(\w+)=(\S+)\s*$/.exec(line);
+      if (match?.[1] && match[2]) {
+        if (values.has(match[1])) unavailable();
+        values.set(match[1], match[2]);
+      }
+    }
+    return values;
+  };
+  const delegateSection = section(output.split(/\r?\n/), "KeyguardServiceDelegate");
+  const delegate = fields(delegateSection);
+  const monitor = fields(section(delegateSection, "KeyguardStateMonitor"));
+  const flag = (values: Map<string, string>, name: string): boolean => {
+    const value = values.get(name);
+    if (value !== "true" && value !== "false") unavailable();
+    return value === "true";
+  };
+  // Delegate caches can lag the live monitor, including USER_NULL before a user switch.
+  const showing = flag(monitor, "mIsShowing");
+  const inputRestricted = flag(monitor, "mInputRestricted");
+  const secure = flag(delegate, "secure");
+  const simSecure = flag(monitor, "mSimSecure");
+  if (!flag(delegate, "systemIsReady") || !flag(delegate, "bootCompleted")) unavailable();
+  const user = monitor.get("mCurrentUserId");
+  const delegateUser = delegate.get("currentUser");
+  if (!user || !/^(0|[1-9]\d*)$/.test(user) ||
+    !Number.isSafeInteger(Number(user)) ||
+    (delegateUser !== "-10000" && delegateUser !== user) ||
+    (delegate.has("mCurrentUserId") && delegate.get("mCurrentUserId") !== user)) unavailable();
+  const screen = delegate.get("screenState");
+  if (!["SCREEN_STATE_OFF", "SCREEN_STATE_TURNING_ON", "SCREEN_STATE_ON", "SCREEN_STATE_TURNING_OFF"].includes(screen ?? "")) unavailable();
+  return { showing, secure: secure || simSecure, inputRestricted, screenOn: screen === "SCREEN_STATE_ON", userId: Number(user) };
 }
 
 export function validateText(text: string): void {
@@ -315,6 +384,56 @@ export class AndroidBackend {
 
   async key(key: "HOME" | "BACK" | "ENTER", signal?: AbortSignal): Promise<void> {
     await this.input("keyevent", [{ HOME: 3, BACK: 4, ENTER: 66 }[key]], signal);
+  }
+
+  async wake(signal?: AbortSignal): Promise<WakeResult> {
+    let woken = false;
+    try {
+      // WAKEUP does not toggle an already awake display off.
+      await this.input("keyevent", [224], signal);
+      woken = true;
+      const options = signal ? { signal } : {};
+      let dismissed = false;
+      let userId: number | undefined;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        checkCancelled(signal);
+        const output = await this.command(["shell", "dumpsys", "window", "policy"], options);
+        const state = parseKeyguardState(output.toString("utf8"));
+        if (userId !== undefined && userId !== state.userId) {
+          throw new MobileUseError("WAKE_FAILED", "The Android user changed during wake.", "Unlock the intended user manually before continuing.");
+        }
+        userId = state.userId;
+        if (state.showing || state.inputRestricted) {
+          if (state.secure) {
+            throw new MobileUseError(
+              "MANUAL_UNLOCK_REQUIRED",
+              "The phone requires manual authentication.",
+              "Unlock it yourself using its PIN, password, pattern, or biometrics. Never send credentials to Copilot.",
+            );
+          }
+          if (state.screenOn && !dismissed) {
+            const response = await this.command(["shell", "wm", "dismiss-keyguard"], { ...options, mutating: true });
+            if (response.toString("utf8").trim()) {
+              throw new MobileUseError("WAKE_FAILED", "Android did not confirm the unsecured keyguard dismissal.", "Dismiss the lock screen manually; do not replay the action automatically.");
+            }
+            dismissed = true;
+          }
+        } else if (state.screenOn) {
+          return { status: "awake-and-unlocked", keyguardDismissed: dismissed };
+        }
+        if (attempt < 9) await setTimeout(250, undefined, options);
+      }
+      throw new MobileUseError("WAKE_FAILED", "The display did not become awake and unlocked within the verification window.", "Check the phone and unlock it manually before continuing.");
+    } catch (error) {
+      const original = publicError(error);
+      const failure = signal?.aborted
+        ? new MobileUseError("CANCELLED", "The wake operation was cancelled.", "Check the phone before continuing; do not automatically replay the action.", false, original.actionMayHaveRun)
+        : original;
+      if (woken || failure.actionMayHaveRun || !(error instanceof MobileUseError)) {
+        throw new MobileUseError(failure.code, failure.message, failure.remediation, false, true);
+      }
+      throw failure;
+    }
   }
 
   private async input(verb: "tap" | "swipe" | "text" | "keyevent", values: readonly (string | number)[], signal?: AbortSignal): Promise<void> {

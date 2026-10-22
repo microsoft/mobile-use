@@ -44,12 +44,14 @@ launcher is `node`, not a download-on-launch npm/npx command.
 the built directory:
 
 ```powershell
-copilot plugin install .\dist\mobile-use
+copilot plugin install (Resolve-Path .\dist\mobile-use).Path
 ```
 
 This is the documented local installation route, not a claim that App loading
-has already passed. Confirm the plugin, skill, and five tools appear in your
-actual Copilot App before using hardware. If the App cannot load this format,
+has already passed. Use the absolute path shown above: some Windows CLI versions
+do not recognize a relative `.\` plugin source. Confirm the plugin, skill, and
+six tools appear in your actual Copilot App before using hardware. If the App
+cannot load this format,
 record that incompatibility rather than substituting manual MCP registration.
 Rebuild and use Copilot's plugin update/reinstall flow when changing the local
 artifact; an installed/cache copy may not follow source edits.
@@ -106,6 +108,7 @@ kill/restart the shared ADB server or alter global ADB/network settings.
 | `mobile_doctor` | Resolve ADB/version prerequisites. Does not enumerate or control devices. |
 | `mobile_list_devices` | Show endpoint IDs, transport IDs/kinds, and all states, including unauthorized/offline/unsupported. Discovery failure is not an empty list. |
 | `mobile_select_device` | Bind exactly the endpoint the user chose; qualify Android/physical-device and wireless evidence; return a session target token. |
+| `mobile_wake` | With explicit permission and a target token, wake the display and dismiss only an unsecured lock screen. No observation or screen capture; secure/unknown lock states require manual unlocking. |
 | `mobile_observe` | Require that token; return a fresh observation ID, display geometry, hierarchy/status/warnings, and a separate PNG image block when usable. |
 | `mobile_act` | Require target and latest observation IDs; dispatch one bounded action and return the next observation or an explicit unknown/unverified outcome. |
 
@@ -115,6 +118,28 @@ serial evidence when available, otherwise `null`. Every device command uses
 the selected ADB transport ID. A disconnect, observed server restart, or new
 selection invalidates tokens/references. There is **no endpoint fallback**,
 including to another connection to the same phone.
+
+### Waking a selected phone
+
+After explicit permission to wake the selected phone, call `mobile_wake` with
+`targetToken`. This is the only input tool that does not require an observation:
+the screen may be off, and capturing authentication UI is not appropriate.
+It invalidates previous observations, sends the non-toggle Android `WAKEUP`
+key, and checks bounded keyguard diagnostics. Only an explicitly unsecured
+keyguard may receive Android's `wm dismiss-keyguard` command, at most once.
+The tool never enters a PIN, password, or pattern, uses biometrics, changes
+security settings, or attempts to bypass authentication.
+
+Success is `{ status: "awake-and-unlocked", keyguardDismissed: boolean }`,
+verified against screen-on and keyguard state, without returning a screenshot.
+Then observe approved non-sensitive content before other actions. A secure
+keyguard or SIM lock returns `MANUAL_UNLOCK_REQUIRED`; unavailable,
+contradictory, or unfamiliar OEM diagnostics return
+`KEYGUARD_STATE_UNAVAILABLE`. `WAKE_FAILED` means readiness could not be
+verified. The screen may already have been woken when an error is returned;
+check `actionMayHaveRun` and do not automatically replay the operation.
+The user must authenticate or dismiss unsupported lock screens manually.
+This capability does not enable debugging or authorize the computer.
 
 Supported action objects:
 
@@ -160,7 +185,8 @@ no semantic elements. Protected capture may error or return obscured pixels;
 the plugin cannot reliably diagnose protection from a dark image and never
 bypasses it. Screenshot and hierarchy status are independent; without a usable
 screenshot, coordinate gestures are blocked. Without either observation,
-input stops. Password-node text is redacted, not a guarantee that a whole
+normal input stops; explicitly requested `mobile_wake` is the bounded
+no-capture exception. Password-node text is redacted, not a guarantee that a whole
 screen contains no secrets.
 
 Reads are bounded: commands have a 15-second deadline and 16 MiB output limit;
@@ -187,7 +213,7 @@ those things even though no dedicated tool is provided.
 
 There is no iOS/emulator/cloud-device support, streaming/canvas, app
 installation/uninstallation, recording, file transfer, remote service, or
-legacy wireless fallback.
+legacy wireless fallback. Secure lock-screen authentication is never automated.
 
 ## Real-hardware acceptance runbook
 
@@ -235,6 +261,13 @@ assertions, no-fallback result, and approved images only. Never commit evidence.
 Full POC acceptance requires App loading and the physical runs/no-fallback
 check. Fixture success is not a substitute. See [SUPPORT.md](SUPPORT.md) for safe
 issue reports and [SECURITY.md](SECURITY.md) for security reporting.
+
+Wake/unsecured-dismissal hardware acceptance is also pending. On a disposable
+demo device with an existing unsecured lock, explicitly approve waking it and
+verify the display turns on and the keyguard disappears. Do not remove or
+change a real device's security settings for this check. On an existing secure
+lock, verify only waking occurs and manual authentication is required, without
+capturing the lock screen. Unknown OEM diagnostics must stop dismissal.
 
 ## Licensing
 

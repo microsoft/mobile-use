@@ -67,6 +67,21 @@ export function hasCode(code: ErrorCode): (error: unknown) => boolean {
   };
 }
 
+export function keyguardPolicy(overrides: Record<string, string> = {}): string {
+  const fields = {
+    showing: "false", secure: "false", inputRestricted: "false",
+    systemIsReady: "true", bootCompleted: "true", currentUser: "0",
+    screenState: "SCREEN_STATE_ON", mIsShowing: "false", mSimSecure: "false",
+    mInputRestricted: "false", mCurrentUserId: "0", ...overrides,
+  };
+  return "WINDOW MANAGER POLICY STATE (dumpsys window policy)\n  KeyguardServiceDelegate\n" +
+    Object.entries(fields).filter(([name]) => !name.startsWith("m")).map(([name, value]) => `    ${name}=${value}`).join("\n") +
+    "\n    KeyguardStateMonitor\n" +
+    Object.entries(fields).filter(([name]) => name.startsWith("m")).map(([name, value]) => `      ${name}=${value}`).join("\n") +
+    `\n    mCurrentUserId=${fields.mCurrentUserId}` +
+    "\n  Looper state:\n    unrelated=true\n";
+}
+
 export interface AdbCall {
   args: readonly string[];
   options: RunOptions;
@@ -77,6 +92,10 @@ export class FakeAdb implements AdbConnection {
   image = png();
   xml = hierarchy();
   size = "Physical size: 80x160\n";
+  keyguard = {
+    showing: false, secure: false, simSecure: false, inputRestricted: false,
+    screenState: "SCREEN_STATE_ON", userId: 0,
+  };
   properties: Record<string, string> = {
     "ro.build.version.sdk": "30", "ro.build.version.release": "11",
     "ro.serialno": USB, "ro.kernel.qemu": "0",
@@ -104,6 +123,22 @@ export class FakeAdb implements AdbConnection {
     if (command === "exec-out screencap -p") return this.image;
     if (command === "shell -tt uiautomator dump /dev/tty") return Buffer.from(this.xml);
     if (command === "shell wm size") return Buffer.from(this.size);
+    if (command === "shell dumpsys window policy") {
+      return Buffer.from(keyguardPolicy({
+        showing: String(this.keyguard.showing), mIsShowing: String(this.keyguard.showing),
+        secure: String(this.keyguard.secure), mSimSecure: String(this.keyguard.simSecure),
+        inputRestricted: String(this.keyguard.inputRestricted), mInputRestricted: String(this.keyguard.inputRestricted),
+        screenState: this.keyguard.screenState,
+        currentUser: String(this.keyguard.userId), mCurrentUserId: String(this.keyguard.userId),
+      }));
+    }
+    if (command === "shell input keyevent 224") this.keyguard.screenState = "SCREEN_STATE_ON";
+    if (command === "shell wm dismiss-keyguard") {
+      assert.equal(this.keyguard.secure || this.keyguard.simSecure, false, "a secure keyguard must never be dismissed");
+      this.keyguard.showing = false;
+      this.keyguard.inputRestricted = false;
+      return Buffer.alloc(0);
+    }
     if (command.startsWith("shell input ")) return Buffer.alloc(0);
     if (command.startsWith("shell cmd package resolve-activity ")) return Buffer.from("example.poc/.MainActivity\n");
     if (command.startsWith("shell am start -W -n ")) return Buffer.from("Status: ok\nActivity: example.poc/.MainActivity\n");

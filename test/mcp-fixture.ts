@@ -5,6 +5,9 @@ import { chunk, FakeAdb, FakeMonitors, hierarchy, node } from "./helpers.js";
 
 const adb = new FakeAdb();
 const monitors = new FakeMonitors(adb);
+if (process.env.MOBILE_USE_FIXTURE_SCENARIO === "secure-keyguard") {
+  Object.assign(adb.keyguard, { showing: true, secure: true, inputRestricted: true });
+}
 if (process.env.MOBILE_USE_FIXTURE_SCENARIO === "uncertain-input") {
   adb.handler = (call) => {
     if (call.options.mutating) throw new Error("private fixture-only dispatch details");

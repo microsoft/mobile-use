@@ -35,13 +35,18 @@ function payload(result: { content?: unknown }): Record<string, unknown> {
 }
 
 for (const mode of ["legacy", "auto"] as const) {
-  test(`five MCP operations expose typed observe-act results over ${mode}`, async (t) => {
+  test(`six MCP operations expose typed wake and observe-act results over ${mode}`, async (t) => {
     const { client } = await fixture(t, mode);
     const tools = await client.listTools();
-    assert.equal(tools.tools.length, 5);
+    assert.equal(tools.tools.length, 6);
     const act = tools.tools.find((tool) => tool.name === "mobile_act");
     assert.equal(act?.annotations?.destructiveHint, true);
     assert.equal(act?.annotations?.idempotentHint, false);
+    const wake = tools.tools.find((tool) => tool.name === "mobile_wake");
+    assert.equal(wake?.annotations?.readOnlyHint, false);
+    assert.equal(wake?.annotations?.destructiveHint, true);
+    assert.equal(wake?.annotations?.idempotentHint, false);
+    assert.deepEqual(wake?.inputSchema.required, ["targetToken"]);
     const doctor = payload(await client.callTool({ name: "mobile_doctor", arguments: {} }));
     assert.equal(doctor.status, "ready");
     const list = payload(await client.callTool({ name: "mobile_list_devices", arguments: {} }));
@@ -53,6 +58,10 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.equal(unselectedError.code, "TARGET_NOT_SELECTED");
     const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
     assert.equal(typeof selected.targetToken, "string");
+    const woken = await client.callTool({ name: "mobile_wake", arguments: { targetToken: selected.targetToken } });
+    assert.equal(woken.isError, undefined);
+    assert.deepEqual(payload(woken), { status: "awake-and-unlocked", keyguardDismissed: false });
+    assert.ok(Array.isArray(woken.content) && woken.content.length === 1);
     const observed = await client.callTool({ name: "mobile_observe", arguments: { targetToken: selected.targetToken } });
     assert.ok(Array.isArray(observed.content));
     assert.equal(observed.content.length, 2);
@@ -85,6 +94,25 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.equal(failure.actionMayHaveRun, false);
   });
 }
+
+test("MCP wake reports manual authentication as an error without images or credential inputs", async (t) => {
+  const fixtureServer = await fixture(t, "auto", "secure-keyguard");
+  const { client } = fixtureServer;
+  const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+  const result = await client.callTool({ name: "mobile_wake", arguments: { targetToken: selected.targetToken } });
+  assert.equal(result.isError, true);
+  assert.ok(Array.isArray(result.content) && result.content.length === 1);
+  const error = payload(result).error;
+  assert.ok(isRecord(error));
+  assert.equal(error.code, "MANUAL_UNLOCK_REQUIRED");
+  assert.equal(error.actionMayHaveRun, true);
+  assert.equal(error.retryable, false);
+  assert.match(fixtureServer.stderr, /MANUAL_UNLOCK_REQUIRED/);
+  const credentials = await client.callTool({
+    name: "mobile_wake", arguments: { targetToken: selected.targetToken, pin: "fixture-only" },
+  });
+  assert.equal(credentials.isError, true);
+});
 
 test("MCP uncertain outcomes are error results, sanitized, non-retryable, and not semantic success", async (t) => {
   const fixtureServer = await fixture(t, "legacy", "uncertain-input");

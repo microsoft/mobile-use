@@ -56,6 +56,12 @@ export function createMobileUseServer(service: MobileUseService): McpServer {
     annotations: readOnly,
   }, (input, ctx) => safely(async () => observationResult(await service.observe(input.targetToken, ctx.mcpReq.signal))));
 
+  server.registerTool("mobile_wake", {
+    description: "Only when explicitly requested, wake the selected phone and dismiss an unsecured lock screen. Requires a target token but no screen observation; invalidates previous observations. Never enters credentials, bypasses authentication, or captures the lock screen. Secure or unrecognized lock states require manual unlocking. After success, observe approved non-sensitive content before any other action. Never automatically replay an uncertain result.",
+    inputSchema: z.strictObject({ targetToken }),
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  }, (input, ctx) => safely(async () => result(await service.wake(input.targetToken, ctx.mcpReq.signal))));
+
   server.registerTool("mobile_act", {
     description: "Perform ONE explicitly authorized bounded action on the selected transport using the latest observation (consumed on attempt, expires after 30 seconds). Then observe and verify the requested state. Text appends to a focused non-password native EditText; supports only letters, digits, spaces, periods, commas, underscores, and hyphens. No blind batches, shell, helper installation, or endpoint fallback. Never replay uncertain input. Generic taps/keys can have consequences: installation/debugging trust is not user consent.",
     inputSchema: z.strictObject({ targetToken, observationId: z.string().uuid(), action: actionSchema }),

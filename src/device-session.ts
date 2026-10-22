@@ -7,7 +7,7 @@ import { checkCancelled, MobileUseError, publicError } from "./errors.js";
 import { actionSchema } from "./types.js";
 import type {
   ActionResult, DeviceEndpoint, DeviceIdentity, MobileAction, Observation,
-  ObservedScreen, ReadStatus, ScreenElement, SelectedTarget,
+  ObservedScreen, ReadStatus, ScreenElement, SelectedTarget, WakeResult,
 } from "./types.js";
 
 const OBSERVATION_MAX_AGE_MS = 30_000;
@@ -118,6 +118,15 @@ export class MobileUseService {
       throw new MobileUseError("TRANSPORT_LOST", "The exact selected transport is no longer online.", "Rediscover and explicitly reselect.");
     }
     this.target(state.token);
+  }
+
+  private async ensureIdentity(state: TargetState, signal?: AbortSignal): Promise<void> {
+    await this.ensureEndpoint(state, signal);
+    const identity = await state.backend.identity(signal);
+    if (state.identity?.hardwareSerial && state.identity.hardwareSerial !== identity.hardwareSerial) {
+      this.invalidate(true);
+      throw new MobileUseError("TRANSPORT_LOST", "The selected transport's physical identity changed.", "Rediscover and explicitly reselect.");
+    }
   }
 
   doctor(signal?: AbortSignal): Promise<{ status: "ready"; adbExecutable: string; platformToolsVersion: string }> {
@@ -277,6 +286,22 @@ export class MobileUseService {
     }, signal);
   }
 
+  wake(targetToken: string, signal?: AbortSignal): Promise<WakeResult> {
+    return this.serialize(async () => {
+      const state = this.target(targetToken);
+      this.snapshot = undefined;
+      await this.ensureIdentity(state, signal);
+      const result = await state.backend.wake(signal);
+      try {
+        await this.ensureEndpoint(state, signal);
+      } catch (error) {
+        const failure = publicError(error);
+        throw new MobileUseError(failure.code, failure.message, failure.remediation, false, true);
+      }
+      return result;
+    }, signal);
+  }
+
   private async dispatch(state: TargetState, action: MobileAction, previous: Snapshot, live: Snapshot, signal?: AbortSignal): Promise<void> {
     const old = previous.screen.observation;
     const current = live.screen.observation;
@@ -351,12 +376,7 @@ export class MobileUseService {
         age < 0 || age > OBSERVATION_MAX_AGE_MS) {
         throw new MobileUseError("STALE_OBSERVATION", "The observation is missing, expired, or already consumed.", "Observe again; each observation authorizes at most one attempt.");
       }
-      await this.ensureEndpoint(state, signal);
-      const identity = await state.backend.identity(signal);
-      if (state.identity?.hardwareSerial && state.identity.hardwareSerial !== identity.hardwareSerial) {
-        this.invalidate(true);
-        throw new MobileUseError("TRANSPORT_LOST", "The selected transport's physical identity changed.", "Rediscover and explicitly reselect.");
-      }
+      await this.ensureIdentity(state, signal);
       const live = await this.capture(state, signal);
       try {
         await this.dispatch(state, action, previous, live, signal);
