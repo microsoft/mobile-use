@@ -1,0 +1,9 @@
+Package: @nodable/entities@3.1.0
+Declared license: MIT
+Published package gitHead: ac48e7ea591da372be023a481875c747535812b3
+License source:
+https://github.com/nodable/val-parsers/blob/ac48e7ea591da372be023a481875c747535812b3/LICENSE
+
+The npm tarball omits LICENSE. This exact upstream license text is included for
+that package version only. A dependency update must review its own license text;
+the build fails rather than silently applying this fallback to another version.

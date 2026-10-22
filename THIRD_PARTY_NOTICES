@@ -1,0 +1,12 @@
+Project-authored mobile-use source is licensed under the root MIT license.
+Third-party dependencies retain their own licenses; the MIT project license
+does not replace them. In particular, the bundled Model Context Protocol
+server/core packages retain their Apache-2.0 and applicable MIT notices.
+
+The plugin build appends license/notice texts for dependencies actually included
+in its server bundle. When a published npm package omits its license file, a
+version-specific upstream license and immutable source provenance are retained
+under third_party/npm-licenses. The build fails if neither source is available.
+
+Android Platform-Tools, Node.js, OEM drivers, and phone-side software are not
+redistributed by this plugin.
