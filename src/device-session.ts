@@ -231,17 +231,18 @@ export class MobileUseService {
     const results = await Promise.allSettled([
       state.backend.screenshot(signal),
       state.backend.hierarchy(signal),
-      state.backend.naturalSize(signal),
+      state.backend.displayState(signal),
     ]);
-    const [imageResult, hierarchyResult, sizeResult] = results;
+    const [imageResult, hierarchyResult, displayResult] = results;
     const screenshotStatus: ReadStatus = imageResult.status === "fulfilled"
       ? { status: "ok", error: null } : readFailure(imageResult.reason);
     const hierarchyStatus: ReadStatus = hierarchyResult.status === "fulfilled"
       ? { status: "ok", error: null } : readFailure(hierarchyResult.reason);
+    const displayStatus: ReadStatus = displayResult.status === "fulfilled"
+      ? { status: "ok", error: null } : readFailure(displayResult.reason);
     const screenshot: Screenshot | null = imageResult.status === "fulfilled" ? imageResult.value : null;
     const hierarchy: Hierarchy | null = hierarchyResult.status === "fulfilled" ? hierarchyResult.value : null;
-    const natural = sizeResult.status === "fulfilled" ? sizeResult.value : null;
-    const sizeStatus = sizeResult.status === "fulfilled" ? null : readFailure(sizeResult.reason);
+    const verifiedDisplay = displayResult.status === "fulfilled" ? displayResult.value : null;
     this.target(state.token);
     checkCancelled(signal);
     if (!screenshot && !hierarchy) {
@@ -251,20 +252,18 @@ export class MobileUseService {
         "Stop input. The user should expose an unlocked, observable safe screen; do not bypass protection.",
       );
     }
-    let inferred: { width: number; height: number } | null = null;
-    if (natural && hierarchy) {
-      inferred = hierarchy.rotation % 2 === 0 ? natural : { width: natural.height, height: natural.width };
-    }
-    if (screenshot && inferred && (screenshot.width !== inferred.width || screenshot.height !== inferred.height)) {
+    if (verifiedDisplay && ((screenshot &&
+      (screenshot.width !== verifiedDisplay.width || screenshot.height !== verifiedDisplay.height)) ||
+      (hierarchy && hierarchy.rotation !== verifiedDisplay.rotation))) {
       throw new MobileUseError("STALE_OBSERVATION", "Display geometry changed or is inconsistent during observation.", "Observe again on the primary display.", true);
     }
-    const dimensions = screenshot ? { width: screenshot.width, height: screenshot.height } : inferred;
-    const display = dimensions ? { ...dimensions, rotation: hierarchy?.rotation ?? null } : null;
+    const dimensions = screenshot ? { width: screenshot.width, height: screenshot.height } : verifiedDisplay;
+    const display = dimensions ? { width: dimensions.width, height: dimensions.height, rotation: verifiedDisplay?.rotation ?? null } : null;
     const warnings: string[] = [];
     if (!screenshot) warnings.push("Image unavailable; no screenshot-coordinate actions are permitted.");
     if (!hierarchy) warnings.push("Hierarchy unavailable; no semantic element or focused-field claims can be made.");
     if (hierarchy && !hierarchy.elements.length) warnings.push("No semantic elements were exposed; content may be custom-drawn or unavailable.");
-    if (sizeStatus) warnings.push("Natural display size could not be verified.");
+    if (!verifiedDisplay) warnings.push("Primary display state could not be verified; input is blocked until a fresh observation verifies it.");
     if (!display) warnings.push("Display geometry is unavailable; coordinate-based input is blocked.");
     const visible = (hierarchy?.elements ?? []).filter((element) => {
       const b = element.bounds;
@@ -278,6 +277,7 @@ export class MobileUseService {
       capturedAt: new Date(now).toISOString(),
       nonAtomic: true,
       display,
+      displayState: displayStatus,
       screenshot: screenshotStatus,
       hierarchy: hierarchyStatus,
       elements: visible.map((element, index) => ({ ...element, ref: `e${index + 1}` })),
@@ -321,7 +321,12 @@ export class MobileUseService {
   private async dispatch(state: TargetState, action: MobileAction, previous: Snapshot, live: Snapshot, signal?: AbortSignal): Promise<void> {
     const old = previous.screen.observation;
     const current = live.screen.observation;
-    if (JSON.stringify(old.display) !== JSON.stringify(current.display)) {
+    if (old.displayState.status !== "ok" || current.displayState.status !== "ok" ||
+      !old.display || !current.display || old.display.rotation === null || current.display.rotation === null) {
+      throw new MobileUseError("DISPLAY_STATE_UNAVAILABLE", "Primary display state was unavailable in the observation or before dispatch.", "Inspect a fresh observation with verified display state before input.");
+    }
+    if (old.display.width !== current.display.width || old.display.height !== current.display.height ||
+      old.display.rotation !== current.display.rotation) {
       throw new MobileUseError("STALE_OBSERVATION", "Display geometry or rotation changed.", "Inspect a new observation before input.");
     }
     const unchangedImage = (): void => {

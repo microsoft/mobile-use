@@ -241,6 +241,18 @@ require an unchanged screenshot and in-bounds points. Animated/changing screens
 may therefore require another observation. Only the primary display is covered,
 and screenshots/hierarchies are non-atomic.
 
+Display geometry and rotation are verified independently of UI Automator using
+the primary logical display in `dumpsys window displays`. A failed hierarchy read
+therefore does not turn a known rotation into an apparent rotation change.
+Observations include a separate `displayState` status. Unavailable display state
+leaves rotation unknown and blocks normal input with
+`DISPLAY_STATE_UNAVAILABLE`; old rotation is never cached or assumed to be zero.
+Actual geometry/rotation changes (including 180-degree rotation), disagreement
+between capture sources, and changed screenshots still reject stale input.
+Unrecognized OEM display formats fail explicitly rather than guessing. Input
+viewport orientation is not used because it can include a physical panel offset
+rather than just the logical UI rotation.
+
 Hierarchy capture uses a forced device PTY for `/dev/tty` without leaving a dump
 file on the phone. PNG capture stays on raw `exec-out`, avoiding terminal
 newline conversion of image bytes.
@@ -270,6 +282,10 @@ no-capture exception. Password-node text is redacted, not a guarantee that a who
 screen contains no secrets.
 
 Reads are bounded: commands have a 15-second deadline and 16 MiB output limit;
+primary-display diagnostics have a shorter two-second attempt deadline and
+retry transient read failures at most once. Display parsing is limited to
+1 MiB; raw display diagnostics are not returned in tool results or saved to disk.
+Only these read-only metadata attempts are retried, never input commands.
 PNG images are limited to 5 MiB, 8192 pixels per dimension, 64 MiB decoded data,
 and non-interlaced 8-bit RGB/RGBA. XML is limited to 2 MiB, 2000 traversed nodes,
 depth 64, and 500 retained elements; normalized element data is capped at

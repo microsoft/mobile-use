@@ -35,6 +35,8 @@ if (Object.hasOwn(setupInventories, setupScenario) || ["missing-adb", "old-adb",
 }
 if (setupScenario === "server-reused") adb.startupAttempted = false;
 if (setupScenario === "server-start-empty") adb.inventory = "List of devices attached\n";
+if (setupScenario === "hierarchy-unavailable") adb.xml = "ERROR: null root node";
+if (setupScenario === "display-unavailable") adb.display = "Unrecognized display diagnostics";
 if (setupScenario === "server-conflict" || setupScenario === "server-start-uncertain") {
   adb.startServerHandler = async () => {
     const uncertain = setupScenario === "server-start-uncertain";

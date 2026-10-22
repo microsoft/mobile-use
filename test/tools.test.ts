@@ -99,6 +99,7 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.ok(isRecord(observation));
     assert.equal(observation.targetToken, selected.targetToken);
     assert.equal(observation.nonAtomic, true);
+    assert.deepEqual(observation.displayState, { status: "ok", error: null });
     assert.doesNotMatch(JSON.stringify(payload(observed)), /"type":"Buffer"|"image":/);
     const acted = await client.callTool({
       name: "mobile_act",
@@ -121,6 +122,36 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.equal(failure.code, "STALE_OBSERVATION");
     assert.equal(failure.actionMayHaveRun, false);
   });
+
+  for (const scenario of ["hierarchy-unavailable", "display-unavailable"] as const) {
+    test(`independent display-state status and input guards survive ${scenario} over ${mode}`, async (t) => {
+      const { client } = await fixture(t, mode, scenario);
+      const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+      const observed = await client.callTool({ name: "mobile_observe", arguments: { targetToken: selected.targetToken } });
+      assert.equal(observed.isError, undefined);
+      const observation = payload(observed).observation;
+      assert.ok(isRecord(observation) && isRecord(observation.displayState) && isRecord(observation.display));
+      assert.equal(observation.displayState.status, scenario === "display-unavailable" ? "unavailable" : "ok");
+      assert.equal(observation.display.rotation, scenario === "display-unavailable" ? null : 0);
+      const acted = await client.callTool({
+        name: "mobile_act",
+        arguments: {
+          targetToken: selected.targetToken, observationId: observation.observationId,
+          action: { kind: "tap", target: { x: 10, y: 10 } },
+        },
+      });
+      if (scenario === "display-unavailable") {
+        assert.equal(acted.isError, true);
+        const error = payload(acted).error;
+        assert.ok(isRecord(error));
+        assert.equal(error.code, "DISPLAY_STATE_UNAVAILABLE");
+        assert.equal(error.actionMayHaveRun, false);
+      } else {
+        assert.equal(acted.isError, undefined);
+        assert.equal(payload(acted).dispatchStatus, "dispatched");
+      }
+    });
+  }
 
   for (const scenario of ["no-devices", "unauthorized", "offline", "unsupported"] as const) {
     test(`first-use ${scenario} inventory returns actionable guidance without selection over ${mode}`, async (t) => {

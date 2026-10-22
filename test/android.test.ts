@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { parseDeviceList } from "../src/adb.js";
-import { AndroidBackend, parseHierarchy, parseKeyguardState, validatePng, validateText } from "../src/android.js";
+import { AndroidBackend, parseDisplayState, parseHierarchy, parseKeyguardState, validatePng, validateText } from "../src/android.js";
 import { MobileUseError } from "../src/errors.js";
 import { actionSchema } from "../src/types.js";
-import { FakeAdb, editField, hasCode, hierarchy, keyguardPolicy, node, png, USB, WIFI } from "./helpers.js";
+import { FakeAdb, displayDiagnostics, editField, hasCode, hierarchy, keyguardPolicy, node, png, USB, WIFI } from "./helpers.js";
 
 test("PNG validation preserves binary data and handles rotated dimensions", () => {
   assert.deepEqual(validatePng(png()), { width: 80, height: 160 });
@@ -105,6 +106,113 @@ function backend(adb: FakeAdb, endpointId = USB): AndroidBackend {
   assert.ok(endpoint);
   return new AndroidBackend(adb, endpoint, new AbortController().signal, () => {});
 }
+
+test("primary logical display geometry is read independently for all rotations", () => {
+  for (const rotation of [0, 1, 2, 3]) {
+    const width = rotation % 2 ? 160 : 80;
+    const height = rotation % 2 ? 80 : 160;
+    const output = displayDiagnostics(rotation, width, height);
+    assert.deepEqual(parseDisplayState(output), { width, height, rotation });
+    assert.deepEqual(parseDisplayState(output.replace(`mRotation=${rotation}`, `mRotation=ROTATION_${rotation * 90}`)), { width, height, rotation });
+  }
+  assert.equal(parseDisplayState(displayDiagnostics().replaceAll("\n", "\r\n")).rotation, 0);
+  const secondary = displayDiagnostics(3, 160, 80).replace("mDisplayId=0", "mDisplayId=7");
+  const multiple = secondary + displayDiagnostics() + secondary;
+  assert.deepEqual(parseDisplayState(multiple), { width: 80, height: 160, rotation: 0 });
+  const offset = displayDiagnostics().replace("  unrelated=true", "  InputViewport\n    orientation=1\n  unrelated=true");
+  assert.equal(parseDisplayState(offset).rotation, 0, "physical panel orientation must not be mistaken for logical UI rotation");
+});
+
+test("missing, ambiguous, oversized, and unrecognized primary display diagnostics fail closed", () => {
+  const valid = displayDiagnostics();
+  for (const invalid of [
+    "", "Permission Denial", " ".repeat(1024 * 1024 + 1),
+    valid.replace("mRotation=0", "mRotation=4"),
+    valid.replace("mRotation=0", "mRotation=unknown"),
+    valid.replace("mRotation=0", "mRotation=ROTATION_45"),
+    valid.replace("mRotation=0", "mRotation=0 mRotation=0"),
+    valid.replace("mRotation=0", "unrecognized=0"),
+    valid.replace("mDisplayId=0", "mDisplayId=1"),
+    valid.replace("cur=80x160", "cur=0x160"),
+    valid.replace("cur=80x160", "cur=8193x160"),
+    valid.replace("cur=80x160", "cur=80x9007199254740992"),
+    valid.replace("cur=80x160", "cur=80x160 cur=80x160"),
+    valid.replace("cur=80x160", "unrecognized=80x160"),
+    valid.replace("  DisplayRotation\n", ""),
+    valid.replace("  unrelated=true", "  DisplayRotation\n    mRotation=0"),
+    valid + valid,
+  ]) assert.throws(() => parseDisplayState(invalid), hasCode("DISPLAY_STATE_UNAVAILABLE"));
+});
+
+test("display reads retry transient failures once without hierarchy, settings, or input commands", async () => {
+  for (const failure of ["ADB_FAILED", "ADB_TIMEOUT", "malformed"] as const) {
+    const adb = new FakeAdb();
+    let attempts = 0;
+    adb.handler = () => {
+      if (++attempts !== 1) return undefined;
+      if (failure === "malformed") return Buffer.from("Unrecognized display diagnostics");
+      throw new MobileUseError(failure, "Fixture read failed.", "Observe again.");
+    };
+    assert.deepEqual(await backend(adb).displayState(), { width: 80, height: 160, rotation: 0 });
+    assert.equal(attempts, 2);
+    assert.ok(adb.calls.every((call) => call.args.join(" ") === "-t 7 shell dumpsys window displays" && !call.options.mutating));
+    assert.equal(adb.inputs.length, 0);
+  }
+});
+
+test("display reads have a two-second attempt deadline and a finite retry budget", { timeout: 6000 }, async () => {
+  const adb = new FakeAdb();
+  let attempts = 0;
+  let expiredAt = 0;
+  const startedAt = performance.now();
+  adb.handler = async (call) => {
+    if (++attempts === 1) {
+      const signal = call.options.signal;
+      assert.ok(signal);
+      return new Promise<Buffer>((_resolve, reject) => {
+        signal.addEventListener("abort", () => {
+          expiredAt = performance.now();
+          reject(new MobileUseError("CANCELLED", "Fixture attempt deadline.", "Observe again."));
+        }, { once: true });
+      });
+    }
+    return undefined;
+  };
+  const read = backend(adb).displayState();
+  await delay(2100);
+  assert.equal((await read).rotation, 0);
+  assert.ok(expiredAt - startedAt >= 1900 && expiredAt - startedAt < 4500);
+  assert.equal(attempts, 2);
+  adb.display = "";
+  adb.handler = undefined;
+  const before = adb.calls.length;
+  await assert.rejects(backend(adb).displayState(), (error: unknown) => {
+    hasCode("DISPLAY_STATE_UNAVAILABLE")(error);
+    assert.ok(error instanceof MobileUseError && !error.actionMayHaveRun);
+    return true;
+  });
+  assert.equal(adb.calls.length - before, 2);
+  assert.equal(adb.inputs.length, 0);
+});
+
+test("display reads preserve transport, configuration, internal, and cancellation errors without retry", async () => {
+  for (const code of ["TRANSPORT_LOST", "DEVICE_UNAUTHORIZED", "ADB_NOT_FOUND", "ADB_CONFIG_UNSUPPORTED", "INTERNAL_ERROR", "CANCELLED"] as const) {
+    const adb = new FakeAdb();
+    adb.handler = () => { throw new MobileUseError(code, "Fixture failure.", "Stop."); };
+    await assert.rejects(backend(adb).displayState(), hasCode(code));
+    assert.equal(adb.calls.length, 1);
+  }
+  const adb = new FakeAdb();
+  const controller = new AbortController();
+  adb.handler = () => {
+    controller.abort();
+    throw new MobileUseError("ADB_FAILED", "Fixture interrupted.", "Stop.");
+  };
+  await assert.rejects(backend(adb).displayState(controller.signal), hasCode("CANCELLED"));
+  assert.equal(adb.calls.length, 1);
+  await assert.rejects(backend(adb).displayState(controller.signal), hasCode("CANCELLED"));
+  assert.equal(adb.calls.length, 1, "an already cancelled read must not dispatch");
+});
 
 test("keyguard diagnostics distinguish unsecured, secure, and SIM-locked states", () => {
   assert.deepEqual(parseKeyguardState(keyguardPolicy()), {

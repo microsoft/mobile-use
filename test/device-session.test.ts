@@ -4,7 +4,7 @@ import type { TestContext } from "node:test";
 import type { MonitorFactory } from "../src/adb.js";
 import { MobileUseService } from "../src/device-session.js";
 import { MobileUseError } from "../src/errors.js";
-import { FakeAdb, FakeMonitors, editField, hasCode, hierarchy, INVENTORY, node, png, USB, USB_LINE, WIFI, WIFI_LINE } from "./helpers.js";
+import { FakeAdb, FakeMonitors, displayDiagnostics, editField, hasCode, hierarchy, INVENTORY, node, png, USB, USB_LINE, WIFI, WIFI_LINE } from "./helpers.js";
 
 function harness(t: TestContext, now?: () => number) {
   const adb = new FakeAdb();
@@ -266,12 +266,14 @@ test("display rotation is mapped and a later geometry change blocks input", asyn
   const { adb, service } = harness(t);
   adb.image = png(160, 80);
   adb.xml = hierarchy(node(), 1);
+  adb.display = displayDiagnostics(1, 160, 80);
   const { selected, screen } = await ready(service);
   assert.deepEqual(screen.observation.display, { width: 160, height: 80, rotation: 1 });
   await service.act(selected.targetToken, screen.observation.observationId, { kind: "tap", target: { x: 159, y: 79 } });
   const before = await service.observe(selected.targetToken);
   adb.image = png();
   adb.xml = hierarchy();
+  adb.display = displayDiagnostics();
   await assert.rejects(service.act(selected.targetToken, before.observation.observationId, { kind: "key", key: "BACK" }), hasCode("STALE_OBSERVATION"));
   assert.equal(adb.inputs.length, 1);
 });
@@ -315,9 +317,84 @@ test("unavailable hierarchy is explicit, while image-only coordinate input remai
   const { selected, screen } = await ready(service);
   assert.equal(screen.observation.hierarchy.status, "unavailable");
   assert.equal(screen.observation.screenshot.status, "ok");
+  assert.deepEqual(screen.observation.displayState, { status: "ok", error: null });
+  assert.deepEqual(screen.observation.display, { width: 80, height: 160, rotation: 0 });
   assert.deepEqual(screen.observation.elements, []);
   assert.match(screen.observation.warnings.join(" "), /no semantic element/);
   await service.act(selected.targetToken, screen.observation.observationId, { kind: "tap", target: { x: 10, y: 10 } });
+  assert.equal(adb.inputs.length, 1);
+});
+
+test("hierarchy loss and recovery do not change independently verified rotation or block coordinate input", async (t) => {
+  const { adb, service } = harness(t);
+  const { selected, screen } = await ready(service);
+  adb.handler = (call) => {
+    if (call.args.includes("uiautomator")) throw new MobileUseError("ADB_FAILED", "Fixture hierarchy failure.", "Observe again.");
+    return undefined;
+  };
+  const first = await service.act(selected.targetToken, screen.observation.observationId, { kind: "tap", target: { x: 10, y: 10 } });
+  assert.equal(first.after?.observation.hierarchy.status, "unavailable");
+  assert.equal(first.after?.observation.display?.rotation, 0);
+  const imageOnly = await service.observe(selected.targetToken);
+  adb.handler = undefined;
+  const recovered = await service.act(selected.targetToken, imageOnly.observation.observationId, {
+    kind: "swipe", from: { x: 10, y: 100 }, to: { x: 10, y: 50 },
+  });
+  assert.equal(recovered.after?.observation.hierarchy.status, "ok");
+  assert.equal(recovered.after?.observation.display?.rotation, 0);
+  assert.equal(adb.inputs.length, 2);
+});
+
+test("a real 180-degree rotation blocks input even with identical pixels and no hierarchy", async (t) => {
+  const { adb, service } = harness(t);
+  adb.xml = "ERROR: null root node";
+  const { selected, screen } = await ready(service);
+  adb.display = displayDiagnostics(2);
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "tap", target: { x: 10, y: 10 },
+  }), hasCode("STALE_OBSERVATION"));
+  assert.equal(adb.inputs.length, 0);
+  const rotated = await service.observe(selected.targetToken);
+  assert.deepEqual(rotated.observation.display, { width: 80, height: 160, rotation: 2 });
+});
+
+test("unverified display state is explicit and blocks every action instead of treating unknown as zero", async (t) => {
+  const { adb, service } = harness(t);
+  adb.display = "Unrecognized display diagnostics";
+  const selected = await service.selectDevice(USB);
+  for (const action of [
+    { kind: "tap", target: { x: 10, y: 10 } },
+    { kind: "tap", target: { elementRef: "e1" } },
+    { kind: "swipe", from: { x: 10, y: 100 }, to: { x: 10, y: 50 } },
+    { kind: "key", key: "HOME" },
+    { kind: "launch_app", packageName: "example.poc" },
+    { kind: "type_text", text: "POC" },
+  ]) {
+    const screen = await service.observe(selected.targetToken);
+    assert.equal(screen.observation.display?.rotation, null);
+    assert.equal(screen.observation.displayState.status, "unavailable");
+    assert.equal(screen.observation.displayState.error?.code, "DISPLAY_STATE_UNAVAILABLE");
+    assert.match(screen.observation.warnings.join(" "), /input is blocked/);
+    await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, action), hasCode("DISPLAY_STATE_UNAVAILABLE"));
+  }
+  assert.equal(adb.inputs.length, 0);
+});
+
+test("display-state loss and recovery require fresh observations and never reuse cached rotation", async (t) => {
+  const { adb, service } = harness(t);
+  const { selected, screen } = await ready(service);
+  adb.display = "";
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "key", key: "HOME",
+  }), hasCode("DISPLAY_STATE_UNAVAILABLE"));
+  const unknown = await service.observe(selected.targetToken);
+  assert.equal(unknown.observation.display?.rotation, null);
+  adb.display = displayDiagnostics();
+  await assert.rejects(service.act(selected.targetToken, unknown.observation.observationId, {
+    kind: "key", key: "HOME",
+  }), hasCode("DISPLAY_STATE_UNAVAILABLE"));
+  const fresh = await service.observe(selected.targetToken);
+  await service.act(selected.targetToken, fresh.observation.observationId, { kind: "key", key: "HOME" });
   assert.equal(adb.inputs.length, 1);
 });
 

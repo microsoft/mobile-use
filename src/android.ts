@@ -16,6 +16,65 @@ export interface Screenshot {
   height: number;
 }
 
+export interface DisplayState {
+  width: number;
+  height: number;
+  rotation: number;
+}
+
+function diagnosticSection(lines: string[], heading: string, unavailable: () => never): string[] {
+  const headings = lines.flatMap((line, index) => line.trim() === heading ? [index] : []);
+  const start = headings.length === 1 ? headings[0] : undefined;
+  if (start === undefined) return unavailable();
+  const indentation = lines[start]?.search(/\S/) ?? -1;
+  const body: string[] = [];
+  for (const line of lines.slice(start + 1)) {
+    if (!line.trim()) continue;
+    if (line.search(/\S/) <= indentation) break;
+    body.push(line);
+  }
+  return body;
+}
+
+function displayStateError(cause?: string): MobileUseError {
+  return new MobileUseError(
+    "DISPLAY_STATE_UNAVAILABLE",
+    `The primary display's geometry and rotation could not be verified${cause ? ` (${cause})` : ""}.`,
+    "Observe again before input. Unrecognized or ambiguous display diagnostics cannot establish safe input geometry.",
+    true,
+  );
+}
+
+export function parseDisplayState(output: string): DisplayState {
+  if (Buffer.byteLength(output) > 1024 * 1024) throw displayStateError();
+  const unavailable = (): never => { throw displayStateError(); };
+  const lines = output.split(/\r?\n/);
+  const headings = lines.flatMap((line, index) => {
+    const match = /^\s*Display: mDisplayId=(0|[1-9]\d*)(?:\s|$)/.exec(line);
+    return match ? [{ index, id: match[1] }] : [];
+  });
+  const primary = headings.filter((heading) => heading.id === "0");
+  const start = primary.length === 1 ? primary[0]?.index : undefined;
+  if (start === undefined) throw displayStateError();
+  // DisplayRotation is a sibling of the display header in WindowManager diagnostics.
+  const end = headings.find((heading) => heading.index > start)?.index;
+  const display = lines.slice(start + 1, end);
+  const sizes = display.filter((line) => /^\s*init=/.test(line))
+    .flatMap((line) => [...line.matchAll(/\bcur=(\d+)x(\d+)(?=\s|$)/g)]);
+  const rotationSection = diagnosticSection(display, "DisplayRotation", unavailable);
+  const rotations = rotationSection.flatMap((line) => [...line.matchAll(/\bmRotation=(\S+)/g)]);
+  const rotation = new Map<string, number>([
+    ["0", 0], ["1", 1], ["2", 2], ["3", 3],
+    ["ROTATION_0", 0], ["ROTATION_90", 1], ["ROTATION_180", 2], ["ROTATION_270", 3],
+  ]).get(rotations.length === 1 ? rotations[0]?.[1] ?? "" : "");
+  if (sizes.length !== 1 || rotation === undefined) throw displayStateError();
+  const width = Number(sizes[0]?.[1]);
+  const height = Number(sizes[0]?.[2]);
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||
+    width < 1 || height < 1 || width > 8192 || height > 8192) throw displayStateError();
+  return { width, height, rotation };
+}
+
 export interface KeyguardState {
   showing: boolean;
   secure: boolean;
@@ -33,19 +92,6 @@ export function parseKeyguardState(output: string): KeyguardState {
     );
   };
   if (Buffer.byteLength(output) > 128 * 1024) unavailable();
-  const section = (lines: string[], name: string): string[] => {
-    const headings = lines.flatMap((line, index) => line.trim() === name ? [index] : []);
-    const start = headings.length === 1 ? headings[0] : undefined;
-    if (start === undefined) return unavailable();
-    const indentation = lines[start]?.search(/\S/) ?? -1;
-    const body: string[] = [];
-    for (const line of lines.slice(start + 1)) {
-      if (!line.trim()) continue;
-      if (line.search(/\S/) <= indentation) break;
-      body.push(line);
-    }
-    return body;
-  };
   const fields = (lines: string[]): Map<string, string> => {
     const indentation = lines.reduce((minimum, line) => Math.min(minimum, line.search(/\S/)), Infinity);
     const values = new Map<string, string>();
@@ -59,9 +105,9 @@ export function parseKeyguardState(output: string): KeyguardState {
     }
     return values;
   };
-  const delegateSection = section(output.split(/\r?\n/), "KeyguardServiceDelegate");
+  const delegateSection = diagnosticSection(output.split(/\r?\n/), "KeyguardServiceDelegate", unavailable);
   const delegate = fields(delegateSection);
-  const monitor = fields(section(delegateSection, "KeyguardStateMonitor"));
+  const monitor = fields(diagnosticSection(delegateSection, "KeyguardStateMonitor", unavailable));
   const flag = (values: Map<string, string>, name: string): boolean => {
     const value = values.get(name);
     if (value !== "true" && value !== "false") unavailable();
@@ -356,16 +402,28 @@ export class AndroidBackend {
     return parseHierarchy(output.toString("utf8"));
   }
 
-  async naturalSize(signal?: AbortSignal): Promise<{ width: number; height: number }> {
-    const output = (await this.command(["shell", "wm", "size"], signal ? { signal } : {})).toString("utf8");
-    const sizes = [...output.matchAll(/^(?:Physical|Override) size:\s*(\d+)x(\d+)\s*$/gm)];
-    const selected = sizes.at(-1);
-    const width = Number(selected?.[1]);
-    const height = Number(selected?.[2]);
-    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || width > 8192 || height > 8192) {
-      throw new MobileUseError("DEVICE_METADATA_UNAVAILABLE", "The primary display size could not be established.", "Observe again on the primary phone display.");
+  async displayState(signal?: AbortSignal): Promise<DisplayState> {
+    for (let attempt = 0; ; attempt++) {
+      checkCancelled(signal);
+      const deadline = AbortSignal.timeout(2000);
+      const readSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+      try {
+        const output = await this.command(["shell", "dumpsys", "window", "displays"], { signal: readSignal });
+        this.assertCurrent();
+        checkCancelled(signal);
+        checkCancelled(this.targetSignal);
+        if (deadline.aborted) throw displayStateError("ADB_TIMEOUT");
+        return parseDisplayState(output.toString("utf8"));
+      } catch (error) {
+        this.assertCurrent();
+        checkCancelled(signal);
+        checkCancelled(this.targetSignal);
+        const failure = publicError(error);
+        const timedOut = failure.code === "CANCELLED" && deadline.aborted;
+        if (!timedOut && !["DISPLAY_STATE_UNAVAILABLE", "ADB_FAILED", "ADB_TIMEOUT"].includes(failure.code)) throw failure;
+        if (attempt === 1) throw displayStateError(timedOut ? "ADB_TIMEOUT" : failure.code);
+      }
     }
-    return { width, height };
   }
 
   async tap(x: number, y: number, signal?: AbortSignal): Promise<void> {

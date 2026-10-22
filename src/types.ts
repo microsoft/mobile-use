@@ -61,6 +61,7 @@ export interface Observation {
   capturedAt: string;
   nonAtomic: true;
   display: { width: number; height: number; rotation: number | null } | null;
+  displayState: ReadStatus;
   screenshot: ReadStatus;
   hierarchy: ReadStatus;
   elements: ScreenElement[];

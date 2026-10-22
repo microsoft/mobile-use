@@ -70,7 +70,7 @@ export function createMobileUseServer(service: MobileUseService): McpServer {
   }, (input, ctx) => safely(async () => result(await service.selectDevice(input.endpointId, ctx.mcpReq.signal))));
 
   server.registerTool("mobile_observe", {
-    description: "Read the selected device's primary display PNG and native UI hierarchy, with independent status and fresh references. Only observe user-approved non-sensitive content; results can be sent to the configured model service.",
+    description: "Read the selected device's primary display PNG, native UI hierarchy, and independently verified display geometry, with separate screenshot/hierarchy/displayState statuses and fresh references. Unverified display state blocks input. Only observe user-approved non-sensitive content; results can be sent to the configured model service.",
     inputSchema: z.strictObject({ targetToken }),
     annotations: readOnly,
   }, (input, ctx) => safely(async () => observationResult(await service.observe(input.targetToken, ctx.mcpReq.signal))));

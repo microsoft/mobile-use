@@ -52,6 +52,17 @@ export function hierarchy(nodes = node(), rotation = 0): string {
   return `<?xml version="1.0"?><hierarchy rotation="${rotation}">${nodes}</hierarchy>\nUI hierarchy dumped to: /dev/tty\n`;
 }
 
+export function displayDiagnostics(rotation = 0, width = 80, height = 160): string {
+  return "WINDOW MANAGER DISPLAY CONTENTS (dumpsys window displays)\n" +
+    "  Display: mDisplayId=0 stacks=1\n" +
+    `    init=80x160 320dpi cur=${width}x${height} app=${width}x${height} rng=80x80-160x160\n` +
+    "  DisplayRotation\n" +
+    "    mCurrentAppOrientation=SCREEN_ORIENTATION_UNSPECIFIED\n" +
+    `    mRotation=${rotation} mDeferredRotationPauseCount=0\n` +
+    "    mUserRotationMode=USER_ROTATION_FREE mUserRotation=0\n" +
+    "  unrelated=true\n";
+}
+
 export function editField(overrides: Record<string, string> = {}): string {
   return node({
     class: "android.widget.EditText", text: "", "resource-id": "example.poc:id/text",
@@ -91,7 +102,7 @@ export class FakeAdb implements AdbConnection {
   inventory = INVENTORY;
   image = png();
   xml = hierarchy();
-  size = "Physical size: 80x160\n";
+  display = displayDiagnostics();
   keyguard = {
     showing: false, secure: false, simSecure: false, inputRestricted: false,
     screenState: "SCREEN_STATE_ON", userId: 0,
@@ -136,7 +147,7 @@ export class FakeAdb implements AdbConnection {
     if (command.startsWith("shell getprop ")) return Buffer.from(this.properties[args[4] ?? ""] ?? "");
     if (command === "exec-out screencap -p") return this.image;
     if (command === "shell -tt uiautomator dump /dev/tty") return Buffer.from(this.xml);
-    if (command === "shell wm size") return Buffer.from(this.size);
+    if (command === "shell dumpsys window displays") return Buffer.from(this.display);
     if (command === "shell dumpsys window policy") {
       return Buffer.from(keyguardPolicy({
         showing: String(this.keyguard.showing), mIsShowing: String(this.keyguard.showing),
