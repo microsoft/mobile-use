@@ -34,11 +34,30 @@ function payload(result: { content?: unknown }): Record<string, unknown> {
   return value;
 }
 
+function setupSteps(value: Record<string, unknown>, stage: string): string {
+  const setup = value.setup;
+  assert.ok(isRecord(setup));
+  assert.deepEqual(Object.keys(setup).sort(), ["stage", "steps"]);
+  assert.equal(setup.stage, stage);
+  assert.ok(Array.isArray(setup.steps) && setup.steps.length > 0);
+  assert.ok(setup.steps.every((step: unknown) => typeof step === "string" && step.length > 0));
+  return setup.steps.join("\n");
+}
+
 for (const mode of ["legacy", "auto"] as const) {
-  test(`six MCP operations expose typed wake and observe-act results over ${mode}`, async (t) => {
+  test(`seven MCP operations expose typed setup, wake, and observe-act results over ${mode}`, async (t) => {
     const { client } = await fixture(t, mode);
+    assert.match(client.getInstructions() ?? "", /On first use in each session, call mobile_doctor/);
+    assert.match(client.getInstructions() ?? "", /call mobile_list_devices before offering phone setup/);
+    assert.match(client.getInstructions() ?? "", /Never install software, enable debugging, pair devices, or accept trust automatically/);
     const tools = await client.listTools();
-    assert.equal(tools.tools.length, 6);
+    assert.equal(tools.tools.length, 7);
+    const startup = tools.tools.find((tool) => tool.name === "mobile_start_adb_server");
+    assert.equal(startup?.annotations?.readOnlyHint, false);
+    assert.equal(startup?.annotations?.idempotentHint, false);
+    assert.deepEqual(startup?.inputSchema.properties, {});
+    assert.match(startup?.description ?? "", /user explicitly approves/);
+    assert.match(client.getInstructions() ?? "", /ask for explicit permission to use mobile_start_adb_server/);
     const act = tools.tools.find((tool) => tool.name === "mobile_act");
     assert.equal(act?.annotations?.destructiveHint, true);
     assert.equal(act?.annotations?.idempotentHint, false);
@@ -49,8 +68,16 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.deepEqual(wake?.inputSchema.required, ["targetToken"]);
     const doctor = payload(await client.callTool({ name: "mobile_doctor", arguments: {} }));
     assert.equal(doctor.status, "ready");
+    assert.equal(doctor.scope, "host");
+    assert.equal(doctor.adbExecutable, "C:\\fixture-only\\adb.exe");
+    const phoneGuide = setupSteps(doctor, "phone");
+    assert.match(phoneGuide, /Build number/);
+    assert.match(phoneGuide, /seven times/);
+    assert.match(phoneGuide, /USB debugging/);
+    assert.match(phoneGuide, /https:\/\/developer\.android\.com\/studio\/debug\/dev-options/);
     const list = payload(await client.callTool({ name: "mobile_list_devices", arguments: {} }));
     assert.ok(Array.isArray(list.devices) && list.devices.length === 2);
+    assert.match(setupSteps(list, "select-device"), /Ask which exact endpoint/);
     const unselected = await client.callTool({ name: "mobile_observe", arguments: { targetToken: randomUUID() } });
     assert.equal(unselected.isError, true);
     const unselectedError = payload(unselected).error;
@@ -89,10 +116,122 @@ for (const mode of ["legacy", "auto"] as const) {
     });
     assert.equal(stale.isError, true);
     const failure = payload(stale).error;
+    assert.equal(payload(stale).setup, undefined);
     assert.ok(isRecord(failure));
     assert.equal(failure.code, "STALE_OBSERVATION");
     assert.equal(failure.actionMayHaveRun, false);
   });
+
+  for (const scenario of ["no-devices", "unauthorized", "offline", "unsupported"] as const) {
+    test(`first-use ${scenario} inventory returns actionable guidance without selection over ${mode}`, async (t) => {
+      const { client } = await fixture(t, mode, scenario);
+      const doctor = payload(await client.callTool({ name: "mobile_doctor", arguments: {} }));
+      assert.equal(doctor.status, "ready");
+      assert.equal(doctor.scope, "host");
+      const result = await client.callTool({ name: "mobile_list_devices", arguments: {} });
+      assert.equal(result.isError, undefined);
+      assert.ok(Array.isArray(result.content) && result.content.length === 1);
+      const list = payload(result);
+      assert.ok(Array.isArray(list.devices));
+      assert.equal(list.targetToken, undefined);
+      if (scenario === "no-devices") {
+        assert.deepEqual(list.devices, []);
+        const steps = setupSteps(list, "phone");
+        assert.match(steps, /data-capable cable/);
+        assert.match(steps, /empty inventory does not prove Developer options\/debugging is disabled/);
+        assert.match(steps, /Developer options alone is not enough/);
+      } else {
+        assert.equal(list.devices.length, 1);
+        const endpoint: unknown = list.devices[0];
+        assert.ok(isRecord(endpoint));
+        assert.equal(endpoint.selectable, false);
+        assert.equal(endpoint.state, scenario === "unsupported" ? "device" : scenario);
+        if (scenario === "unauthorized") {
+          assert.match(setupSteps(list, "authorization"), /intended computer's RSA/);
+        } else {
+          assert.match(setupSteps(list, "connection"), /not ready/);
+        }
+      }
+    });
+  }
+
+  for (const scenario of ["missing-adb", "old-adb", "server-unavailable", "discovery-failed"] as const) {
+    test(`first-use ${scenario} preserves an explicit error over ${mode}`, async (t) => {
+      const fixtureServer = await fixture(t, mode, scenario);
+      const isHostCheck = scenario === "missing-adb" || scenario === "old-adb";
+      const result = await fixtureServer.client.callTool({
+        name: isHostCheck ? "mobile_doctor" : "mobile_list_devices", arguments: {},
+      });
+      assert.equal(result.isError, true);
+      assert.ok(Array.isArray(result.content) && result.content.length === 1);
+      const failure = payload(result);
+      assert.equal(failure.devices, undefined, "failed discovery is never an empty inventory");
+      assert.equal(failure.status, undefined, "failed setup must not look ready");
+      assert.ok(isRecord(failure.error));
+      const expectedCode = scenario === "missing-adb" ? "ADB_NOT_FOUND" : scenario === "old-adb" ? "ADB_VERSION_UNSUPPORTED"
+        : scenario === "server-unavailable" ? "ADB_SERVER_UNAVAILABLE" : "INTERNAL_ERROR";
+      assert.equal(failure.error.code, expectedCode);
+      assert.equal(failure.error.actionMayHaveRun, false);
+      if (isHostCheck) {
+        const steps = setupSteps(failure, "platform-tools");
+        assert.match(steps, /https:\/\/developer\.android\.com\/tools\/releases\/platform-tools/);
+        assert.match(steps, /%LOCALAPPDATA%\\Android\\Sdk\\platform-tools\\adb\.exe/);
+        assert.match(steps, /Fully quit and reopen Copilot/);
+      } else if (scenario === "server-unavailable") {
+        const steps = setupSteps(failure, "adb-server");
+        assert.match(steps, /Ask for explicit permission/);
+        assert.match(steps, /mobile_start_adb_server/);
+        assert.match(steps, /does not establish whether a phone is connected/);
+        assert.match(steps, /retries read-only discovery/);
+      } else {
+        assert.equal(failure.setup, undefined, "unknown failures do not invent a setup diagnosis");
+      }
+      assert.match(fixtureServer.stderr, new RegExp(`mobile-use: ${expectedCode}`));
+      assert.doesNotMatch(JSON.stringify(result) + fixtureServer.stderr, /private fixture-only discovery details/);
+    });
+  }
+
+  for (const scenario of ["server-unavailable", "server-reused", "server-start-empty"] as const) {
+    test(`approved startup returns verified inventory without device selection (${scenario}, ${mode})`, async (t) => {
+      const { client } = await fixture(t, mode, scenario);
+      if (scenario === "server-unavailable") {
+        const before = await client.callTool({ name: "mobile_list_devices", arguments: {} });
+        assert.equal(before.isError, true);
+        assert.match(setupSteps(payload(before), "adb-server"), /permission/);
+      }
+      const result = await client.callTool({ name: "mobile_start_adb_server", arguments: {} });
+      assert.equal(result.isError, undefined);
+      assert.ok(Array.isArray(result.content) && result.content.length === 1);
+      const started = payload(result);
+      assert.equal(started.status, "ready");
+      assert.equal(started.serverAddress, "127.0.0.1:5037");
+      assert.equal(started.startupAttempted, scenario !== "server-reused");
+      assert.equal(started.targetToken, undefined);
+      assert.ok(Array.isArray(started.devices));
+      assert.equal(started.devices.length, scenario === "server-start-empty" ? 0 : 2);
+      setupSteps(started, scenario === "server-start-empty" ? "phone" : "select-device");
+      const unselected = await client.callTool({ name: "mobile_observe", arguments: { targetToken: randomUUID() } });
+      assert.equal(unselected.isError, true);
+      const invalid = await client.callTool({ name: "mobile_start_adb_server", arguments: { host: "192.0.2.20" } });
+      assert.equal(invalid.isError, true, "the startup tool never accepts a remote endpoint");
+    });
+  }
+
+  for (const scenario of ["server-conflict", "server-start-uncertain"] as const) {
+    test(`startup conflicts/uncertainty remain errors with no automatic retry guidance (${scenario}, ${mode})`, async (t) => {
+      const { client } = await fixture(t, mode, scenario);
+      const result = await client.callTool({ name: "mobile_start_adb_server", arguments: {} });
+      assert.equal(result.isError, true);
+      const failure = payload(result);
+      assert.equal(failure.status, undefined);
+      assert.equal(failure.devices, undefined);
+      assert.ok(isRecord(failure.error));
+      assert.equal(failure.error.code, scenario === "server-conflict" ? "ADB_SERVER_CONFLICT" : "ADB_SERVER_START_FAILED");
+      assert.equal(failure.error.actionMayHaveRun, scenario === "server-start-uncertain");
+      assert.equal(failure.error.retryable, false);
+      assert.match(setupSteps(failure, "adb-server"), /Stop automatic startup attempts/);
+    });
+  }
 }
 
 test("MCP wake reports manual authentication as an error without images or credential inputs", async (t) => {

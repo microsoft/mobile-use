@@ -4,7 +4,7 @@ import { parseDeviceList } from "../src/adb.js";
 import type { AdbConnection, MonitorFactory, RunOptions } from "../src/adb.js";
 import { checkCancelled, MobileUseError } from "../src/errors.js";
 import type { ErrorCode } from "../src/errors.js";
-import type { DeviceEndpoint } from "../src/types.js";
+import type { AdbServerResult, DeviceEndpoint } from "../src/types.js";
 
 export const USB = "POC_PHONE";
 export const WIFI = "192.0.2.10:37891";
@@ -103,9 +103,23 @@ export class FakeAdb implements AdbConnection {
   };
   calls: AdbCall[] = [];
   stopped = false;
+  startServerCalls = 0;
+  startupAttempted = true;
+  startServerHandler: ((signal?: AbortSignal) => Promise<AdbServerResult>) | undefined;
   handler: ((call: AdbCall) => Promise<Buffer | undefined> | Buffer | undefined) | undefined;
 
   executable(): string { return "C:\\fixture-only\\adb.exe"; }
+
+  async startServer(signal?: AbortSignal): Promise<AdbServerResult> {
+    if (this.stopped) throw new MobileUseError("SERVER_STOPPED", "Fixture stopped.", "Start a new fixture.");
+    checkCancelled(signal);
+    this.startServerCalls++;
+    if (this.startServerHandler) return this.startServerHandler(signal);
+    return {
+      status: "ready", serverAddress: "127.0.0.1:5037", startupAttempted: this.startupAttempted,
+      devices: parseDeviceList(this.inventory),
+    };
+  }
 
   async run(args: readonly string[], options: RunOptions = {}): Promise<Buffer> {
     if (this.stopped) throw new MobileUseError("SERVER_STOPPED", "Fixture stopped.", "Start a new fixture.");

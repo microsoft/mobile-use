@@ -7,6 +7,7 @@ import test from "node:test";
 import type { TestContext } from "node:test";
 import { AdbClient, AdbTrackParser, createTransportMonitor, executeCommand, parseDeviceList, resolveAdbExecutable } from "../src/adb.js";
 import type { CommandOptions, TransportMonitor } from "../src/adb.js";
+import { LocalAdbServer } from "../src/adb-server.js";
 import { MobileUseError } from "../src/errors.js";
 import type { DeviceEndpoint } from "../src/types.js";
 import { hasCode, INVENTORY, USB_LINE } from "./helpers.js";
@@ -154,6 +155,7 @@ test("remote or non-default ADB server overrides fail before starting a command"
       assert.fail("unsupported configuration must not run adb");
     }, "win32");
     await assert.rejects(client.run(["devices", "-l"]), hasCode("ADB_CONFIG_UNSUPPORTED"));
+    await assert.rejects(client.startServer(), hasCode("ADB_CONFIG_UNSUPPORTED"));
     client.stop();
   }
 });
@@ -169,6 +171,107 @@ test("bounded process execution is binary-safe and sanitizes failures", async ()
     return true;
   });
   await assert.rejects(executeCommand(process.execPath, ["-e", "process.stdout.write(Buffer.alloc(17*1024*1024))"], { env }), hasCode("ADB_OUTPUT_LIMIT"));
+});
+
+test("a missing local ADB server is not misreported as a lost phone transport", async () => {
+  for (const details of [
+    "adb.exe: cannot connect to daemon at tcp:127.0.0.1:5037: cannot connect to 127.0.0.1:5037: No connection could be made (10061)",
+    "* failed to start daemon *",
+    "adb: failed to check server version: cannot connect to server",
+    "ADB server didn't ACK",
+  ]) {
+    await assert.rejects(executeCommand(process.execPath, ["-e", `process.stderr.write(${JSON.stringify(details)});process.exit(1)`], {
+      env: { ...process.env },
+    }), (error: unknown) => {
+      hasCode("ADB_SERVER_UNAVAILABLE")(error);
+      assert.ok(error instanceof MobileUseError);
+      assert.match(error.remediation, /approval to use mobile_start_adb_server/);
+      assert.equal(error.actionMayHaveRun, false);
+      assert.equal(error.retryable, true);
+      assert.doesNotMatch(JSON.stringify(error), /10061|didn't ACK/);
+      return true;
+    });
+  }
+  await assert.rejects(executeCommand(process.execPath, ["-e", "process.stderr.write('cannot connect to 192.0.2.1:37001: connection refused');process.exit(1)"], {
+    env: { ...process.env }, mutating: true,
+  }), (error: unknown) => {
+    hasCode("TRANSPORT_LOST")(error);
+    assert.ok(error instanceof MobileUseError);
+    assert.equal(error.actionMayHaveRun, true);
+    assert.equal(error.retryable, false);
+    return true;
+  });
+});
+
+test("approved startup pins the executable, sanitizes the daemon environment, and parses raw inventory", async (t) => {
+  const { executable } = await executableFixture(t);
+  const server = new LocalAdbServer();
+  let startupCalls = 0;
+  let startupSignal: AbortSignal | undefined;
+  server.ensureRunning = async (exe, env, version, signal) => {
+    startupCalls++;
+    startupSignal = signal;
+    assert.equal(exe, executable);
+    assert.equal(version, 41);
+    assert.equal(env.PRIVATE_TEST_SECRET, undefined);
+    assert.equal(env.ANDROID_SERIAL, undefined);
+    assert.equal(env.ADB_SERVER_SOCKET, undefined);
+    assert.equal(env.ADB_VENDOR_KEYS, undefined);
+    return { startupAttempted: true, inventory: Buffer.from(`${USB_LINE}\n`) };
+  };
+  const calls: string[][] = [];
+  const client = new AdbClient({
+    MOBILE_USE_ADB_PATH: executable, PRIVATE_TEST_SECRET: "do not forward", ANDROID_SERIAL: "unselected",
+    ADB_VENDOR_KEYS: "private fixture key path",
+  }, async (_exe, args) => {
+    calls.push([...args]);
+    return Buffer.from("Android Debug Bridge version 1.0.41\nVersion 36.0.0-12345\n");
+  }, "win32", server);
+  t.after(() => client.stop());
+  const result = await client.startServer();
+  assert.equal(result.status, "ready");
+  assert.equal(result.serverAddress, "127.0.0.1:5037");
+  assert.equal(result.startupAttempted, true);
+  assert.equal(result.devices[0]?.endpointId, "POC_PHONE");
+  assert.equal(startupCalls, 1);
+  assert.deepEqual(calls, [["-H", "127.0.0.1", "-P", "5037", "version"]], "no ADB client discovery/start-server/kill-server");
+  assert.ok(startupSignal);
+  client.stop();
+  assert.equal(startupSignal.aborted, true);
+  await assert.rejects(client.startServer(), hasCode("SERVER_STOPPED"));
+  assert.equal(startupCalls, 1);
+});
+
+test("ordinary inventory uses read-only protocol discovery and never launches an ADB client", async (t) => {
+  const { executable } = await executableFixture(t);
+  const server = new LocalAdbServer();
+  let queries = 0;
+  server.inventory = async (signal) => {
+    assert.ok(signal);
+    queries++;
+    return Buffer.from(`${USB_LINE}\n`);
+  };
+  const client = new AdbClient({ MOBILE_USE_ADB_PATH: executable }, async () =>
+    assert.fail("inventory must not invoke a client with automatic daemon startup/replacement"), "win32", server);
+  t.after(() => client.stop());
+  assert.equal((await client.run(["devices", "-l"])).toString(), `List of devices attached\n${USB_LINE}\n`);
+  assert.equal(queries, 1);
+});
+
+test("malformed post-start inventory is an error with startup uncertainty, not an empty list", async (t) => {
+  const { executable } = await executableFixture(t);
+  const server = new LocalAdbServer();
+  server.ensureRunning = async () => ({ startupAttempted: true, inventory: Buffer.from("malformed\n") });
+  const client = new AdbClient({ MOBILE_USE_ADB_PATH: executable }, async () =>
+    Buffer.from("Android Debug Bridge version 1.0.41\nVersion 36.0.0\n"), "win32", server);
+  t.after(() => client.stop());
+  await assert.rejects(client.startServer(), (error: unknown) => {
+    hasCode("INVALID_DEVICE_LIST")(error);
+    assert.ok(error instanceof MobileUseError);
+    assert.equal(error.actionMayHaveRun, true);
+    assert.equal(error.retryable, false);
+    return true;
+  });
 });
 
 test("cancelling a spawned mutating command reports uncertainty and stops that child only", async () => {

@@ -37,6 +37,11 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   });
   const skill = await readFile(path.join(artifact, "skills", "mobile-use", "SKILL.md"), "utf8");
   assert.match(skill, /^---\r?\nname: mobile-use\r?\ndescription: /);
+  assert.match(skill, /## First-use setup \(required\)/);
+  assert.match(skill, /Only \*\*Android SDK Platform-Tools\*\* is required/);
+  assert.match(skill, /Developer options/);
+  assert.match(skill, /permission to call \*\*`mobile_start_adb_server`\*\*/);
+  assert.match(skill, /Doctor and inventory never invoke startup/);
   const notices = await readFile(path.join(artifact, "THIRD_PARTY_NOTICES"), "utf8");
   assert.match(notices, /@modelcontextprotocol\/server@2\.3\.1/);
   assert.match(notices, /zod@4\.6\.7/);
@@ -91,17 +96,24 @@ for (const mode of ["legacy", "auto"]) {
     );
     await client.connect(transport);
     assert.equal(client.getServerVersion()?.name, "mobile-use");
+    assert.match(client.getInstructions() ?? "", /On first use in each session, call mobile_doctor/);
     if (mode === "auto") assert.ok(client.getDiscoverResult(), "modern discover negotiation must actually succeed");
     if (mode === "legacy") await client.ping();
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
-      "mobile_act", "mobile_doctor", "mobile_list_devices", "mobile_observe", "mobile_select_device", "mobile_wake",
+      "mobile_act", "mobile_doctor", "mobile_list_devices", "mobile_observe", "mobile_select_device", "mobile_start_adb_server", "mobile_wake",
     ]);
     const doctor = await client.callTool({ name: "mobile_doctor", arguments: {} });
     assert.equal(doctor.isError, true);
     const text = doctor.content.find((block) => block.type === "text")?.text;
-    assert.equal(JSON.parse(text).error.code, "ADB_NOT_FOUND");
-    assert.match(stderr, /^mobile-use: ADB_NOT_FOUND\r?\n$/);
+    const failure = JSON.parse(text);
+    assert.equal(failure.error.code, "ADB_NOT_FOUND");
+    assert.equal(failure.setup.stage, "platform-tools");
+    assert.match(failure.setup.steps.join("\n"), /https:\/\/developer\.android\.com\/tools\/releases\/platform-tools/);
+    const startup = await client.callTool({ name: "mobile_start_adb_server", arguments: {} });
+    assert.equal(startup.isError, true);
+    assert.equal(JSON.parse(startup.content.find((block) => block.type === "text")?.text).error.code, "ADB_NOT_FOUND");
+    assert.match(stderr, /^(?:mobile-use: ADB_NOT_FOUND\r?\n){2}$/);
   });
 }
 

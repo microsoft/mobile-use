@@ -1,17 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
-import { parseDeviceList, startTransportMonitor } from "./adb.js";
+import { parseAdbVersion, parseDeviceList, startTransportMonitor } from "./adb.js";
 import type { AdbConnection, MonitorFactory, TransportMonitor } from "./adb.js";
 import { AndroidBackend, validateText } from "./android.js";
 import type { Hierarchy, Screenshot } from "./android.js";
 import { checkCancelled, MobileUseError, publicError } from "./errors.js";
 import { actionSchema } from "./types.js";
 import type {
-  ActionResult, DeviceEndpoint, DeviceIdentity, MobileAction, Observation,
+  ActionResult, AdbServerResult, DeviceEndpoint, DeviceIdentity, MobileAction, Observation,
   ObservedScreen, ReadStatus, ScreenElement, SelectedTarget, WakeResult,
 } from "./types.js";
 
 const OBSERVATION_MAX_AGE_MS = 30_000;
-const invalidatingCodes = new Set(["DEVICE_UNAUTHORIZED", "DEVICE_OFFLINE", "TRANSPORT_LOST", "ADB_SERVER_UNAVAILABLE"]);
+const invalidatingCodes = new Set([
+  "DEVICE_UNAUTHORIZED", "DEVICE_OFFLINE", "TRANSPORT_LOST", "ADB_SERVER_UNAVAILABLE",
+  "ADB_SERVER_CONFLICT", "ADB_SERVER_START_FAILED",
+]);
 
 interface TargetState {
   token: string;
@@ -133,11 +136,24 @@ export class MobileUseService {
     return this.serialize(async () => {
       const adbExecutable = this.adb.executable();
       const output = (await this.adb.run(["version"], signal ? { signal } : {})).toString("utf8");
-      const match = /^Version (\d+)\.(\d+)\.(\d+)(?:-\S+)?\s*$/m.exec(output);
-      if (!match?.[1] || !match[2] || !match[3] || Number(match[1]) < 30) {
-        throw new MobileUseError("ADB_VERSION_UNSUPPORTED", "Modern Android Platform-Tools could not be confirmed.", "Use current official Platform-Tools supporting paired Wireless debugging and transport IDs.");
+      const { platformToolsVersion } = parseAdbVersion(output);
+      return { status: "ready", adbExecutable, platformToolsVersion };
+    }, signal);
+  }
+
+  startAdbServer(signal?: AbortSignal): Promise<AdbServerResult> {
+    return this.serialize(async () => {
+      let result: AdbServerResult;
+      try {
+        result = await this.adb.startServer(signal);
+      } catch (error) {
+        if (publicError(error).actionMayHaveRun) this.invalidate(true);
+        throw error;
       }
-      return { status: "ready", adbExecutable, platformToolsVersion: `${match[1]}.${match[2]}.${match[3]}` };
+      if (result.startupAttempted || (this.selected && !sameEndpoint(result.devices, this.selected.endpoint))) {
+        this.invalidate(true);
+      }
+      return result;
     }, signal);
   }
 

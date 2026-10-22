@@ -50,7 +50,7 @@ copilot plugin install (Resolve-Path .\dist\mobile-use).Path
 This is the documented local installation route, not a claim that App loading
 has already passed. Use the absolute path shown above: some Windows CLI versions
 do not recognize a relative `.\` plugin source. Confirm the plugin, skill, and
-six tools appear in your actual Copilot App before using hardware. If the App
+seven tools appear in your actual Copilot App before using hardware. If the App
 cannot load this format,
 record that incompatibility rather than substituting manual MCP registration.
 Rebuild and use Copilot's plugin update/reinstall flow when changing the local
@@ -62,15 +62,94 @@ and built-in Copilot distribution are outside this POC.
 
 ## User-performed device setup
 
-The plugin never installs Platform-Tools/drivers, enables debugging, pairs or
-connects a device, changes a keyboard, or installs DeviceKit.
+The plugin guides first-time users through missing prerequisites instead of
+assuming they are already configured. Ask Copilot to **"help me set up
+mobile-use"** or start a phone task: the skill and MCP startup instructions
+begin with `mobile_doctor`, then `mobile_list_devices`, and explain the next
+missing step one at a time. Already working connections skip unnecessary setup.
+
+`mobile_doctor` returning `status: ready, scope: host` means only that the
+installed Platform-Tools passed the version check. It does **not** prove that
+Developer options/debugging are enabled, a phone is connected/authorized, or
+device qualification passed. Doctor, inventory, and supported setup errors
+include `setup: { stage, steps }` guidance; errors remain errors, not empty
+device lists. Server startup uses a separate, explicitly approved operation;
+doctor and ordinary inventory never start a server automatically.
+
+The user performs installation, settings changes, host authorization, and
+pairing/connection. The plugin can start a missing local ADB server only after
+specific approval. It never installs Platform-Tools/
+drivers, enables debugging, pairs/connects a device, changes a keyboard, or
+installs DeviceKit. Setup does not grant permission for observation or control.
+
+### Android Platform-Tools on Windows
+
+Only **Android SDK Platform-Tools** is required, not Android Studio or the full
+SDK. If `mobile_doctor` reports missing/old ADB:
+
+1. Download the current Windows package from the official
+   [Platform-Tools page](https://developer.android.com/tools/releases/platform-tools)
+   and review Google's download terms yourself.
+2. Extract its `platform-tools` directory under `%LOCALAPPDATA%\Android\Sdk`,
+   yielding `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe`. The plugin
+   discovers this location without a PATH change. For another location, add
+   its directory to PATH or set `MOBILE_USE_ADB_PATH` to the absolute `adb.exe`
+   path. If an explicit override points to a missing/old executable, correct it.
+3. Fully quit/reopen Copilot after changing its environment, then rerun
+   `mobile_doctor`. Node must also meet the minimum version above for the MCP
+   server to start at all.
+
+If discovery reports `ADB_SERVER_UNAVAILABLE`, Copilot asks for permission to
+call **`mobile_start_adb_server`**. After approval, the tool reuses a compatible
+server at `127.0.0.1:5037`, or starts one if the port refuses connections. It
+verifies the ADB protocol/version and retries read-only inventory before
+returning device setup/selection guidance. It never selects or controls a
+phone, accepts a debugging prompt, or silently starts from doctor/discovery.
+An unavailable host server says nothing about the phone's connection state.
+
+The shared server may remain running after the plugin exits, and first startup
+may initialize standard local ADB host keys. No key material is returned.
+The startup path uses `adb -L tcp:localhost:5037 server nodaemon` in a detached
+process. ADB requires `localhost` rather than a numeric IPv4 address in this
+listener specification; protocol probes still connect to `127.0.0.1:5037`.
+It does not use the client's `start-server` command, because that command can
+automatically kill/restart an incompatible daemon. Readiness and inventory
+checks and ordinary inventory use read-only ADB protocol requests, so even a
+concurrent startup cannot cause these paths to replace another server.
+The initial protocol probe is bounded to one second, post-launch readiness to
+five seconds, and inventory to five seconds. Only one launch is attempted.
+
+`ADB_SERVER_CONFLICT` reports an occupied, unresponsive, malformed, or
+incompatible listener; `ADB_SERVER_START_FAILED` reports unverified startup.
+Neither triggers a restart or automatic second startup attempt. After a
+post-launch error/cancellation, `actionMayHaveRun: true` means the daemon may
+already be running; verify its state before retrying. A startup attempt clears
+old device tokens/observations, while reuse preserves a still-current target.
+Do not bypass local policy or change firewall settings to recover.
 
 ### USB
 
-Unlock the phone, enable Developer options and USB debugging, attach the
-data-capable cable, and accept the intended computer's debugging key. In your
-own terminal, inspect `adb devices -l`. An `unauthorized` or `offline` entry is
-not ready for selection.
+1. On the phone, open **Settings > About phone** and tap **Build number** seven
+   times to enable **Developer options**. Paths vary: Samsung often uses
+   **Software information > Build number**, while some Xiaomi/MIUI versions
+   use the **MIUI version** entry. Ask Copilot for model-specific guidance if
+   needed. Enter any device PIN/password only on the phone, not in chat.
+2. In **Developer options**, enable **USB debugging**. Enabling Developer
+   options alone is not enough. Do not enable OEM unlocking or unrelated
+   security options. See [Android's official instructions](https://developer.android.com/studio/debug/dev-options).
+3. Unlock the phone, attach a data-capable USB cable, and accept only the
+   intended computer's RSA-debugging prompt. Debugging trust grants that host
+   device access, so approve only a trusted computer.
+4. Ask Copilot to rerun `mobile_list_devices`. An `unauthorized` entry needs
+   on-phone approval; `offline` needs the chosen connection restored. If the
+   inventory is empty, check cable/port and the manufacturer's
+   [Windows USB-driver guidance](https://developer.android.com/studio/run/oem-usb);
+   it does not necessarily mean Developer options is disabled. Do not bypass
+   managed-device restrictions.
+
+Once an online/selectable endpoint appears, choose its exact endpoint ID.
+`mobile_select_device` then verifies supported physical hardware before any
+observation/control; neither doctor nor discovery silently selects a phone.
 
 ### Modern paired wireless
 
@@ -105,8 +184,9 @@ kill/restart the shared ADB server or alter global ADB/network settings.
 
 | Tool | Contract |
 | --- | --- |
-| `mobile_doctor` | Resolve ADB/version prerequisites. Does not enumerate or control devices. |
-| `mobile_list_devices` | Show endpoint IDs, transport IDs/kinds, and all states, including unauthorized/offline/unsupported. Discovery failure is not an empty list. |
+| `mobile_doctor` | First-use host ADB/version check with setup guidance. `ready` is host-only; does not enumerate or control devices. |
+| `mobile_start_adb_server` | After explicit approval, reuse/start only the default local server, verify readiness, and return fresh inventory/setup steps. Never kills/restarts, selects, or controls a device. |
+| `mobile_list_devices` | Show endpoint IDs, transport IDs/kinds, all states, and next setup/selection steps. Discovery failure is not an empty list. |
 | `mobile_select_device` | Bind exactly the endpoint the user chose; qualify Android/physical-device and wireless evidence; return a session target token. |
 | `mobile_wake` | With explicit permission and a target token, wake the display and dismiss only an unsecured lock screen. No observation or screen capture; secure/unknown lock states require manual unlocking. |
 | `mobile_observe` | Require that token; return a fresh observation ID, display geometry, hierarchy/status/warnings, and a separate PNG image block when usable. |
@@ -194,14 +274,15 @@ PNG images are limited to 5 MiB, 8192 pixels per dimension, 64 MiB decoded data,
 and non-interlaced 8-bit RGB/RGBA. XML is limited to 2 MiB, 2000 traversed nodes,
 depth 64, and 500 retained elements; normalized element data is capped at
 512 KiB. Successful observation results stay below an 8 MiB serialized budget.
-Inventory is limited to 256 endpoints/512 KiB and identity properties to
+Inventory is limited to 256 endpoints/512 KiB, with at most 65535 payload bytes
+per ADB protocol inventory response, and identity properties to
 512 bytes each. Oversized/malformed data is reported explicitly, not silently
 truncated. Wireless qualification may reject an OEM whose TLS evidence cannot
 be read.
 
 One server serializes its actions, but there is no cross-process device lock:
-use one controller per phone. Disabling/unloading the plugin stops this
-server's children/monitor and clears selection, not the shared ADB server or
+use one controller per phone. Disabling/unloading the plugin stops its bounded
+command helpers/monitor and clears selection, not the shared ADB server or
 the phone's debugging trust.
 
 Installation, debugging trust, and tool annotations are **not** blanket

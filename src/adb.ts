@@ -3,8 +3,9 @@ import { existsSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
 import type { Socket } from "node:net";
 import path from "node:path";
+import { LocalAdbServer, localAdbAddress, serverStartupError } from "./adb-server.js";
 import { checkCancelled, MobileUseError } from "./errors.js";
-import type { DeviceEndpoint, TransportKind } from "./types.js";
+import type { AdbServerResult, DeviceEndpoint, TransportKind } from "./types.js";
 
 export interface RunOptions {
   signal?: AbortSignal;
@@ -14,6 +15,7 @@ export interface RunOptions {
 export interface AdbConnection {
   executable(): string;
   run(args: readonly string[], options?: RunOptions): Promise<Buffer>;
+  startServer(signal?: AbortSignal): Promise<AdbServerResult>;
   stop(): void;
 }
 
@@ -26,6 +28,20 @@ export type CommandRunner = (
   args: readonly string[],
   options: CommandOptions,
 ) => Promise<Buffer>;
+
+export function parseAdbVersion(output: string): { platformToolsVersion: string; serverVersion: number } {
+  const tools = /^Version (\d+)\.(\d+)\.(\d+)(?:-\S+)?\s*$/m.exec(output);
+  const protocol = /^Android Debug Bridge version 1\.0\.(\d+)\s*$/m.exec(output);
+  const serverVersion = Number(protocol?.[1]);
+  if (!tools?.[1] || !tools[2] || !tools[3] || Number(tools[1]) < 30 ||
+    !Number.isSafeInteger(serverVersion) || serverVersion < 1 || serverVersion > 0xffff) {
+    throw new MobileUseError(
+      "ADB_VERSION_UNSUPPORTED", "Modern Android Platform-Tools and its server protocol version could not be confirmed.",
+      "Use current official Platform-Tools supporting paired Wireless debugging and transport IDs.",
+    );
+  }
+  return { platformToolsVersion: `${tools[1]}.${tools[2]}.${tools[3]}`, serverVersion };
+}
 
 export function resolveAdbExecutable(
   env: NodeJS.ProcessEnv = process.env,
@@ -115,6 +131,10 @@ export const executeCommand: CommandRunner = (executable, args, options) => new 
     } else if (error.killed) {
       code = "ADB_TIMEOUT";
       message = "The ADB operation exceeded its command deadline.";
+    } else if (/cannot connect to (?:daemon|(?:adb )?server)|cannot start server|failed to start (?:adb )?(?:daemon|server)|(?:daemon|server) (?:didn't ack|failed to start)/.test(details)) {
+      code = "ADB_SERVER_UNAVAILABLE";
+      message = "The local ADB server is unavailable.";
+      remediation = "Ask for approval to use mobile_start_adb_server, then retry discovery. Do not kill/restart a shared server or infer the phone's connection state from this failure.";
     } else if (details.includes("unauthorized")) {
       code = "DEVICE_UNAUTHORIZED";
       message = "The selected device has not authorized this host.";
@@ -140,10 +160,25 @@ export class AdbClient implements AdbConnection {
     private readonly env: NodeJS.ProcessEnv = process.env,
     private readonly runner: CommandRunner = executeCommand,
     private readonly platform: NodeJS.Platform = process.platform,
+    private readonly server: LocalAdbServer = new LocalAdbServer(),
   ) {}
 
   executable(): string {
     return resolveAdbExecutable(this.env, this.platform);
+  }
+
+  async startServer(signal?: AbortSignal): Promise<AdbServerResult> {
+    const version = parseAdbVersion((await this.run(["version"], signal ? { signal } : {})).toString("utf8"));
+    const combined = signal ? AbortSignal.any([this.shutdown.signal, signal]) : this.shutdown.signal;
+    const started = await this.server.ensureRunning(this.executable(), adbEnvironment(this.env), version.serverVersion, combined);
+    try {
+      return {
+        status: "ready", serverAddress: localAdbAddress, startupAttempted: started.startupAttempted,
+        devices: parseDeviceList(started.inventory.toString("utf8"), false),
+      };
+    } catch (error) {
+      throw serverStartupError(error, started.startupAttempted);
+    }
   }
 
   async run(args: readonly string[], options: RunOptions = {}): Promise<Buffer> {
@@ -168,7 +203,12 @@ export class AdbClient implements AdbConnection {
       ? AbortSignal.any([this.shutdown.signal, options.signal])
       : this.shutdown.signal;
     checkCancelled(signal);
-    return this.runner(this.executable(), ["-H", "127.0.0.1", "-P", "5037", ...args], {
+    const executable = this.executable();
+    // Native client discovery can start or replace a daemon; inventory must remain read-only.
+    if (args.length === 2 && args[0] === "devices" && args[1] === "-l") {
+      return Buffer.concat([Buffer.from("List of devices attached\n"), await this.server.inventory(signal)]);
+    }
+    return this.runner(executable, ["-H", "127.0.0.1", "-P", "5037", ...args], {
       ...options,
       signal,
       env: adbEnvironment(this.env),
