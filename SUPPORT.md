@@ -1,25 +1,29 @@
-# TODO: The maintainer of this repo has not yet edited this file
-
-**REPO OWNER**: Do you want Customer Service & Support (CSS) support for this product/project?
-
-- **No CSS support:** Fill out this template with information about how to file issues and get help.
-- **Yes CSS support:** Fill out an intake form at [aka.ms/onboardsupport](https://aka.ms/onboardsupport). CSS will work with/help you to determine next steps.
-- **Not sure?** Fill out an intake as though the answer were "Yes". CSS will help you decide.
-
-*Then remove this first heading from this SUPPORT.MD file before publishing your repo.*
-
 # Support
 
 ## How to file issues and get help  
 
-This project uses GitHub Issues to track bugs and feature requests. Please search the existing 
-issues before filing new issues to avoid duplicates.  For new issues, file your bug or 
-feature request as a new Issue.
+This is an experimental Windows/real-Android POC with best-effort GitHub issue
+support, not a production-supported Microsoft product. Search
+[existing issues](https://github.com/microsoft/mobile-use/issues) before opening
+a bug, question, or feature request. Follow the [README](README.md) for supported
+scope, setup boundaries, and pending hardware qualification.
 
-For help and questions about using this project, please **REPO MAINTAINER: INSERT INSTRUCTIONS HERE 
-FOR HOW TO ENGAGE REPO OWNERS OR COMMUNITY FOR HELP. COULD BE A STACK OVERFLOW TAG OR OTHER
-CHANNEL. WHERE WILL YOU HELP PEOPLE?**.
+Include the plugin version, Windows/Node/Copilot App/CLI/Platform-Tools versions,
+Android version/build, selected transport kind, stable tool error code, expected
+versus actual behavior, and whether the reproduction used fixtures or real
+hardware. Use a device alias and sanitized steps. Distinguish failed discovery
+from a successful empty inventory, dispatch from verified UI state, and
+fixture-only results from actual App/USB/wireless results.
+
+Do not post pairing codes, private ADB keys, credentials, raw serials/IPs,
+account/app data, environment dumps, command traces with input text, or
+unreviewed screenshots/UI dumps. A minimal non-sensitive error code and status
+is preferable to a full transcript. Do not revoke debugging trust, change
+network/OS settings, or install helpers merely to reproduce a report.
+
+Report suspected security vulnerabilities through [SECURITY.md](SECURITY.md),
+not a public issue.
 
 ## Microsoft Support Policy  
 
-Support for this **PROJECT or PRODUCT** is limited to the resources listed above.
+Support for this project is limited to the resources listed above.

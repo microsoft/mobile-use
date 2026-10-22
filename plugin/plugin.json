@@ -1,0 +1,9 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "mobile-use",
+  "version": "0.1.0",
+  "description": "Observe and interact with explicitly selected real Android devices over authorized USB or paired wireless ADB.",
+  "repository": "https://github.com/microsoft/mobile-use",
+  "license": "MIT",
+  "keywords": ["android", "adb", "physical-devices", "mobile-use"]
+}

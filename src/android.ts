@@ -1,0 +1,352 @@
+import { crc32, inflateSync } from "node:zlib";
+import { XMLParser, XMLValidator } from "fast-xml-parser";
+import type { AdbConnection, RunOptions } from "./adb.js";
+import { isRecord, MobileUseError } from "./errors.js";
+import type { DeviceEndpoint, DeviceIdentity, Rect, ScreenElement } from "./types.js";
+
+export interface Hierarchy {
+  rotation: number;
+  elements: Omit<ScreenElement, "ref">[];
+}
+
+export interface Screenshot {
+  image: Buffer;
+  width: number;
+  height: number;
+}
+
+export function validateText(text: string): void {
+  const supported = text.length >= 1 && text.length <= 256 && [...text].every((character) => {
+    const code = character.charCodeAt(0);
+    return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122) || " .,_-".includes(character);
+  });
+  if (!supported) {
+    throw new MobileUseError(
+      "UNSUPPORTED_TEXT",
+      "Text must contain 1-256 supported ASCII characters: letters, digits, spaces, periods, commas, underscores, or hyphens.",
+      "Use a disposable non-sensitive value in that subset. Unicode, control characters, and helper/clipboard fallback are unsupported.",
+    );
+  }
+}
+
+function invalidImage(): never {
+  throw new MobileUseError(
+    "INVALID_IMAGE",
+    "Screen capture was not a complete supported PNG image.",
+    "Observe again on an unlocked, non-protected primary display. Do not bypass capture protection.",
+    true,
+  );
+}
+
+export function validatePng(image: Buffer): { width: number; height: number } {
+  if (image.length > 5 * 1024 * 1024) {
+    throw new MobileUseError(
+      "CAPTURE_UNAVAILABLE",
+      "The PNG exceeds the POC's 5 MiB image limit.",
+      "Use a simpler non-sensitive screen. The plugin will not change device resolution automatically.",
+    );
+  }
+  if (!image.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) invalidImage();
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let channels = 0;
+  let ended = false;
+  const compressed: Buffer[] = [];
+  while (offset + 12 <= image.length) {
+    const size = image.readUInt32BE(offset);
+    if (size > image.length - offset - 12) invalidImage();
+    const type = image.subarray(offset + 4, offset + 8).toString("ascii");
+    const data = image.subarray(offset + 8, offset + 8 + size);
+    if (crc32(image.subarray(offset + 4, offset + 8 + size)) !== image.readUInt32BE(offset + 8 + size)) invalidImage();
+    if (type === "IHDR") {
+      if (offset !== 8 || size !== 13) invalidImage();
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      const color = data[9];
+      channels = color === 6 ? 4 : color === 2 ? 3 : 0;
+      if (!width || !height || width > 8192 || height > 8192 || data[8] !== 8 || !channels ||
+        data[10] !== 0 || data[11] !== 0 || data[12] !== 0) invalidImage();
+    } else if (!width) {
+      invalidImage();
+    } else if (type === "IDAT") {
+      compressed.push(data);
+    } else if (type === "IEND") {
+      if (size !== 0 || offset + 12 !== image.length) invalidImage();
+      ended = true;
+      break;
+    } else if (/^[A-Z]/.test(type)) {
+      invalidImage();
+    }
+    offset += size + 12;
+  }
+  const stride = width * channels + 1;
+  const expected = stride * height;
+  if (!ended || !compressed.length || expected > 64 * 1024 * 1024) invalidImage();
+  let raw: Buffer;
+  try {
+    raw = inflateSync(Buffer.concat(compressed), { maxOutputLength: expected });
+  } catch {
+    invalidImage();
+  }
+  if (raw.length !== expected) invalidImage();
+  for (let row = 0; row < height; row++) {
+    if ((raw[row * stride] ?? 255) > 4) invalidImage();
+  }
+  return { width, height };
+}
+
+function hierarchyError(): never {
+  throw new MobileUseError(
+    "HIERARCHY_UNAVAILABLE",
+    "UI Automator did not return a valid bounded hierarchy.",
+    "Observe again after the screen is idle. Custom-drawn or protected screens may not expose semantic UI data.",
+    true,
+  );
+}
+
+function readAttributes(value: unknown): Record<string, string> {
+  if (!isRecord(value)) hierarchyError();
+  const attributes: Record<string, string> = {};
+  for (const [name, text] of Object.entries(value)) {
+    if (typeof text !== "string") hierarchyError();
+    attributes[name] = text;
+  }
+  return attributes;
+}
+
+function readFlag(attributes: Record<string, string>, name: string): boolean | null {
+  switch (attributes[name]) {
+    case undefined: return null;
+    case "false": return false;
+    case "true": return true;
+    default: return hierarchyError();
+  }
+}
+
+function readBounds(value: string): Rect {
+  if (!value.startsWith("[") || !value.endsWith("]")) hierarchyError();
+  const corners = value.slice(1, -1).split("][");
+  if (corners.length !== 2) hierarchyError();
+  const coordinates = corners.flatMap((corner) => corner.split(","));
+  if (coordinates.length !== 4 || coordinates.some((coordinate) => !/^-?[0-9]+$/.test(coordinate))) hierarchyError();
+  const numbers = coordinates.map(Number);
+  if (!numbers.every(Number.isSafeInteger)) hierarchyError();
+  const [x, y, right, bottom] = numbers;
+  if (x === undefined || y === undefined || right === undefined || bottom === undefined) hierarchyError();
+  const width = right - x;
+  const height = bottom - y;
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height)) hierarchyError();
+  return { x, y, width, height };
+}
+
+function screenNode(attributes: Record<string, string>): Omit<ScreenElement, "ref"> | null {
+  const className = attributes.class;
+  if (!className || !attributes.bounds) hierarchyError();
+  const bounds = readBounds(attributes.bounds);
+  const password = readFlag(attributes, "password");
+  const text = password === true ? "[redacted]" : attributes.text ?? "";
+  const label = attributes["content-desc"] || attributes.hint || "";
+  if (text.length + label.length > 4096) hierarchyError();
+  const node = {
+    bounds, className, text, label, password,
+    resourceId: attributes["resource-id"] || null,
+    editable: className.endsWith("EditText"),
+    enabled: readFlag(attributes, "enabled"),
+    focused: readFlag(attributes, "focused"),
+    clickable: readFlag(attributes, "clickable"),
+  };
+  const meaningful = node.text || node.label || node.resourceId || node.editable || node.clickable;
+  return meaningful && bounds.width > 0 && bounds.height > 0 ? node : null;
+}
+
+export function parseHierarchy(output: string): Hierarchy {
+  if (Buffer.byteLength(output) > 2 * 1024 * 1024 || /<!DOCTYPE|<!ENTITY/i.test(output)) hierarchyError();
+  const opening = output.indexOf("<hierarchy");
+  if (opening < 0) hierarchyError();
+  const closing = output.lastIndexOf("</hierarchy>");
+  const emptyRoot = /^<hierarchy\b[^>]*\/>/.exec(output.slice(opening));
+  const document = emptyRoot?.[0] ?? (closing >= opening ? output.slice(opening, closing + 12) : "");
+  if (!document || XMLValidator.validate(document) !== true) hierarchyError();
+  const tree: unknown = new XMLParser({
+    preserveOrder: true,
+    ignoreDeclaration: true,
+    ignoreAttributes: false,
+    attributeNamePrefix: "",
+    parseAttributeValue: false,
+    parseTagValue: false,
+    htmlEntities: false,
+  }).parse(document);
+  if (!Array.isArray(tree) || tree.length !== 1) hierarchyError();
+  const root: unknown = tree[0];
+  if (!isRecord(root) || !Array.isArray(root.hierarchy)) hierarchyError();
+  const rotation = readAttributes(root[":@"]).rotation;
+  if (rotation === undefined || !["0", "1", "2", "3"].includes(rotation)) hierarchyError();
+
+  const pending: { entry: unknown; depth: number }[] = [];
+  const enqueue = (children: unknown[], depth: number): void => {
+    for (let index = children.length - 1; index >= 0; index--) {
+      pending.push({ entry: children[index], depth });
+    }
+  };
+  enqueue(root.hierarchy, 1);
+  const elements: Hierarchy["elements"] = [];
+  let traversed = 0;
+  let bytes = 0;
+  while (pending.length) {
+    const frame = pending.pop();
+    if (!frame || !isRecord(frame.entry) || !Array.isArray(frame.entry.node)) hierarchyError();
+    if (frame.depth > 64 || ++traversed > 2000) hierarchyError();
+    const element = screenNode(readAttributes(frame.entry[":@"]));
+    if (element) {
+      bytes += Buffer.byteLength(JSON.stringify(element));
+      if (elements.length === 500 || bytes > 512 * 1024) hierarchyError();
+      elements.push(element);
+    }
+    enqueue(frame.entry.node, frame.depth + 1);
+  }
+  return { rotation: Number(rotation), elements };
+}
+
+export class AndroidBackend {
+  constructor(
+    private readonly adb: AdbConnection,
+    private readonly endpoint: DeviceEndpoint,
+    private readonly targetSignal: AbortSignal,
+    private readonly assertCurrent: () => void,
+  ) {}
+
+  private async command(args: readonly string[], options: RunOptions = {}): Promise<Buffer> {
+    this.assertCurrent();
+    if (!this.endpoint.transportId) {
+      throw new MobileUseError("TRANSPORT_LOST", "The selected endpoint has no transport ID.", "Rediscover and reselect.");
+    }
+    const signal = options.signal ? AbortSignal.any([this.targetSignal, options.signal]) : this.targetSignal;
+    return this.adb.run(["-t", this.endpoint.transportId, ...args], { ...options, signal });
+  }
+
+  private async property(name: string, signal?: AbortSignal): Promise<string> {
+    const output = await this.command(["shell", "getprop", name], signal ? { signal } : {});
+    const value = output.toString("utf8").trim();
+    if (output.length > 512 || /[\u0000-\u001f\u007f]/.test(value)) {
+      throw new MobileUseError("DEVICE_METADATA_UNAVAILABLE", "A device property is malformed or exceeds the POC's limit.", "Check the selected device's build and authorization.");
+    }
+    return value;
+  }
+
+  async identity(signal?: AbortSignal): Promise<DeviceIdentity> {
+    const [sdk, androidVersion, serial, qemu] = await Promise.all([
+      this.property("ro.build.version.sdk", signal),
+      this.property("ro.build.version.release", signal),
+      this.property("ro.serialno", signal),
+      this.property("ro.kernel.qemu", signal),
+    ]);
+    if (!/^\d+$/.test(sdk) || !androidVersion) {
+      throw new MobileUseError("DEVICE_METADATA_UNAVAILABLE", "The Android version could not be established.", "Check the selected device's build and authorization.");
+    }
+    const apiLevel = Number(sdk);
+    if (!Number.isSafeInteger(apiLevel)) {
+      throw new MobileUseError("DEVICE_METADATA_UNAVAILABLE", "The Android API level is invalid.", "Check the selected device's build.");
+    }
+    if (apiLevel < 30 || qemu === "1" || this.endpoint.kind === "emulator") {
+      throw new MobileUseError("DEVICE_UNSUPPORTED", "A real Android 11+ phone or tablet is required.", "Select supported physical hardware.");
+    }
+    let wirelessEvidence: DeviceIdentity["wirelessEvidence"] = "not-applicable";
+    if (this.endpoint.kind === "network" || this.endpoint.kind === "paired-wireless") {
+      const [tlsPort, enabled] = await Promise.all([
+        this.property("service.adb.tls.port", signal),
+        this.property("persist.adb.tls_server.enable", signal),
+      ]);
+      const validPort = /^\d+$/.test(tlsPort) && Number(tlsPort) > 0 && Number(tlsPort) <= 65535;
+      const addressPort = /:(\d+)$/.exec(this.endpoint.endpointId)?.[1];
+      if (!validPort || !["1", "true"].includes(enabled) ||
+        (this.endpoint.kind === "network" && addressPort !== tlsPort)) {
+        throw new MobileUseError(
+          "TRANSPORT_UNVERIFIED",
+          "This endpoint could not be qualified as modern paired Wireless debugging.",
+          "The user must pair/connect using Android Wireless debugging's connection address. Legacy TCP and unverifiable endpoints are not supported.",
+        );
+      }
+      wirelessEvidence = this.endpoint.kind === "network" ? "device-tls-port" : "adb-tls-connect-service";
+    }
+    return {
+      hardwareSerial: serial && !/^(unknown|null|0+)$/i.test(serial) ? serial : null,
+      androidVersion, apiLevel, wirelessEvidence,
+    };
+  }
+
+  async screenshot(signal?: AbortSignal): Promise<Screenshot> {
+    const image = await this.command(["exec-out", "screencap", "-p"], signal ? { signal } : {});
+    return { image, ...validatePng(image) };
+  }
+
+  async hierarchy(signal?: AbortSignal): Promise<Hierarchy> {
+    // UI Automator opens /dev/tty as a file; raw exec-out has no controlling terminal.
+    const output = await this.command(["shell", "-tt", "uiautomator", "dump", "/dev/tty"], signal ? { signal } : {});
+    return parseHierarchy(output.toString("utf8"));
+  }
+
+  async naturalSize(signal?: AbortSignal): Promise<{ width: number; height: number }> {
+    const output = (await this.command(["shell", "wm", "size"], signal ? { signal } : {})).toString("utf8");
+    const sizes = [...output.matchAll(/^(?:Physical|Override) size:\s*(\d+)x(\d+)\s*$/gm)];
+    const selected = sizes.at(-1);
+    const width = Number(selected?.[1]);
+    const height = Number(selected?.[2]);
+    if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || width > 8192 || height > 8192) {
+      throw new MobileUseError("DEVICE_METADATA_UNAVAILABLE", "The primary display size could not be established.", "Observe again on the primary phone display.");
+    }
+    return { width, height };
+  }
+
+  async tap(x: number, y: number, signal?: AbortSignal): Promise<void> {
+    await this.input("tap", [x, y], signal);
+  }
+
+  async swipe(from: { x: number; y: number }, to: { x: number; y: number }, durationMs: number, signal?: AbortSignal): Promise<void> {
+    await this.input("swipe", [from.x, from.y, to.x, to.y, durationMs], signal);
+  }
+
+  async typeText(text: string, signal?: AbortSignal): Promise<void> {
+    validateText(text);
+    // The allowlist excludes shell syntax and literal %, so only Android's space encoding is needed.
+    await this.input("text", [text.split(" ").join("%s")], signal);
+  }
+
+  async key(key: "HOME" | "BACK" | "ENTER", signal?: AbortSignal): Promise<void> {
+    await this.input("keyevent", [{ HOME: 3, BACK: 4, ENTER: 66 }[key]], signal);
+  }
+
+  private async input(verb: "tap" | "swipe" | "text" | "keyevent", values: readonly (string | number)[], signal?: AbortSignal): Promise<void> {
+    await this.command(["shell", "input", verb, ...values.map(String)], { mutating: true, ...(signal ? { signal } : {}) });
+  }
+
+  async launchApp(packageName: string, signal?: AbortSignal): Promise<void> {
+    if (!/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/.test(packageName)) {
+      throw new MobileUseError("INVALID_INPUT", "The Android package name is invalid.", "Use the requested installed app's package name.");
+    }
+    const options = signal ? { signal } : {};
+    const resolved = (await this.command([
+      "shell", "cmd", "package", "resolve-activity", "--brief",
+      "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", "-p", packageName,
+    ], options)).toString("utf8");
+    const components: string[] = [];
+    for (const line of resolved.split("\n")) {
+      const candidate = line.trim();
+      const parts = candidate.split("/");
+      if (parts.length === 2 && parts[0] === packageName && parts[1] &&
+        /^\.?[A-Za-z0-9_.$]+$/.test(parts[1])) components.push(candidate);
+    }
+    const component = components.length === 1 ? components[0] : undefined;
+    if (!component) {
+      throw new MobileUseError("APP_NOT_FOUND", "No unique launcher was found for the requested installed app.", "Check the package name; the plugin will not install an app.");
+    }
+    // Validated components cannot contain a single quote; quoting also preserves Java's $ names.
+    const output = (await this.command(["shell", "am", "start", "-W", "-n", `'${component}'`], {
+      mutating: true, ...options,
+    })).toString("utf8");
+    if (!/^Status:\s*ok\s*$/m.test(output) || /^Error\b/m.test(output)) {
+      throw new MobileUseError("APP_LAUNCH_FAILED", "Android did not confirm dispatch of the app launch.", "Observe the screen before attempting another launch.", false, true);
+    }
+  }
+}
