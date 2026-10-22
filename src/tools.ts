@@ -4,6 +4,7 @@ import { z } from "zod";
 import packageInfo from "../package.json" with { type: "json" };
 import type { MobileUseService } from "./device-session.js";
 import { publicError } from "./errors.js";
+import { onboardingInstructions, phoneSetup, setupForDevices, setupForError } from "./setup.js";
 import { actionSchema } from "./types.js";
 import type { ObservedScreen } from "./types.js";
 
@@ -18,8 +19,9 @@ async function safely(operation: () => Promise<CallToolResult>): Promise<CallToo
     return await operation();
   } catch (error) {
     const failure = publicError(error);
+    const setup = setupForError(failure.code, failure.actionMayHaveRun);
     process.stderr.write(`mobile-use: ${failure.code}\n`);
-    return result({ error: failure.toJSON() }, null, true);
+    return result({ error: failure.toJSON(), ...(setup ? { setup } : {}) }, null, true);
   }
 }
 
@@ -28,21 +30,38 @@ function observationResult(screen: ObservedScreen): CallToolResult {
 }
 
 export function createMobileUseServer(service: MobileUseService): McpServer {
-  const server = new McpServer({ name: "mobile-use", version: packageInfo.version });
+  const server = new McpServer(
+    { name: "mobile-use", version: packageInfo.version },
+    { instructions: onboardingInstructions },
+  );
   const readOnly = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };
   const targetToken = z.string().uuid();
 
   server.registerTool("mobile_doctor", {
-    description: "Diagnose Windows/ADB prerequisites without installing software, pairing, or changing settings. Does not list or control devices.",
+    description: "Start here on first use: diagnose Windows/ADB prerequisites and return step-by-step setup guidance. Ready means host Platform-Tools only; then call mobile_list_devices before guiding missing phone setup. Guide Platform-Tools installation, Developer options, and USB/Wireless debugging only as needed. Never installs software, pairs, changes settings, lists, or controls devices.",
     inputSchema: z.strictObject({}),
     annotations: readOnly,
-  }, (_input, ctx) => safely(async () => result(await service.doctor(ctx.mcpReq.signal))));
+  }, (_input, ctx) => safely(async () => result({
+    ...await service.doctor(ctx.mcpReq.signal), scope: "host", setup: phoneSetup,
+  })));
+
+  server.registerTool("mobile_start_adb_server", {
+    description: "Only after the user explicitly approves starting the local ADB server: reuse a compatible server at 127.0.0.1:5037 or start a missing one, verify readiness, and retry read-only device discovery. The shared server may remain running after this plugin exits and may initialize standard local ADB host keys. Never kills, replaces, or restarts a server, changes settings, pairs, approves phone trust, or controls devices. Conflicts fail explicitly. Never automatically retry uncertain startup.",
+    inputSchema: z.strictObject({}),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  }, (_input, ctx) => safely(async () => {
+    const started = await service.startAdbServer(ctx.mcpReq.signal);
+    return result({ ...started, setup: setupForDevices(started.devices) });
+  }));
 
   server.registerTool("mobile_list_devices", {
-    description: "List local ADB endpoints with online/unauthorized/offline states. USB and Wi-Fi may be the same phone. Do not silently select a device or confuse endpoint identity with physical identity.",
+    description: "After mobile_doctor, list local ADB endpoints with online/unauthorized/offline states and the next setup steps. Empty inventory prompts Developer options/USB debugging guidance; unauthorized/offline entries need user setup. USB and Wi-Fi may be the same phone. Do not silently select a device or confuse endpoint identity with physical identity.",
     inputSchema: z.strictObject({}),
     annotations: readOnly,
-  }, (_input, ctx) => safely(async () => result({ devices: await service.listDevices(ctx.mcpReq.signal) })));
+  }, (_input, ctx) => safely(async () => {
+    const devices = await service.listDevices(ctx.mcpReq.signal);
+    return result({ devices, setup: setupForDevices(devices) });
+  }));
 
   server.registerTool("mobile_select_device", {
     description: "Select exactly the endpoint the user chose from mobile_list_devices. Verify a real Android 11+ device and modern paired wireless when applicable. Does not pair or connect devices. Every selection invalidates prior target/observation tokens.",

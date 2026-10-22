@@ -23,8 +23,12 @@ async function ready(service: MobileUseService, endpoint = USB) {
 test("startup is inert; failed discovery is not an empty device list", async (t) => {
   const { adb, monitors, service } = harness(t);
   assert.equal(adb.calls.length, 0);
+  assert.equal(adb.startServerCalls, 0);
   assert.equal(monitors.sessions.length, 0);
   assert.equal((await service.doctor()).platformToolsVersion, "36.0.0");
+  assert.deepEqual(adb.calls.map((call) => call.args), [["version"]]);
+  assert.equal(adb.startServerCalls, 0, "doctor must never start the server");
+  assert.equal(monitors.sessions.length, 0, "host checks must not start transport monitoring");
   adb.handler = (call) => {
     if (call.args[0] === "devices") throw new MobileUseError("ADB_FAILED", "Fixture discovery failed.", "Fix the fixture.");
     return undefined;
@@ -33,7 +37,53 @@ test("startup is inert; failed discovery is not an empty device list", async (t)
   adb.handler = undefined;
   adb.inventory = "List of devices attached\n";
   assert.deepEqual(await service.listDevices(), []);
+  assert.equal(adb.inputs.length, 0, "onboarding must not perform setup or device input");
+  assert.equal(monitors.sessions.length, 0, "inventory must not select or monitor a device");
+  assert.equal(adb.startServerCalls, 0, "ordinary discovery must never start the server");
   await assert.rejects(service.selectDevice(USB), hasCode("DEVICE_NOT_FOUND"));
+});
+
+test("explicit server startup returns discovery without selecting, monitoring, or controlling a phone", async (t) => {
+  const { adb, monitors, service } = harness(t);
+  const result = await service.startAdbServer();
+  assert.equal(result.status, "ready");
+  assert.equal(result.startupAttempted, true);
+  assert.equal(result.devices.length, 2);
+  assert.equal(adb.startServerCalls, 1);
+  assert.equal(adb.calls.length, 0, "startup must not invoke an ADB client that might restart a changed server");
+  assert.equal(monitors.sessions.length, 0);
+  assert.equal(adb.inputs.length, 0);
+  await assert.rejects(service.observe("unselected"), hasCode("TRANSPORT_LOST"));
+});
+
+test("new or uncertain startup invalidates tokens while compatible server reuse preserves a current target", async (t) => {
+  const { adb, service } = harness(t);
+  const { selected, screen } = await ready(service);
+  adb.startupAttempted = false;
+  assert.equal((await service.startAdbServer()).startupAttempted, false);
+  await service.act(selected.targetToken, screen.observation.observationId, { kind: "key", key: "HOME" });
+  adb.startupAttempted = true;
+  await service.startAdbServer();
+  await assert.rejects(service.observe(selected.targetToken), hasCode("TRANSPORT_LOST"));
+  const newTarget = await service.selectDevice(USB);
+  adb.startServerHandler = async () => {
+    throw new MobileUseError("CANCELLED", "Fixture startup cancelled.", "Check the local server.", false, true);
+  };
+  await assert.rejects(service.startAdbServer(), hasCode("CANCELLED"));
+  await assert.rejects(service.observe(newTarget.targetToken), hasCode("TRANSPORT_LOST"));
+});
+
+test("cancelled or stopped startup does not issue commands, and empty discovery remains explicit", async (t) => {
+  const { adb, service } = harness(t);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(service.startAdbServer(controller.signal), hasCode("CANCELLED"));
+  assert.equal(adb.startServerCalls, 0);
+  adb.inventory = "List of devices attached\n";
+  assert.deepEqual((await service.startAdbServer()).devices, []);
+  service.stop();
+  await assert.rejects(service.startAdbServer(), hasCode("SERVER_STOPPED"));
+  assert.equal(adb.startServerCalls, 1);
 });
 
 test("old or unrecognized Platform-Tools are not reported ready", async (t) => {

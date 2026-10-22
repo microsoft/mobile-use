@@ -25,6 +25,13 @@ export interface DeviceEndpoint {
   reason: string | null;
 }
 
+export interface AdbServerResult {
+  status: "ready";
+  serverAddress: "127.0.0.1:5037";
+  startupAttempted: boolean;
+  devices: DeviceEndpoint[];
+}
+
 export interface DeviceIdentity {
   hardwareSerial: string | null;
   androidVersion: string;
