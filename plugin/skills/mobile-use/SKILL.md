@@ -1,6 +1,6 @@
 ---
 name: mobile-use
-description: Set up and use mobile-use with a real Android 11+ phone or tablet on Windows. Guide first-time users through Android Platform-Tools installation, Developer options, USB debugging, and connection authorization; then observe and interact with an explicitly selected device over authorized USB or modern paired wireless ADB.
+description: Set up and use mobile-use with a real Android 11+ phone or tablet on Windows. Guide Android Platform-Tools and debugging setup; then observe and interact with a selected USB or modern paired wireless device, list apps, read the foreground app, launch or terminate apps, and install local APKs or uninstall apps only with explicit user approval.
 ---
 
 # Real Android mobile-use
@@ -9,8 +9,9 @@ Use the mobile-use MCP tools, not ad-hoc ADB/shell commands. Windows, Node 22.2+
 (Node 24 LTS recommended), Android Platform-Tools, and a real Android 11+ device
 with Wireless debugging are prerequisites. Guide users through missing setup
 steps; do not assume they have installed the tools or enabled Developer options.
-This plugin does not install or pair devices, change debugging settings, or
-provide a remote device service.
+This plugin does not install host prerequisites or pair devices, change
+debugging settings, or provide a remote device service. Separately approved
+Android APK installation and app management are available after device selection.
 
 ## First-use setup (required)
 
@@ -153,9 +154,10 @@ unless the user approves that specific evidence and destination.
    `dispatched` does not mean the task succeeded. Repeat observe-act-verify, not
    blind action batches.
 
-Only explicit waking/unsecured-keyguard dismissal, safe navigation, one bounded
-swipe, supported ASCII entry, Back/Home/Enter, and launching a specifically
-requested installed app are available. Text input
+UI actions are limited to explicit waking/unsecured-keyguard dismissal, safe
+navigation, one bounded swipe, supported ASCII entry, Back/Home/Enter, and
+launching a specifically requested installed app. Separate app-management
+tools are described below. Text input
 appends to the currently focused field; it does not clear or submit it. The
 supported subset is letters, digits, spaces, periods, commas, underscores, and
 hyphens, up to 256 characters. No Unicode input, clipboard fallback, keyboard
@@ -166,6 +168,44 @@ forms, purchases, credentials, account changes, permission changes, or other
 consequential actions without the required specific user authorization. The
 first POC journey must remain reversible and non-submitting in an agreed safe
 app; opening Settings does not authorize changing settings.
+
+## App management
+
+After first-use checks and explicit device selection, these tools use the
+`targetToken` without an `observationId` or screen capture. Treat app inventory
+and foreground metadata as potentially sensitive; request them only for the
+user's authorized task.
+
+| Tool | Input and behavior |
+| --- | --- |
+| `mobile_list_apps` | `targetToken`; list all installed package names, including system packages, for the current Android user. No human-readable labels. |
+| `mobile_get_foreground_app` | `targetToken`; read the primary display's foreground package/activity/user, or explicit `null` when no activity is resumed. Unknown/ambiguous diagnostics are errors. |
+| `mobile_launch_app` | `targetToken`, `packageName`; launch the specifically requested installed app for the current Android user and verify its foreground package/user. |
+| `mobile_terminate_app` | `targetToken`, `packageName`; force-stop the requested app's activities/services and verify its stopped flag for the current Android user. |
+| `mobile_install_app` | `targetToken`, `filePath`; install one existing local `.apk` for the current Android user and require Android's success acknowledgement. |
+| `mobile_uninstall_app` | `targetToken`, `packageName`; delete the current user's app and app data, then verify the package is absent for that user. |
+
+Obtain specific authorization before termination; force-stop may discard
+unsaved app state. Before installing, ask for explicit approval naming the APK
+and device. Before uninstalling, ask for explicit approval naming the package,
+device, and deletion of the current user's app data. Installation/debugging
+trust and broad task consent are not approval for installation or deletion.
+Do not bypass protected-app, signature, device-policy, or installation warnings.
+
+Installation requires an absolute local Windows drive path to a readable
+regular `.apk`, 1 byte to 512 MiB. No URLs, UNC/device paths, `.ipa`, `.app`,
+`.zip`, or split bundles are supported. Do not download an app as a fallback,
+add permission-grant/downgrade flags, or automatically launch it. A successful
+installation reports `packageName: null`; do not invent package identity from
+the file name. Use app inventory if the task requires discovering its package.
+
+The four mutating app tools invalidate old observations, even on a failed
+attempt. Observe approved content again before subsequent `mobile_act` input.
+Do not wake, unlock, or capture authentication UI as part of app management.
+All operations remain on the explicitly selected transport; no Android user
+switch or endpoint fallback is performed. APK installation is bounded to
+120 seconds. Never retry a mutation automatically if `actionMayHaveRun` is true;
+verify state and report uncertainty first.
 
 ## Failure and recovery
 

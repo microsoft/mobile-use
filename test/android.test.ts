@@ -460,7 +460,7 @@ test("input dispatch shares an exact transport and fixed Android key codes", asy
 test("app launch is limited to one resolved installed launcher and confirms only dispatch", async () => {
   const adb = new FakeAdb();
   await backend(adb).launchApp("example.poc");
-  assert.deepEqual(adb.inputs[0]?.args, ["-t", "7", "shell", "am", "start", "-W", "-n", "'example.poc/.MainActivity'"]);
+  assert.deepEqual(adb.inputs[0]?.args, ["-t", "7", "shell", "am", "start", "-W", "--user", "0", "-n", "'example.poc/.MainActivity'"]);
   adb.handler = (call) => call.args.includes("resolve-activity") ? Buffer.from("No activity found\n") : undefined;
   await assert.rejects(backend(adb).launchApp("example.poc"), hasCode("APP_NOT_FOUND"));
   await assert.rejects(backend(adb).launchApp("example.poc;other"), hasCode("INVALID_INPUT"));

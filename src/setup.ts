@@ -18,7 +18,13 @@ export const onboardingInstructions =
   "kill or restart an existing server, or replay uncertain startup. A conflict requires user resolution, not another start attempt. " +
   "Use mobile_list_devices to verify connectivity, preserve unauthorized/offline states and discovery errors, " +
   "and ask which exact endpoint to select. Do not repeat setup steps already verified by current diagnostics. " +
-  "No screen observation or control until an explicit target and safe task are authorized.";
+  "No screen observation or control until an explicit target and safe task are authorized. " +
+  "App-management tools require the selected target token but no screen observation. " +
+  "List/foreground reads may expose sensitive app metadata. Launch only the requested installed package. " +
+  "Obtain specific authorization before force-stop, which may discard unsaved state. " +
+  "Ask for explicit approval before installing a specified local APK or uninstalling a specified package and its current-user data. " +
+  "Installation supports Android .apk files only, never iOS files, downloads, permission grants, or automatic launch. " +
+  "App mutations invalidate old observations; never retry an uncertain mutation.";
 
 const platformToolsSetup: SetupGuidance = {
   stage: "platform-tools",

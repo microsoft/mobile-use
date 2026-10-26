@@ -2,8 +2,9 @@ import { crc32, inflateSync } from "node:zlib";
 import { setTimeout } from "node:timers/promises";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import type { AdbConnection, RunOptions } from "./adb.js";
+import { localApkFile, parseAndroidUser, parseForegroundApp, parseInstalledApps, parsePackageStopped, validatePackageName } from "./apps.js";
 import { checkCancelled, isRecord, MobileUseError, publicError } from "./errors.js";
-import type { DeviceEndpoint, DeviceIdentity, Rect, ScreenElement, WakeResult } from "./types.js";
+import type { AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, Rect, ScreenElement, WakeResult } from "./types.js";
 
 export interface Hierarchy {
   rotation: number;
@@ -498,13 +499,100 @@ export class AndroidBackend {
     await this.command(["shell", "input", verb, ...values.map(String)], { mutating: true, ...(signal ? { signal } : {}) });
   }
 
-  async launchApp(packageName: string, signal?: AbortSignal): Promise<void> {
-    if (!/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/.test(packageName)) {
-      throw new MobileUseError("INVALID_INPUT", "The Android package name is invalid.", "Use the requested installed app's package name.");
+  private async currentUser(signal?: AbortSignal): Promise<number> {
+    const output = await this.command(["shell", "am", "get-current-user"], signal ? { signal } : {});
+    return parseAndroidUser(output.toString("utf8"));
+  }
+
+  async listApps(signal?: AbortSignal): Promise<InstalledApps> {
+    return this.appsForUser(await this.currentUser(signal), signal);
+  }
+
+  private async appsForUser(userId: number, signal?: AbortSignal): Promise<InstalledApps> {
+    const output = await this.command(["shell", "pm", "list", "packages", "--user", String(userId)], signal ? { signal } : {});
+    return parseInstalledApps(output.toString("utf8"), userId);
+  }
+
+  async getForegroundApp(signal?: AbortSignal): Promise<ForegroundApp | null> {
+    const output = await this.command(["shell", "dumpsys", "activity", "activities"], signal ? { signal } : {});
+    return parseForegroundApp(output.toString("utf8"));
+  }
+
+  private async requireInstalled(packageName: string, userId: number, signal?: AbortSignal): Promise<void> {
+    if (!(await this.appsForUser(userId, signal)).apps.some((app) => app.packageName === packageName)) {
+      throw new MobileUseError("APP_NOT_FOUND", "The requested app is not installed for the current Android user.", "List apps and use the exact requested package. No installation was attempted.");
     }
+  }
+
+  private async appMutation<T>(
+    args: readonly string[],
+    verify: (output: string) => Promise<T>,
+    signal?: AbortSignal,
+    timeoutMs = 15_000,
+  ): Promise<T> {
+    let dispatched = false;
+    try {
+      const output = await this.command(args, { mutating: true, timeoutMs, ...(signal ? { signal } : {}) });
+      dispatched = true;
+      this.assertCurrent();
+      checkCancelled(signal);
+      checkCancelled(this.targetSignal);
+      return await verify(output.toString("utf8"));
+    } catch (error) {
+      const failure = publicError(error);
+      if (dispatched || failure.actionMayHaveRun || !(error instanceof MobileUseError)) {
+        throw new MobileUseError(failure.code, failure.message, failure.remediation, false, true);
+      }
+      throw failure;
+    }
+  }
+
+  async terminateApp(packageName: string, signal?: AbortSignal): Promise<AppOperationResult> {
+    validatePackageName(packageName);
+    const userId = await this.currentUser(signal);
+    await this.requireInstalled(packageName, userId, signal);
+    return this.appMutation(["shell", "am", "force-stop", "--user", String(userId), packageName], async (output) => {
+      if (output.trim()) {
+        throw new MobileUseError("APP_TERMINATE_FAILED", "Android did not confirm force-stop of the requested app.", "Check the app manually before repeating termination.");
+      }
+      const state = await this.command(["shell", "dumpsys", "package", packageName], signal ? { signal } : {});
+      if (!parsePackageStopped(state.toString("utf8"), userId)) {
+        throw new MobileUseError("APP_TERMINATE_FAILED", "The app is not marked stopped after force-stop.", "Check the app manually before repeating termination.");
+      }
+      return { status: "terminated", packageName, userId };
+    }, signal);
+  }
+
+  async installApp(filePath: string, signal?: AbortSignal): Promise<AppOperationResult> {
+    const apk = await localApkFile(filePath, signal);
+    const userId = await this.currentUser(signal);
+    return this.appMutation(["install", "--streaming", "--user", String(userId), apk], async (output) => {
+      if (!/^(?:Performing Streamed Install\r?\n)?Success\s*$/.test(output.trim())) {
+        throw new MobileUseError("APP_INSTALL_FAILED", "Android did not confirm the APK installation.", "Check the device's installed apps before considering another attempt. Do not bypass installation policy.");
+      }
+      return { status: "installed", packageName: null, userId };
+    }, signal, 120_000);
+  }
+
+  async uninstallApp(packageName: string, signal?: AbortSignal): Promise<AppOperationResult> {
+    validatePackageName(packageName);
+    const userId = await this.currentUser(signal);
+    await this.requireInstalled(packageName, userId, signal);
+    return this.appMutation(["shell", "pm", "uninstall", "--user", String(userId), packageName], async (output) => {
+      if (output.trim() !== "Success" ||
+        (await this.appsForUser(userId, signal)).apps.some((app) => app.packageName === packageName)) {
+        throw new MobileUseError("APP_UNINSTALL_FAILED", "Removal of the requested app was not confirmed.", "Check the current Android user's apps before considering another attempt.");
+      }
+      return { status: "uninstalled", packageName, userId };
+    }, signal);
+  }
+
+  async launchApp(packageName: string, signal?: AbortSignal): Promise<number> {
+    validatePackageName(packageName);
+    const userId = await this.currentUser(signal);
     const options = signal ? { signal } : {};
     const resolved = (await this.command([
-      "shell", "cmd", "package", "resolve-activity", "--brief",
+      "shell", "cmd", "package", "resolve-activity", "--brief", "--user", String(userId),
       "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", "-p", packageName,
     ], options)).toString("utf8");
     const components: string[] = [];
@@ -516,14 +604,15 @@ export class AndroidBackend {
     }
     const component = components.length === 1 ? components[0] : undefined;
     if (!component) {
-      throw new MobileUseError("APP_NOT_FOUND", "No unique launcher was found for the requested installed app.", "Check the package name; the plugin will not install an app.");
+      throw new MobileUseError("APP_NOT_FOUND", "No unique launcher was found for the requested installed app.", "Check the package name and current Android user; launching never installs an app.");
     }
     // Validated components cannot contain a single quote; quoting also preserves Java's $ names.
-    const output = (await this.command(["shell", "am", "start", "-W", "-n", `'${component}'`], {
+    const output = (await this.command(["shell", "am", "start", "-W", "--user", String(userId), "-n", `'${component}'`], {
       mutating: true, ...options,
     })).toString("utf8");
     if (!/^Status:\s*ok\s*$/m.test(output) || /^Error\b/m.test(output)) {
       throw new MobileUseError("APP_LAUNCH_FAILED", "Android did not confirm dispatch of the app launch.", "Observe the screen before attempting another launch.", false, true);
     }
+    return userId;
   }
 }

@@ -10,6 +10,7 @@ import type { AdbServerResult, DeviceEndpoint, TransportKind } from "./types.js"
 export interface RunOptions {
   signal?: AbortSignal;
   mutating?: boolean;
+  timeoutMs?: number;
 }
 
 export interface AdbConnection {
@@ -104,7 +105,7 @@ export const executeCommand: CommandRunner = (executable, args, options) => new 
   const child = execFile(executable, [...args], {
     encoding: "buffer",
     windowsHide: true,
-    timeout: 15_000,
+    timeout: options.timeoutMs ?? 15_000,
     maxBuffer: 16 * 1024 * 1024,
     env: options.env,
     ...(options.signal ? { signal: options.signal } : {}),
@@ -143,6 +144,14 @@ export const executeCommand: CommandRunner = (executable, args, options) => new 
       code = "DEVICE_OFFLINE";
       message = "The selected device is offline.";
       remediation = "Restore the connection, rediscover, and explicitly reselect.";
+    } else if (/failure \[install_[a-z0-9_]+/.test(details)) {
+      code = "APP_INSTALL_FAILED";
+      message = "Android rejected the APK installation.";
+      remediation = "Check the APK, signatures, existing app version, and device policy. Do not automatically retry or grant permissions.";
+    } else if (/failure \[delete_[a-z0-9_]+/.test(details)) {
+      code = "APP_UNINSTALL_FAILED";
+      message = "Android rejected the app uninstallation.";
+      remediation = "Check the package and device policy. Do not bypass protected-app restrictions or automatically retry.";
     } else if (/not found|no devices|closed|cannot connect|connection reset/.test(details)) {
       code = "TRANSPORT_LOST";
       message = "The selected ADB transport is unavailable.";

@@ -61,6 +61,27 @@ if (process.env.MOBILE_USE_FIXTURE_SCENARIO === "large-observation") {
   adb.image = Buffer.concat([adb.image.subarray(0, -12), chunk("tEXt", padding), adb.image.subarray(-12)]);
   adb.xml = hierarchy(node({ text: "A".repeat(1600) }).repeat(280));
 }
+if (setupScenario.startsWith("app-")) {
+  adb.handler = (call) => {
+    if (setupScenario === "app-miui-package-users" && call.args.includes("dumpsys") && call.args.includes("package")) {
+      return Buffer.from(`Packages:\n  User 0: installed=true stopped=${adb.stoppedApps.has("example.poc")}\n` +
+        "Preferred activities:\n  User 0:\nOther diagnostics:\n  User 0:\n");
+    }
+    if (setupScenario === "app-android11-resumed" && call.args.includes("activities")) {
+      return Buffer.from("Display #0 (activities from top to bottom):\n  ResumedActivity: ActivityRecord{abc u0 example.poc/.MainActivity t1}\n");
+    }
+    if (setupScenario === "app-foreground-unavailable" && call.args.includes("activities")) {
+      return Buffer.from("private fixture-only app diagnostics");
+    }
+    if (call.options.mutating) {
+      if (setupScenario === "app-uncertain-mutation") throw new Error("private fixture-only app diagnostics");
+      if (setupScenario === "app-install-rejected" || setupScenario === "app-uninstall-rejected") {
+        return Buffer.from("Failure [private fixture-only app diagnostics]\n");
+      }
+    }
+    return undefined;
+  };
+}
 const service = new MobileUseService(adb, monitors.factory);
 const server = serveStdio(() => createMobileUseServer(service));
 const stop = (): void => {
