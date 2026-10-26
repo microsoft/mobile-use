@@ -6,7 +6,7 @@ import type { Hierarchy, Screenshot } from "./android.js";
 import { checkCancelled, MobileUseError, publicError } from "./errors.js";
 import { actionSchema } from "./types.js";
 import type {
-  ActionResult, AdbServerResult, DeviceEndpoint, DeviceIdentity, MobileAction, Observation,
+  ActionResult, AdbServerResult, AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, MobileAction, Observation,
   ObservedScreen, ReadStatus, ScreenElement, SelectedTarget, WakeResult,
 } from "./types.js";
 
@@ -316,6 +316,69 @@ export class MobileUseService {
       }
       return result;
     }, signal);
+  }
+
+  private appOperation<T>(
+    targetToken: string,
+    mutating: boolean,
+    operation: (backend: AndroidBackend) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    return this.serialize(async () => {
+      const state = this.target(targetToken);
+      if (mutating) this.snapshot = undefined;
+      await this.ensureIdentity(state, signal);
+      let completed = false;
+      try {
+        const value = await operation(state.backend);
+        completed = true;
+        await this.ensureEndpoint(state, signal);
+        checkCancelled(signal);
+        return value;
+      } catch (error) {
+        const failure = publicError(error);
+        if (mutating && (completed || failure.actionMayHaveRun || !(error instanceof MobileUseError))) {
+          throw new MobileUseError(failure.code, failure.message, failure.remediation, false, true);
+        }
+        throw failure;
+      }
+    }, signal);
+  }
+
+  listApps(targetToken: string, signal?: AbortSignal): Promise<InstalledApps> {
+    return this.appOperation(targetToken, false, (backend) => backend.listApps(signal), signal);
+  }
+
+  getForegroundApp(targetToken: string, signal?: AbortSignal): Promise<ForegroundApp | null> {
+    return this.appOperation(targetToken, false, (backend) => backend.getForegroundApp(signal), signal);
+  }
+
+  launchApp(targetToken: string, packageName: string, signal?: AbortSignal): Promise<AppOperationResult> {
+    return this.appOperation(targetToken, true, async (backend) => {
+      const userId = await backend.launchApp(packageName, signal);
+      try {
+        const foreground = await backend.getForegroundApp(signal);
+        if (foreground?.packageName !== packageName || foreground.userId !== userId) {
+          throw new MobileUseError("APP_LAUNCH_FAILED", "The requested app was not confirmed in the foreground.", "Check the phone before considering another launch.");
+        }
+        return { status: "launched", packageName, userId };
+      } catch (error) {
+        const failure = publicError(error);
+        throw new MobileUseError(failure.code, failure.message, failure.remediation, false, true);
+      }
+    }, signal);
+  }
+
+  terminateApp(targetToken: string, packageName: string, signal?: AbortSignal): Promise<AppOperationResult> {
+    return this.appOperation(targetToken, true, (backend) => backend.terminateApp(packageName, signal), signal);
+  }
+
+  installApp(targetToken: string, filePath: string, signal?: AbortSignal): Promise<AppOperationResult> {
+    return this.appOperation(targetToken, true, (backend) => backend.installApp(filePath, signal), signal);
+  }
+
+  uninstallApp(targetToken: string, packageName: string, signal?: AbortSignal): Promise<AppOperationResult> {
+    return this.appOperation(targetToken, true, (backend) => backend.uninstallApp(packageName, signal), signal);
   }
 
   private async dispatch(state: TargetState, action: MobileAction, previous: Snapshot, live: Snapshot, signal?: AbortSignal): Promise<void> {

@@ -103,6 +103,10 @@ export class FakeAdb implements AdbConnection {
   image = png();
   xml = hierarchy();
   display = displayDiagnostics();
+  userId = 0;
+  apps = new Set(["android", "example.poc"]);
+  stoppedApps = new Set<string>();
+  foreground: string | null = "example.poc/.MainActivity";
   keyguard = {
     showing: false, secure: false, simSecure: false, inputRestricted: false,
     screenState: "SCREEN_STATE_ON", userId: 0,
@@ -144,6 +148,31 @@ export class FakeAdb implements AdbConnection {
     assert.equal(args[0], "-t", "all device-bound fixture commands need an exact transport");
     assert.match(args[1] ?? "", /^\d+$/);
     const command = args.slice(2).join(" ");
+    if (command === "shell am get-current-user") return Buffer.from(`${this.userId}\n`);
+    if (command.startsWith("shell pm list packages --user ")) {
+      return Buffer.from([...this.apps].map((name) => `package:${name}\n`).join(""));
+    }
+    if (command === "shell dumpsys activity activities") {
+      const activity = this.foreground ? `ActivityRecord{abc u${this.userId} ${this.foreground} t1}` : "null";
+      return Buffer.from(`ACTIVITY MANAGER ACTIVITIES\nDisplay #0 (activities from top to bottom):\n  topResumedActivity=${activity}\n`);
+    }
+    if (command.startsWith("shell am force-stop --user ")) {
+      const name = args.at(-1) ?? "";
+      this.stoppedApps.add(name);
+      if (this.foreground?.startsWith(`${name}/`)) this.foreground = null;
+      return Buffer.alloc(0);
+    }
+    if (command.startsWith("shell dumpsys package ")) {
+      return Buffer.from(`  User ${this.userId}: installed=true stopped=${this.stoppedApps.has(args.at(-1) ?? "")}\n`);
+    }
+    if (command.startsWith("shell pm uninstall --user ")) {
+      this.apps.delete(args.at(-1) ?? "");
+      return Buffer.from("Success\n");
+    }
+    if (args[2] === "install") {
+      this.apps.add("example.installed");
+      return Buffer.from("Performing Streamed Install\nSuccess\n");
+    }
     if (command.startsWith("shell getprop ")) return Buffer.from(this.properties[args[4] ?? ""] ?? "");
     if (command === "exec-out screencap -p") return this.image;
     if (command === "shell -tt uiautomator dump /dev/tty") return Buffer.from(this.xml);
@@ -166,7 +195,10 @@ export class FakeAdb implements AdbConnection {
     }
     if (command.startsWith("shell input ")) return Buffer.alloc(0);
     if (command.startsWith("shell cmd package resolve-activity ")) return Buffer.from("example.poc/.MainActivity\n");
-    if (command.startsWith("shell am start -W -n ")) return Buffer.from("Status: ok\nActivity: example.poc/.MainActivity\n");
+    if (command.startsWith("shell am start -W ")) {
+      this.foreground = "example.poc/.MainActivity";
+      return Buffer.from("Status: ok\nActivity: example.poc/.MainActivity\n");
+    }
     throw new Error(`Unexpected fixture command: ${command}`);
   }
 

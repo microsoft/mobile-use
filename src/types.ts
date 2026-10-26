@@ -50,6 +50,23 @@ export interface WakeResult {
   keyguardDismissed: boolean;
 }
 
+export interface InstalledApps {
+  userId: number;
+  apps: { packageName: string }[];
+}
+
+export interface ForegroundApp {
+  packageName: string;
+  activityName: string;
+  userId: number;
+}
+
+export interface AppOperationResult {
+  status: "launched" | "terminated" | "installed" | "uninstalled";
+  userId: number;
+  packageName: string | null;
+}
+
 export interface ReadStatus {
   status: "ok" | "unavailable";
   error: ErrorInfo | null;
@@ -85,6 +102,10 @@ const pointSchema = z.strictObject({
   y: z.number().int().nonnegative(),
 });
 
+export const packageNameSchema = z.string().max(255).regex(
+  /^(?:android|[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+)(?![\s\S])/,
+);
+
 export const actionSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("tap"),
@@ -109,7 +130,7 @@ export const actionSchema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({
     kind: z.literal("launch_app"),
-    packageName: z.string().regex(/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/),
+    packageName: packageNameSchema,
   }),
 ]);
 

@@ -173,6 +173,55 @@ test("bounded process execution is binary-safe and sanitizes failures", async ()
   await assert.rejects(executeCommand(process.execPath, ["-e", "process.stdout.write(Buffer.alloc(17*1024*1024))"], { env }), hasCode("ADB_OUTPUT_LIMIT"));
 });
 
+test("app rejection diagnostics preserve operation-specific errors without leaking details or implying transport loss", async () => {
+  for (const [diagnostic, code] of [
+    ["Failure [INSTALL_FAILED_INVALID_APK: private file not found]", "APP_INSTALL_FAILED"],
+    ["Failure [DELETE_FAILED_INTERNAL_ERROR: private package not found]", "APP_UNINSTALL_FAILED"],
+    ["Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: Package com.example.offline signatures do not match]", "APP_INSTALL_FAILED"],
+    ["adb: failed to install C:\\private\\unauthorized.apk: Failure [INSTALL_FAILED_INVALID_APK]", "APP_INSTALL_FAILED"],
+    ["Failure [DELETE_FAILED_INTERNAL_ERROR: Package com.example.offline could not be removed]", "APP_UNINSTALL_FAILED"],
+    ["Failure [DELETE_FAILED_OWNER_BLOCKED: Package com.example.unauthorized is protected]", "APP_UNINSTALL_FAILED"],
+  ] as const) {
+    for (const stream of ["stdout", "stderr"]) {
+      await assert.rejects(executeCommand(process.execPath, ["-e", `process.${stream}.write(${JSON.stringify(diagnostic)});process.exit(1)`], {
+        env: { ...process.env }, mutating: true,
+      }), (error: unknown) => {
+        hasCode(code)(error);
+        assert.ok(error instanceof MobileUseError && error.actionMayHaveRun && !error.retryable);
+        assert.doesNotMatch(JSON.stringify(error), /private|not found|com\.example|unauthorized\.apk/);
+        return true;
+      });
+    }
+  }
+});
+
+test("actual offline and unauthorized device diagnostics retain their transport error codes", async () => {
+  for (const [diagnostic, code] of [
+    ["error: device offline", "DEVICE_OFFLINE"],
+    ["error: device unauthorized", "DEVICE_UNAUTHORIZED"],
+  ] as const) {
+    for (const stream of ["stdout", "stderr"]) {
+      await assert.rejects(executeCommand(process.execPath, ["-e", `process.${stream}.write(${JSON.stringify(diagnostic)});process.exit(1)`], {
+        env: { ...process.env }, mutating: true,
+      }), (error: unknown) => {
+        hasCode(code)(error);
+        assert.ok(error instanceof MobileUseError && error.actionMayHaveRun && !error.retryable);
+        return true;
+      });
+    }
+  }
+});
+
+test("process execution honors an operation-specific deadline and preserves uncertain delivery", async () => {
+  await assert.rejects(executeCommand(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], {
+    env: { ...process.env }, timeoutMs: 200, mutating: true,
+  }), (error: unknown) => {
+    hasCode("ADB_TIMEOUT")(error);
+    assert.ok(error instanceof MobileUseError && error.actionMayHaveRun && !error.retryable);
+    return true;
+  });
+});
+
 test("a missing local ADB server is not misreported as a lost phone transport", async () => {
   for (const details of [
     "adb.exe: cannot connect to daemon at tcp:127.0.0.1:5037: cannot connect to 127.0.0.1:5037: No connection could be made (10061)",

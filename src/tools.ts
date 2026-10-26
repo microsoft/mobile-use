@@ -5,7 +5,7 @@ import packageInfo from "../package.json" with { type: "json" };
 import type { MobileUseService } from "./device-session.js";
 import { publicError } from "./errors.js";
 import { onboardingInstructions, phoneSetup, setupForDevices, setupForError } from "./setup.js";
-import { actionSchema } from "./types.js";
+import { actionSchema, packageNameSchema } from "./types.js";
 import type { ObservedScreen } from "./types.js";
 
 function result(payload: unknown, image: Buffer | null = null, isError = false): CallToolResult {
@@ -76,7 +76,7 @@ export function createMobileUseServer(service: MobileUseService): McpServer {
   }, (input, ctx) => safely(async () => observationResult(await service.observe(input.targetToken, ctx.mcpReq.signal))));
 
   server.registerTool("mobile_wake", {
-    description: "Only when explicitly requested, wake the selected phone and dismiss an unsecured lock screen. Requires a target token but no screen observation; invalidates previous observations. Never enters credentials, bypasses authentication, or captures the lock screen. Secure or unrecognized lock states require manual unlocking. After success, observe approved non-sensitive content before any other action. Never automatically replay an uncertain result.",
+    description: "Only when explicitly requested, wake the selected phone and dismiss an unsecured lock screen. Requires a target token but no screen observation; invalidates previous observations. Never enters credentials, bypasses authentication, or captures the lock screen. Secure or unrecognized lock states require manual unlocking. After success, observe approved non-sensitive content before subsequent mobile_act input. Never automatically replay an uncertain result.",
     inputSchema: z.strictObject({ targetToken }),
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, (input, ctx) => safely(async () => result(await service.wake(input.targetToken, ctx.mcpReq.signal))));
@@ -94,6 +94,47 @@ export function createMobileUseServer(service: MobileUseService): McpServer {
       error: action.error,
     }, action.after?.image ?? null, action.verificationStatus === "unverified");
   }));
+
+  server.registerTool("mobile_list_apps", {
+    description: "List all installed Android packages, including system apps, for the current Android user on the explicitly selected device. Requires a target token, not a screen observation. Returns package names, not app labels. App inventory may be sensitive; use only for the user's authorized task.",
+    inputSchema: z.strictObject({ targetToken }),
+    annotations: readOnly,
+  }, (input, ctx) => safely(async () => result(await service.listApps(input.targetToken, ctx.mcpReq.signal))));
+
+  server.registerTool("mobile_get_foreground_app", {
+    description: "Read the foreground app's package, activity, and Android user on the selected device's primary display, without a screenshot. Requires a target token. Returns null only when Android explicitly reports no resumed activity; ambiguous or unsupported diagnostics are errors.",
+    inputSchema: z.strictObject({ targetToken }),
+    annotations: readOnly,
+  }, (input, ctx) => safely(async () => result({
+    foregroundApp: await service.getForegroundApp(input.targetToken, ctx.mcpReq.signal),
+  })));
+
+  const appMutation = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true };
+  const packageInput = z.strictObject({ targetToken, packageName: packageNameSchema });
+
+  server.registerTool("mobile_launch_app", {
+    description: "Launch the specifically requested installed Android package for the current Android user, then verify it is in the foreground on the primary display. Requires an explicitly selected target, not a screen observation. Invalidates earlier observations and never installs an app, captures a screen, or retries an uncertain launch.",
+    inputSchema: packageInput,
+    annotations: appMutation,
+  }, (input, ctx) => safely(async () => result(await service.launchApp(input.targetToken, input.packageName, ctx.mcpReq.signal))));
+
+  server.registerTool("mobile_terminate_app", {
+    description: "Only with specific user authorization, force-stop the requested installed Android package, including its activities and services, for the current Android user. May discard unsaved app state. Requires a selected target, not a screen observation. Verifies the package is stopped, invalidates prior observations, and never retries uncertain termination.",
+    inputSchema: packageInput,
+    annotations: appMutation,
+  }, (input, ctx) => safely(async () => result(await service.terminateApp(input.targetToken, input.packageName, ctx.mcpReq.signal))));
+
+  server.registerTool("mobile_install_app", {
+    description: "Only after explicit approval for this APK and selected device, install one existing local .apk file for the current Android user. filePath must be an absolute Windows drive path to a regular 1-byte to 512-MiB file. No URLs, UNC paths, .ipa/.app/.zip, split bundles, automatic permission grants, downgrade flags, or automatic launch. Requires a target token, not an observation; invalidates prior observations. Bounded to 120 seconds; never retry uncertain installation.",
+    inputSchema: z.strictObject({ targetToken, filePath: z.string().min(1).max(32_767) }),
+    annotations: appMutation,
+  }, (input, ctx) => safely(async () => result(await service.installApp(input.targetToken, input.filePath, ctx.mcpReq.signal))));
+
+  server.registerTool("mobile_uninstall_app", {
+    description: "Only after explicit approval naming this package and selected device, uninstall an Android app for the current Android user and delete that user's app data. Other Android users are not targeted. Verifies package removal, invalidates prior observations, and never retries uncertain deletion or bypasses protected-app/device policy. Requires a target token, not a screen observation.",
+    inputSchema: packageInput,
+    annotations: appMutation,
+  }, (input, ctx) => safely(async () => result(await service.uninstallApp(input.targetToken, input.packageName, ctx.mcpReq.signal))));
 
   server.server.onclose = () => service.stop();
   return server;

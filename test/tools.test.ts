@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import type { TestContext } from "node:test";
@@ -45,13 +46,105 @@ function setupSteps(value: Record<string, unknown>, stage: string): string {
 }
 
 for (const mode of ["legacy", "auto"] as const) {
-  test(`seven MCP operations expose typed setup, wake, and observe-act results over ${mode}`, async (t) => {
+  test(`termination verification ignores MIUI's unrelated user headings over ${mode}`, async (t) => {
+    const { client } = await fixture(t, mode, "app-miui-package-users");
+    const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+    const result = await client.callTool({
+      name: "mobile_terminate_app", arguments: { targetToken: selected.targetToken, packageName: "example.poc" },
+    });
+    assert.equal(result.isError, undefined);
+    assert.deepEqual(payload(result), { status: "terminated", packageName: "example.poc", userId: 0 });
+  });
+
+  test(`Android 11 foreground lookup and launch verification accept ResumedActivity over ${mode}`, async (t) => {
+    const { client } = await fixture(t, mode, "app-android11-resumed");
+    const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+    const foreground = await client.callTool({
+      name: "mobile_get_foreground_app", arguments: { targetToken: selected.targetToken },
+    });
+    assert.equal(foreground.isError, undefined);
+    assert.deepEqual(payload(foreground), {
+      foregroundApp: { packageName: "example.poc", activityName: ".MainActivity", userId: 0 },
+    });
+    const launched = await client.callTool({
+      name: "mobile_launch_app", arguments: { targetToken: selected.targetToken, packageName: "example.poc" },
+    });
+    assert.equal(launched.isError, undefined);
+    assert.deepEqual(payload(launched), { status: "launched", packageName: "example.poc", userId: 0 });
+  });
+
+  test(`all six app-management tools expose strict schemas and complete operations over ${mode}`, async (t) => {
+    const base = path.resolve(".test-artifacts");
+    await mkdir(base, { recursive: true });
+    const directory = await mkdtemp(path.join(base, "mcp apk "));
+    t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+    const filePath = path.join(directory, "fixture app.apk");
+    await writeFile(filePath, "fixture only");
+    const { client } = await fixture(t, mode);
+    const tools = (await client.listTools()).tools;
+    const reads = ["mobile_list_apps", "mobile_get_foreground_app"];
+    const writes = ["mobile_launch_app", "mobile_terminate_app", "mobile_install_app", "mobile_uninstall_app"];
+    for (const name of [...reads, ...writes]) {
+      const tool = tools.find((entry) => entry.name === name);
+      assert.ok(tool);
+      assert.equal(tool.annotations?.readOnlyHint, reads.includes(name));
+      assert.equal(tool.annotations?.destructiveHint, writes.includes(name));
+      assert.equal(tool.inputSchema.additionalProperties, false);
+      const required = name === "mobile_install_app" ? ["targetToken", "filePath"]
+        : reads.includes(name) ? ["targetToken"] : ["targetToken", "packageName"];
+      assert.deepEqual(tool.inputSchema.required, required);
+      if (writes.includes(name)) assert.equal(tool.annotations?.idempotentHint, false);
+      const unselected = await client.callTool({
+        name, arguments: { targetToken: randomUUID(), ...(name === "mobile_install_app" ? { filePath } : reads.includes(name) ? {} : { packageName: "example.poc" }) },
+      });
+      assert.equal(unselected.isError, true);
+      const error = payload(unselected).error;
+      assert.ok(isRecord(error) && error.code === "TARGET_NOT_SELECTED" && error.actionMayHaveRun === false);
+    }
+    const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+    const targetToken = selected.targetToken;
+    const listed = await client.callTool({ name: "mobile_list_apps", arguments: { targetToken } });
+    assert.equal(listed.isError, undefined);
+    assert.deepEqual(payload(listed), { userId: 0, apps: [{ packageName: "android" }, { packageName: "example.poc" }] });
+    const foreground = await client.callTool({ name: "mobile_get_foreground_app", arguments: { targetToken } });
+    assert.deepEqual(payload(foreground), { foregroundApp: { packageName: "example.poc", activityName: ".MainActivity", userId: 0 } });
+    for (const [name, expected] of [
+      ["mobile_launch_app", "launched"], ["mobile_terminate_app", "terminated"],
+      ["mobile_install_app", "installed"], ["mobile_uninstall_app", "uninstalled"],
+    ]) {
+      assert.ok(name && expected);
+      const result = await client.callTool({
+        name, arguments: { targetToken, ...(name === "mobile_install_app" ? { filePath } : { packageName: "example.poc" }) },
+      });
+      assert.equal(result.isError, undefined);
+      assert.deepEqual(payload(result), { status: expected, userId: 0, packageName: name === "mobile_install_app" ? null : "example.poc" });
+      assert.ok(Array.isArray(result.content) && result.content.length === 1, "app management must not capture a screen");
+    }
+    const after = payload(await client.callTool({ name: "mobile_get_foreground_app", arguments: { targetToken } }));
+    assert.equal(after.foregroundApp, null);
+    for (const [name, fields] of [
+      ["mobile_launch_app", { packageName: "example.poc\n" }],
+      ["mobile_terminate_app", { packageName: "example.poc;reboot" }],
+      ["mobile_uninstall_app", { packageName: "--user" }],
+      ["mobile_install_app", { filePath, grantPermissions: true }],
+      ["mobile_list_apps", { observationId: randomUUID() }],
+    ] as const) {
+      const invalid = await client.callTool({ name, arguments: { targetToken, ...fields } });
+      assert.equal(invalid.isError, true);
+    }
+    const unsupported = await client.callTool({ name: "mobile_install_app", arguments: { targetToken, filePath: "C:\\demo.ipa" } });
+    assert.equal(unsupported.isError, true);
+    const error = payload(unsupported).error;
+    assert.ok(isRecord(error) && error.code === "INVALID_APP_FILE" && error.actionMayHaveRun === false);
+  });
+
+  test(`thirteen MCP operations expose typed setup, wake, and observe-act results over ${mode}`, async (t) => {
     const { client } = await fixture(t, mode);
     assert.match(client.getInstructions() ?? "", /On first use in each session, call mobile_doctor/);
     assert.match(client.getInstructions() ?? "", /call mobile_list_devices before offering phone setup/);
     assert.match(client.getInstructions() ?? "", /Never install software, enable debugging, pair devices, or accept trust automatically/);
     const tools = await client.listTools();
-    assert.equal(tools.tools.length, 7);
+    assert.equal(tools.tools.length, 13);
     const startup = tools.tools.find((tool) => tool.name === "mobile_start_adb_server");
     assert.equal(startup?.annotations?.readOnlyHint, false);
     assert.equal(startup?.annotations?.idempotentHint, false);
@@ -150,6 +243,37 @@ for (const mode of ["legacy", "auto"] as const) {
         assert.equal(acted.isError, undefined);
         assert.equal(payload(acted).dispatchStatus, "dispatched");
       }
+    });
+  }
+
+  for (const scenario of ["app-foreground-unavailable", "app-uncertain-mutation", "app-install-rejected", "app-uninstall-rejected"] as const) {
+    test(`app-management ${scenario} errors remain explicit and sanitized over ${mode} MCP`, async (t) => {
+      const base = path.resolve(".test-artifacts");
+      await mkdir(base, { recursive: true });
+      const directory = await mkdtemp(path.join(base, "mcp app error "));
+      t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+      const filePath = path.join(directory, "fixture.apk");
+      await writeFile(filePath, "fixture only");
+      const server = await fixture(t, mode, scenario);
+      const selected = payload(await server.client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+      const name = scenario === "app-foreground-unavailable" ? "mobile_get_foreground_app"
+        : scenario === "app-install-rejected" ? "mobile_install_app"
+        : scenario === "app-uninstall-rejected" ? "mobile_uninstall_app" : "mobile_terminate_app";
+      const fields = name === "mobile_get_foreground_app" ? {} : name === "mobile_install_app" ? { filePath } : { packageName: "example.poc" };
+      const result = await server.client.callTool({ name, arguments: { targetToken: selected.targetToken, ...fields } });
+      assert.equal(result.isError, true);
+      assert.ok(Array.isArray(result.content) && result.content.length === 1);
+      const value = payload(result);
+      assert.equal(value.status, undefined);
+      assert.ok(isRecord(value.error));
+      const code = scenario === "app-foreground-unavailable" ? "APP_FOREGROUND_UNAVAILABLE"
+        : scenario === "app-install-rejected" ? "APP_INSTALL_FAILED"
+        : scenario === "app-uninstall-rejected" ? "APP_UNINSTALL_FAILED" : "INTERNAL_ERROR";
+      assert.equal(value.error.code, code);
+      assert.equal(value.error.actionMayHaveRun, scenario !== "app-foreground-unavailable");
+      assert.equal(value.error.retryable, false);
+      assert.match(server.stderr, new RegExp(`mobile-use: ${code}`));
+      assert.doesNotMatch(JSON.stringify(result) + server.stderr, /private fixture-only app diagnostics/);
     });
   }
 

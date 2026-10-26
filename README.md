@@ -7,9 +7,11 @@ and a usage skill. Its project-owned Android adapter invokes installed
 Platform-Tools directly; it does not import, vendor, or launch mobile-mcp.
 
 **Status:** local fixture, protocol, and copied-artifact checks are available.
-Actual Copilot App installation/loading and real-device USB/wireless acceptance
-have **not** been verified. No phone has been connected or controlled as part of
-those checks. This is not a released or production-supported capability.
+Copilot App tool loading and all six app-management operations have been
+verified through the reinstalled plugin over USB on one Android 11 phone,
+including termination verification after a package-diagnostic parser fix.
+Screen observe-act journeys and paired-wireless acceptance remain
+**unverified**. This is not a released or production-supported capability.
 
 ## Prerequisites
 
@@ -50,7 +52,7 @@ copilot plugin install (Resolve-Path .\dist\mobile-use).Path
 This is the documented local installation route, not a claim that App loading
 has already passed. Use the absolute path shown above: some Windows CLI versions
 do not recognize a relative `.\` plugin source. Confirm the plugin, skill, and
-seven tools appear in your actual Copilot App before using hardware. If the App
+thirteen tools appear in your actual Copilot App before using hardware. If the App
 cannot load this format,
 record that incompatibility rather than substituting manual MCP registration.
 Rebuild and use Copilot's plugin update/reinstall flow when changing the local
@@ -191,6 +193,12 @@ kill/restart the shared ADB server or alter global ADB/network settings.
 | `mobile_wake` | With explicit permission and a target token, wake the display and dismiss only an unsecured lock screen. No observation or screen capture; secure/unknown lock states require manual unlocking. |
 | `mobile_observe` | Require that token; return a fresh observation ID, display geometry, hierarchy/status/warnings, and a separate PNG image block when usable. |
 | `mobile_act` | Require target and latest observation IDs; dispatch one bounded action and return the next observation or an explicit unknown/unverified outcome. |
+| `mobile_list_apps` | With a target token, list all installed package names, including system packages, for the current Android user. No screen capture. |
+| `mobile_get_foreground_app` | With a target token, read the primary display's foreground package, activity, and Android user without capturing the screen. |
+| `mobile_launch_app` | Launch a specifically requested installed package for the current Android user and verify it is in the foreground. No observation required. |
+| `mobile_terminate_app` | With specific authorization, force-stop a requested installed package's activities/services for the current Android user and verify its stopped state. |
+| `mobile_install_app` | After explicit approval, install one local `.apk` for the current Android user using an absolute Windows `filePath`. No automatic launch or permission grants. |
+| `mobile_uninstall_app` | After explicit approval, remove the requested package and its app data for the current Android user, then verify package removal. |
 
 USB and Wi-Fi entries may be two connections to the same phone. Choose an
 endpoint explicitly, not by model name; the selected identity includes physical
@@ -199,10 +207,56 @@ the selected ADB transport ID. A disconnect, observed server restart, or new
 selection invalidates tokens/references. There is **no endpoint fallback**,
 including to another connection to the same phone.
 
+### App management
+
+All six app-management tools require the `targetToken` from explicit device
+selection. They revalidate the selected transport and physical identity; they
+never select another device, switch Android users, or capture a screen.
+They do **not** require an `observationId`. The four mutating tools invalidate
+earlier observations, including on a failed attempt; observe again before UI
+input. The original `mobile_act` launch action remains available with its
+existing observation requirements.
+
+`mobile_list_apps` returns `{ userId, apps: [{ packageName }] }` for the current
+Android user, including system apps; it does not resolve human-readable labels.
+`mobile_get_foreground_app` returns `{ foregroundApp: { packageName,
+activityName, userId } }`, or `foregroundApp: null` only when Android explicitly
+reports no resumed activity. It supports Android 11's `ResumedActivity` and
+newer `mResumedActivity`/`topResumedActivity` fields, scoped to the primary
+display; missing, ambiguous, and unfamiliar OEM formats are errors.
+
+Launch, terminate, and uninstall accept `packageName`. Launch verifies the
+foreground package/user. Termination uses Android force-stop (activities and
+services), may discard unsaved state, and verifies the package's stopped flag.
+Unrelated user headings in package diagnostics are ignored; duplicate or
+conflicting installed/stopped records still fail verification.
+Uninstallation deletes app data for the current user without targeting other
+users; protected/system packages remain subject to Android policy. Obtain
+specific authorization for termination and explicit approval naming the
+package/device and data-deletion consequence before uninstallation.
+
+Installation accepts `filePath`, an absolute local Windows drive path such as
+`C:\Packages\demo.apk`. The existing, readable regular file must be 1 byte to
+512 MiB. Spaces and shell punctuation in the local path are passed as a
+literal process argument, never through a shell. URLs, UNC/device paths,
+`.ipa`, `.app`, `.zip`, and split APK bundles are unsupported. The tool neither
+downloads files nor automatically adds replacement, downgrade, test-package,
+permission-grant, or verification-bypass flags. Android still validates the
+APK and enforces its signature/version/installation policies. Approve the
+specific APK and device before installation; no app is automatically launched.
+
+App mutations return `{ status, packageName, userId }` only after the relevant
+Android acknowledgement/verification. Installation reports `packageName: null`:
+the plugin does not infer package identity from the filename or parse APK
+manifests. Installation has a 120-second command deadline; other commands
+retain their 15-second limit. Errors after a possible dispatch report
+`actionMayHaveRun: true` and are non-retryable. Verify device state before any
+further mutation; no app operation is retried automatically.
+
 ### Waking a selected phone
 
 After explicit permission to wake the selected phone, call `mobile_wake` with
-`targetToken`. This is the only input tool that does not require an observation:
+`targetToken`. Like app-management tools, it does not require an observation:
 the screen may be off, and capturing authentication UI is not appropriate.
 It invalidates previous observations, sends the non-toggle Android `WAKEUP`
 key, and checks bounded keyguard diagnostics. Only an explicitly unsecured
@@ -212,7 +266,7 @@ security settings, or attempts to bypass authentication.
 
 Success is `{ status: "awake-and-unlocked", keyguardDismissed: boolean }`,
 verified against screen-on and keyguard state, without returning a screenshot.
-Then observe approved non-sensitive content before other actions. A secure
+Then observe approved non-sensitive content before subsequent `mobile_act` input. A secure
 keyguard or SIM lock returns `MANUAL_UNLOCK_REQUIRED`; unavailable,
 contradictory, or unfamiliar OEM diagnostics return
 `KEYGUARD_STATE_UNAVAILABLE`. `WAKE_FAILED` means readiness could not be
@@ -278,10 +332,12 @@ the plugin cannot reliably diagnose protection from a dark image and never
 bypasses it. Screenshot and hierarchy status are independent; without a usable
 screenshot, coordinate gestures are blocked. Without either observation,
 normal input stops; explicitly requested `mobile_wake` is the bounded
-no-capture exception. Password-node text is redacted, not a guarantee that a whole
-screen contains no secrets.
+no-capture exception for waking. App-management tools independently operate on
+explicit package/file targets without screen observations. Password-node text
+is redacted, not a guarantee that a whole screen contains no secrets.
 
-Reads are bounded: commands have a 15-second deadline and 16 MiB output limit;
+Reads are bounded: commands have a 15-second deadline and 16 MiB output limit
+(APK installation alone allows 120 seconds);
 primary-display diagnostics have a shorter two-second attempt deadline and
 retry transient read failures at most once. Display parsing is limited to
 1 MiB; raw display diagnostics are not returned in tool results or saved to disk.
@@ -296,6 +352,11 @@ per ADB protocol inventory response, and identity properties to
 truncated. Wireless qualification may reject an OEM whose TLS evidence cannot
 be read.
 
+App inventories are bounded to 1 MiB and 10,000 packages, foreground activity
+diagnostics to 2 MiB, and package-state diagnostics to 1 MiB. Raw app diagnostics
+are not returned or saved. App package inventories/foreground metadata can
+also be sensitive and should be requested only for the authorized task.
+
 One server serializes its actions, but there is no cross-process device lock:
 use one controller per phone. Disabling/unloading the plugin stops its bounded
 command helpers/monitor and clears selection, not the shared ADB server or
@@ -308,9 +369,9 @@ The initial POC must not send messages/forms, change settings/accounts, make
 purchases, grant permissions, or enter credentials. Generic taps/keys can do
 those things even though no dedicated tool is provided.
 
-There is no iOS/emulator/cloud-device support, streaming/canvas, app
-installation/uninstallation, recording, file transfer, remote service, or
-legacy wireless fallback. Secure lock-screen authentication is never automated.
+There is no iOS/emulator/cloud-device support, streaming/canvas, recording,
+general-purpose file transfer, remote service, or legacy wireless fallback.
+Secure lock-screen authentication is never automated.
 
 ## Real-hardware acceptance runbook
 
@@ -352,19 +413,37 @@ assertions, no-fallback result, and approved images only. Never commit evidence.
 | --- | --- |
 | Fixture/subprocess/MCP/package behavior | Local automated checks; no real ADB/device access. |
 | Plugin recognition | Read-only Copilot CLI 1.0.99-2 mount on Node 22.15.1. |
-| Actual Copilot App installation/skill/tool loading | Unverified; installation permission required. |
+| Actual Copilot App tool loading | Verified with thirteen registered tools and the full USB app-management lifecycle on one Android 11 phone. |
+| USB app-management lifecycle | All six operations passed through the reinstalled plugin on one Android 11 phone, including the package-state parser fix. |
 | Physical USB and unplugged paired Wi-Fi journeys | Unverified; hardware and control consent required. |
 
 Full POC acceptance requires App loading and the physical runs/no-fallback
 check. Fixture success is not a substitute. See [SUPPORT.md](SUPPORT.md) for safe
 issue reports and [SECURITY.md](SECURITY.md) for security reporting.
 
-Wake/unsecured-dismissal hardware acceptance is also pending. On a disposable
-demo device with an existing unsecured lock, explicitly approve waking it and
-verify the display turns on and the keyguard disappears. Do not remove or
-change a real device's security settings for this check. On an existing secure
-lock, verify only waking occurs and manual authentication is required, without
-capturing the lock screen. Unknown OEM diagnostics must stop dismissal.
+Wake and unsecured-keyguard dismissal passed on the USB-connected Android 11
+phone without changing its security settings or capturing its lock screen.
+Secure-lock and unknown-OEM hardware cases remain pending. On an existing
+secure lock, verify only waking occurs and manual authentication is required,
+without capturing the lock screen. Unknown OEM diagnostics must stop dismissal;
+do not remove or change a real device's security settings for testing.
+
+All six app-management operations passed on one USB-connected Android 11 phone
+using the explicitly approved Field Notes Demo APK (`dev.mobileuse.demo`):
+inventory, installation, launch, foreground lookup, force-stop, and
+uninstallation with current-user data deletion. The demo was absent before
+installation and verified absent after removal. Termination passed through the
+rebuilt MCP server after fixing unrelated user headings in package diagnostics.
+The complete lifecycle then passed again through the reinstalled plugin,
+including termination verification.
+
+MIUI first-run permissions and an installation prompt required user handling.
+An initially rejected installation was retried only after the user explicitly
+requested another attempt. Missing-package launch/terminate/uninstall and
+missing-file install guards also passed without app mutations. Paired-wireless
+app management remains unverified: repeat the approved lifecycle on the
+explicitly selected paired-wireless endpoint without USB, and never retry an
+uncertain mutation automatically.
 
 ## Licensing
 
