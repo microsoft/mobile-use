@@ -136,14 +136,6 @@ export const executeCommand: CommandRunner = (executable, args, options) => new 
       code = "ADB_SERVER_UNAVAILABLE";
       message = "The local ADB server is unavailable.";
       remediation = "Ask for approval to use mobile_start_adb_server, then retry discovery. Do not kill/restart a shared server or infer the phone's connection state from this failure.";
-    } else if (details.includes("unauthorized")) {
-      code = "DEVICE_UNAUTHORIZED";
-      message = "The selected device has not authorized this host.";
-      remediation = "The user must accept the intended debugging key on the unlocked phone.";
-    } else if (details.includes("offline")) {
-      code = "DEVICE_OFFLINE";
-      message = "The selected device is offline.";
-      remediation = "Restore the connection, rediscover, and explicitly reselect.";
     } else if (/failure \[install_[a-z0-9_]+/.test(details)) {
       code = "APP_INSTALL_FAILED";
       message = "Android rejected the APK installation.";
@@ -152,6 +144,14 @@ export const executeCommand: CommandRunner = (executable, args, options) => new 
       code = "APP_UNINSTALL_FAILED";
       message = "Android rejected the app uninstallation.";
       remediation = "Check the package and device policy. Do not bypass protected-app restrictions or automatically retry.";
+    } else if (details.includes("unauthorized")) {
+      code = "DEVICE_UNAUTHORIZED";
+      message = "The selected device has not authorized this host.";
+      remediation = "The user must accept the intended debugging key on the unlocked phone.";
+    } else if (details.includes("offline")) {
+      code = "DEVICE_OFFLINE";
+      message = "The selected device is offline.";
+      remediation = "Restore the connection, rediscover, and explicitly reselect.";
     } else if (/not found|no devices|closed|cannot connect|connection reset/.test(details)) {
       code = "TRANSPORT_LOST";
       message = "The selected ADB transport is unavailable.";
