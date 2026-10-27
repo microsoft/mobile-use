@@ -42,6 +42,8 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.match(skill, /Developer options/);
   assert.match(skill, /permission to call \*\*`mobile_start_adb_server`\*\*/);
   assert.match(skill, /Doctor and inventory never invoke startup/);
+  assert.match(skill, /includeScreenshot: false/);
+  assert.match(skill, /Hierarchy-only actions never\s+capture screenshots/);
   const notices = await readFile(path.join(artifact, "THIRD_PARTY_NOTICES"), "utf8");
   assert.match(notices, /@modelcontextprotocol\/server@2\.3\.1/);
   assert.match(notices, /zod@4\.6\.7/);
@@ -105,6 +107,10 @@ for (const mode of ["legacy", "auto"]) {
       "mobile_launch_app", "mobile_list_apps", "mobile_list_devices", "mobile_observe",
       "mobile_select_device", "mobile_start_adb_server", "mobile_terminate_app", "mobile_uninstall_app", "mobile_wake",
     ]);
+    const observe = tools.tools.find((tool) => tool.name === "mobile_observe");
+    assert.deepEqual(observe?.inputSchema.required, ["targetToken"]);
+    assert.equal(observe?.inputSchema.properties?.includeScreenshot?.type, "boolean");
+    assert.equal(observe?.inputSchema.properties?.includeScreenshot?.default, true);
     const doctor = await client.callTool({ name: "mobile_doctor", arguments: {} });
     assert.equal(doctor.isError, true);
     const text = doctor.content.find((block) => block.type === "text")?.text;

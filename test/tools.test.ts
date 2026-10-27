@@ -46,6 +46,79 @@ function setupSteps(value: Record<string, unknown>, stage: string): string {
 }
 
 for (const mode of ["legacy", "auto"] as const) {
+  test(`hierarchy-only observation and action results remain screenshot-free over ${mode}`, async (t) => {
+    const { client } = await fixture(t, mode, "no-screenshots");
+    assert.match(client.getInstructions() ?? "", /includeScreenshot: false/);
+    const observe = (await client.listTools()).tools.find((tool) => tool.name === "mobile_observe");
+    assert.ok(observe);
+    assert.equal(observe.inputSchema.additionalProperties, false);
+    assert.deepEqual(observe.inputSchema.required, ["targetToken"]);
+    const screenshotOption = observe.inputSchema.properties?.includeScreenshot;
+    assert.ok(isRecord(screenshotOption));
+    assert.equal(screenshotOption.type, "boolean");
+    assert.equal(screenshotOption.default, true);
+    const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+    for (const invalid of ["false", null, 0]) {
+      const result = await client.callTool({
+        name: "mobile_observe", arguments: { targetToken: selected.targetToken, includeScreenshot: invalid },
+      });
+      assert.equal(result.isError, true);
+    }
+    const observed = await client.callTool({
+      name: "mobile_observe", arguments: { targetToken: selected.targetToken, includeScreenshot: false },
+    });
+    assert.equal(observed.isError, undefined);
+    assert.ok(Array.isArray(observed.content) && observed.content.length === 1);
+    const initialObservation = payload(observed).observation;
+    assert.ok(isRecord(initialObservation));
+    let observation = initialObservation;
+    assert.deepEqual(observation.screenshot, { status: "skipped", error: null });
+    assert.deepEqual(observation.hierarchy, { status: "ok", error: null });
+    assert.ok(Array.isArray(observation.elements) && isRecord(observation.elements[0]));
+    assert.equal(observation.elements[0].text, "Demo");
+    for (const action of [{ kind: "tap", target: { elementRef: "e1" } }, { kind: "key", key: "BACK" }]) {
+      const acted = await client.callTool({
+        name: "mobile_act",
+        arguments: { targetToken: selected.targetToken, observationId: observation.observationId, action },
+      });
+      assert.equal(acted.isError, undefined);
+      assert.ok(Array.isArray(acted.content) && acted.content.length === 1);
+      const result = payload(acted);
+      assert.equal(result.dispatchStatus, "dispatched");
+      assert.equal(result.verificationStatus, "requires-observation-review");
+      assert.ok(isRecord(result.after));
+      observation = result.after;
+      assert.deepEqual(observation.screenshot, { status: "skipped", error: null });
+    }
+    for (const action of [
+      { kind: "tap", target: { x: 10, y: 10 } },
+      { kind: "swipe", from: { x: 10, y: 100 }, to: { x: 10, y: 50 } },
+    ]) {
+      const fresh = payload(await client.callTool({
+        name: "mobile_observe", arguments: { targetToken: selected.targetToken, includeScreenshot: false },
+      })).observation;
+      assert.ok(isRecord(fresh));
+      const rejected = await client.callTool({
+        name: "mobile_act", arguments: { targetToken: selected.targetToken, observationId: fresh.observationId, action },
+      });
+      assert.equal(rejected.isError, true);
+      const error = payload(rejected).error;
+      assert.ok(isRecord(error) && error.code === "CAPTURE_UNAVAILABLE" && error.actionMayHaveRun === false);
+    }
+  });
+
+  test(`hierarchy-only capture cannot silently fall back to an image over ${mode}`, async (t) => {
+    const { client } = await fixture(t, mode, "hierarchy-unavailable");
+    const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+    const observed = await client.callTool({
+      name: "mobile_observe", arguments: { targetToken: selected.targetToken, includeScreenshot: false },
+    });
+    assert.equal(observed.isError, true);
+    assert.ok(Array.isArray(observed.content) && observed.content.length === 1);
+    const error = payload(observed).error;
+    assert.ok(isRecord(error) && error.code === "OBSERVATION_UNAVAILABLE" && error.actionMayHaveRun === false);
+  });
+
   test(`termination verification ignores MIUI's unrelated user headings over ${mode}`, async (t) => {
     const { client } = await fixture(t, mode, "app-miui-package-users");
     const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));

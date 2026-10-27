@@ -70,10 +70,10 @@ export function createMobileUseServer(service: MobileUseService): McpServer {
   }, (input, ctx) => safely(async () => result(await service.selectDevice(input.endpointId, ctx.mcpReq.signal))));
 
   server.registerTool("mobile_observe", {
-    description: "Read the selected device's primary display PNG, native UI hierarchy, and independently verified display geometry, with separate screenshot/hierarchy/displayState statuses and fresh references. Unverified display state blocks input. Only observe user-approved non-sensitive content; results can be sent to the configured model service.",
-    inputSchema: z.strictObject({ targetToken }),
+    description: "Read the selected device's native UI hierarchy and independently verified display geometry, optionally with a primary display PNG. includeScreenshot defaults to true; set false for hierarchy-only observation that never captures a screenshot, including subsequent mobile_act revalidation and results. Screenshot status is skipped in that mode, and coordinate taps/swipes are blocked; use elementRef taps. Unverified display state blocks input. Only observe user-approved non-sensitive content; results can be sent to the configured model service.",
+    inputSchema: z.strictObject({ targetToken, includeScreenshot: z.boolean().default(true) }),
     annotations: readOnly,
-  }, (input, ctx) => safely(async () => observationResult(await service.observe(input.targetToken, ctx.mcpReq.signal))));
+  }, (input, ctx) => safely(async () => observationResult(await service.observe(input.targetToken, ctx.mcpReq.signal, input.includeScreenshot))));
 
   server.registerTool("mobile_wake", {
     description: "Only when explicitly requested, wake the selected phone and dismiss an unsecured lock screen. Requires a target token but no screen observation; invalidates previous observations. Never enters credentials, bypasses authentication, or captures the lock screen. Secure or unrecognized lock states require manual unlocking. After success, observe approved non-sensitive content before subsequent mobile_act input. Never automatically replay an uncertain result.",
@@ -82,7 +82,7 @@ export function createMobileUseServer(service: MobileUseService): McpServer {
   }, (input, ctx) => safely(async () => result(await service.wake(input.targetToken, ctx.mcpReq.signal))));
 
   server.registerTool("mobile_act", {
-    description: "Perform ONE explicitly authorized bounded action on the selected transport using the latest observation (consumed on attempt, expires after 30 seconds). Then observe and verify the requested state. Text appends to a focused non-password native EditText; supports only letters, digits, spaces, periods, commas, underscores, and hyphens. No blind batches, shell, helper installation, or endpoint fallback. Never replay uncertain input. Generic taps/keys can have consequences: installation/debugging trust is not user consent.",
+    description: "Perform ONE explicitly authorized bounded action on the selected transport using the latest observation (consumed on attempt, expires after 30 seconds). Preserve that observation's screenshot setting during revalidation and the returned observation; hierarchy-only mode never captures screenshots and rejects coordinate taps/swipes. Then verify the requested state. Text appends to a focused non-password native EditText; supports only letters, digits, spaces, periods, commas, underscores, and hyphens. No blind batches, shell, helper installation, or endpoint fallback. Never replay uncertain input. Generic taps/keys can have consequences: installation/debugging trust is not user consent.",
     inputSchema: z.strictObject({ targetToken, observationId: z.string().uuid(), action: actionSchema }),
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, (input, ctx) => safely(async () => {

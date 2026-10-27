@@ -79,7 +79,7 @@ export interface Observation {
   nonAtomic: true;
   display: { width: number; height: number; rotation: number | null } | null;
   displayState: ReadStatus;
-  screenshot: ReadStatus;
+  screenshot: ReadStatus | { status: "skipped"; error: null };
   hierarchy: ReadStatus;
   elements: ScreenElement[];
   warnings: string[];

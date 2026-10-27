@@ -10,8 +10,11 @@ Platform-Tools directly; it does not import, vendor, or launch mobile-mcp.
 Copilot App tool loading and all six app-management operations have been
 verified through the reinstalled plugin over USB on one Android 11 phone,
 including termination verification after a package-diagnostic parser fix.
-Screen observe-act journeys and paired-wireless acceptance remain
-**unverified**. This is not a released or production-supported capability.
+Hierarchy-only observation and element-reference tab navigation have also been
+verified through the reinstalled Copilot App plugin over USB on that phone.
+Screenshot-based observe-act journeys and paired-wireless acceptance remain
+**unverified**.
+This is not a released or production-supported capability.
 
 ## Prerequisites
 
@@ -191,7 +194,7 @@ kill/restart the shared ADB server or alter global ADB/network settings.
 | `mobile_list_devices` | Show endpoint IDs, transport IDs/kinds, all states, and next setup/selection steps. Discovery failure is not an empty list. |
 | `mobile_select_device` | Bind exactly the endpoint the user chose; qualify Android/physical-device and wireless evidence; return a session target token. |
 | `mobile_wake` | With explicit permission and a target token, wake the display and dismiss only an unsecured lock screen. No observation or screen capture; secure/unknown lock states require manual unlocking. |
-| `mobile_observe` | Require that token; return a fresh observation ID, display geometry, hierarchy/status/warnings, and a separate PNG image block when usable. |
+| `mobile_observe` | Require that token; return a fresh observation ID, display geometry, hierarchy/status/warnings, and a separate PNG image block when usable. Set `includeScreenshot: false` to read only hierarchy/display state without capturing an image. |
 | `mobile_act` | Require target and latest observation IDs; dispatch one bounded action and return the next observation or an explicit unknown/unverified outcome. |
 | `mobile_list_apps` | With a target token, list all installed package names, including system packages, for the current Android user. No screen capture. |
 | `mobile_get_foreground_app` | With a target token, read the primary display's foreground package, activity, and Android user without capturing the screen. |
@@ -310,6 +313,30 @@ rather than just the logical UI rotation.
 Hierarchy capture uses a forced device PTY for `/dev/tty` without leaving a dump
 file on the phone. PNG capture stays on raw `exec-out`, avoiding terminal
 newline conversion of image bytes.
+
+For screenshot-free observation, call `mobile_observe` with:
+
+```json
+{
+  "targetToken": "<selected target token>",
+  "includeScreenshot": false
+}
+```
+
+This skips screen capture entirely, returns no image block, and reports
+`screenshot: { status: "skipped", error: null }`. UI text, labels, resource IDs,
+element references, and independently verified display geometry remain
+available when exposed by Android. The default is `includeScreenshot: true`,
+preserving existing screenshot-plus-hierarchy behavior.
+
+`mobile_act` preserves the observation's screenshot setting for both its
+pre-dispatch revalidation and post-action observation, including chained
+actions. In hierarchy-only mode, use `elementRef` taps; coordinate taps and
+swipes fail with `CAPTURE_UNAVAILABLE` rather than taking a screenshot.
+Typing, keys, and app launches retain their existing guards. If hierarchy
+capture fails, observation fails without falling back to an image. Empty or
+custom-drawn hierarchies cannot supply missing UI content; report the
+limitation instead of silently enabling screenshots.
 
 `dispatchStatus: dispatched` proves dispatch, **not** the requested state.
 Inspect the returned observation and assert the intended UI state.

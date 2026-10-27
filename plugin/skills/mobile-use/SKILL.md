@@ -140,7 +140,11 @@ unless the user approves that specific evidence and destination.
    automatically replay an uncertain wake. Do not capture authentication UI.
 5. Call `mobile_observe` on approved, non-sensitive content. Inspect its image,
    hierarchy and `displayState` statuses, warnings, display, and element
-   references. Hierarchy and image capture are not atomic. Display rotation is
+   references. When the user requests no screenshots, set `includeScreenshot: false`.
+   This never captures an image and returns `screenshot.status: skipped`;
+   inspect the exposed UI text, labels, resource IDs, and element references.
+   The default is true, retaining image-plus-hierarchy observation.
+   Hierarchy and image capture are not atomic. Display rotation is
    verified independently of the hierarchy; missing hierarchy alone does not
    imply rotation changed. `DISPLAY_STATE_UNAVAILABLE` means normal input is
    blocked: obtain a fresh observation with verified display state, never
@@ -150,9 +154,19 @@ unless the user approves that specific evidence and destination.
    coordinates require a usable screenshot. Do not guess invisible elements.
    An observation expires after 30 seconds and is consumed on an action attempt;
    coordinate gestures also require an unchanged screenshot at dispatch.
+   `mobile_act` preserves the observation's screenshot setting during
+   revalidation and in its returned observation. Hierarchy-only actions never
+   capture screenshots; coordinate taps and swipes fail with `CAPTURE_UNAVAILABLE`.
+   Use enabled clickable `elementRef` targets instead.
 7. Inspect the returned new observation and verify the user's intended state.
    `dispatched` does not mean the task succeeded. Repeat observe-act-verify, not
    blind action batches.
+
+In hierarchy-only mode, unavailable hierarchy capture fails explicitly without
+falling back to screenshots. Empty or custom-drawn hierarchies may expose no
+usable content; report this limitation rather than guessing or silently
+enabling screenshots. UI text can still contain sensitive information and is
+subject to the same consent and no-saving rules as images.
 
 UI actions are limited to explicit waking/unsecured-keyguard dismissal, safe
 navigation, one bounded swipe, supported ASCII entry, Back/Home/Enter, and

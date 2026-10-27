@@ -19,6 +19,9 @@ export const onboardingInstructions =
   "Use mobile_list_devices to verify connectivity, preserve unauthorized/offline states and discovery errors, " +
   "and ask which exact endpoint to select. Do not repeat setup steps already verified by current diagnostics. " +
   "No screen observation or control until an explicit target and safe task are authorized. " +
+  "When the user requests no screenshots, call mobile_observe with includeScreenshot: false. " +
+  "This reads only the UI hierarchy and display state; mobile_act preserves that mode without screen capture. " +
+  "Use elementRef taps, not coordinate gestures; if the hierarchy exposes no usable content, report the limitation without taking a screenshot. " +
   "App-management tools require the selected target token but no screen observation. " +
   "List/foreground reads may expose sensitive app metadata. Launch only the requested installed package. " +
   "Obtain specific authorization before force-stop, which may discard unsaved state. " +

@@ -207,6 +207,131 @@ test("a semantic tap is revalidated, returns a new observation, and never claims
   assert.equal(adb.inputs.length, 1);
 });
 
+test("hierarchy-only observations and chained actions never invoke screen capture", async (t) => {
+  const { adb, service } = harness(t);
+  adb.xml = hierarchy(editField({ text: "Fixture headline" }));
+  const selected = await service.selectDevice(USB);
+  let screen = await service.observe(selected.targetToken, undefined, false);
+  assert.equal(screen.observation.elements[0]?.text, "Fixture headline");
+  assert.deepEqual(screen.observation.display, { width: 80, height: 160, rotation: 0 });
+  assert.deepEqual(screen.observation.hierarchy, { status: "ok", error: null });
+  for (const action of [
+    { kind: "tap", target: { elementRef: "e1" } },
+    { kind: "type_text", text: "POC" },
+    { kind: "key", key: "BACK" },
+    { kind: "launch_app", packageName: "example.poc" },
+  ]) {
+    assert.equal(screen.image, null);
+    assert.deepEqual(screen.observation.screenshot, { status: "skipped", error: null });
+    const result = await service.act(selected.targetToken, screen.observation.observationId, action);
+    assert.equal(result.dispatchStatus, "dispatched");
+    assert.equal(result.verificationStatus, "requires-observation-review");
+    assert.ok(result.after);
+    screen = result.after;
+  }
+  assert.equal(screen.image, null);
+  assert.deepEqual(screen.observation.screenshot, { status: "skipped", error: null });
+  assert.equal(adb.inputs.length, 4);
+  assert.equal(adb.calls.some((call) => call.args.includes("screencap")), false);
+});
+
+test("hierarchy-only coordinate taps and swipes fail without input or screen capture", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  for (const action of [
+    { kind: "tap", target: { x: 10, y: 10 } },
+    { kind: "swipe", from: { x: 10, y: 100 }, to: { x: 10, y: 50 } },
+  ]) {
+    const screen = await service.observe(selected.targetToken, undefined, false);
+    await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, action), hasCode("CAPTURE_UNAVAILABLE"));
+  }
+  assert.equal(adb.inputs.length, 0);
+  assert.equal(adb.calls.some((call) => call.args.includes("screencap")), false);
+});
+
+test("hierarchy-only capture failure and empty content never fall back to screenshots", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  adb.xml = "ERROR: null root node";
+  await assert.rejects(service.observe(selected.targetToken, undefined, false), hasCode("OBSERVATION_UNAVAILABLE"));
+  adb.xml = hierarchy("");
+  const empty = await service.observe(selected.targetToken, undefined, false);
+  assert.equal(empty.image, null);
+  assert.deepEqual(empty.observation.elements, []);
+  assert.match(empty.observation.warnings.join(" "), /No semantic elements/);
+  await assert.rejects(service.act(selected.targetToken, empty.observation.observationId, {
+    kind: "tap", target: { elementRef: "e1" },
+  }), hasCode("ELEMENT_CHANGED"));
+  assert.equal(adb.inputs.length, 0);
+  assert.equal(adb.calls.some((call) => call.args.includes("screencap")), false);
+});
+
+test("hierarchy-only input retains element, rotation, hierarchy, and display-state guards", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  for (const change of ["element", "rotation", "hierarchy", "display"] as const) {
+    adb.xml = hierarchy();
+    adb.display = displayDiagnostics();
+    const screen = await service.observe(selected.targetToken, undefined, false);
+    if (change === "element") adb.xml = hierarchy(node({ text: "Changed" }));
+    if (change === "rotation") {
+      adb.xml = hierarchy(node(), 2);
+      adb.display = displayDiagnostics(2);
+    }
+    if (change === "hierarchy") adb.xml = "ERROR: null root node";
+    if (change === "display") adb.display = "Unrecognized display diagnostics";
+    const code = change === "element" ? "ELEMENT_CHANGED" : change === "rotation" ? "STALE_OBSERVATION"
+      : change === "hierarchy" ? "OBSERVATION_UNAVAILABLE" : "DISPLAY_STATE_UNAVAILABLE";
+    await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+      kind: "tap", target: { elementRef: "e1" },
+    }), hasCode(code));
+  }
+  const unverified = await service.observe(selected.targetToken, undefined, false);
+  assert.equal(unverified.observation.display, null);
+  assert.equal(unverified.observation.displayState.status, "unavailable");
+  assert.equal(unverified.observation.displayState.error?.code, "DISPLAY_STATE_UNAVAILABLE");
+  assert.equal(adb.inputs.length, 0);
+  assert.equal(adb.calls.some((call) => call.args.includes("screencap")), false);
+});
+
+test("failed hierarchy-only post-action observation remains unverified without a screenshot fallback", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  const screen = await service.observe(selected.targetToken, undefined, false);
+  adb.handler = (call) => {
+    if (call.options.mutating) adb.xml = "";
+    return undefined;
+  };
+  const result = await service.act(selected.targetToken, screen.observation.observationId, { kind: "key", key: "BACK" });
+  assert.equal(result.dispatchStatus, "dispatched");
+  assert.equal(result.verificationStatus, "unverified");
+  assert.equal(result.after, null);
+  assert.equal(result.error?.code, "OBSERVATION_UNAVAILABLE");
+  assert.equal(result.error?.actionMayHaveRun, true);
+  assert.equal(adb.inputs.length, 1);
+  assert.equal(adb.calls.some((call) => call.args.includes("screencap")), false);
+});
+
+test("a new default observation explicitly returns to screenshot-plus-hierarchy capture", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  const textOnly = await service.observe(selected.targetToken, undefined, false);
+  assert.equal(textOnly.image, null);
+  assert.equal(adb.calls.some((call) => call.args.includes("screencap")), false);
+  const full = await service.observe(selected.targetToken);
+  assert.deepEqual(full.observation.screenshot, { status: "ok", error: null });
+  assert.ok(full.image);
+  await assert.rejects(service.act(selected.targetToken, textOnly.observation.observationId, {
+    kind: "tap", target: { elementRef: "e1" },
+  }), hasCode("STALE_OBSERVATION"));
+  const fresh = await service.observe(selected.targetToken);
+  const result = await service.act(selected.targetToken, fresh.observation.observationId, {
+    kind: "tap", target: { x: 10, y: 10 },
+  });
+  assert.ok(result.after?.image);
+  assert.equal(result.after.observation.screenshot.status, "ok");
+});
+
 test("element revalidation is independent of freshly assigned reference numbers", async (t) => {
   const { adb, service } = harness(t);
   const { selected, screen } = await ready(service);
