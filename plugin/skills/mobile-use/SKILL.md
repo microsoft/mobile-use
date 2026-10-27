@@ -171,14 +171,26 @@ subject to the same consent and no-saving rules as images.
 UI actions are limited to explicit waking/unsecured-keyguard dismissal, safe
 navigation, single taps, double-taps, one bounded swipe, supported ASCII entry,
 Back/Home/Enter, and launching a specifically requested installed app.
+Before double-tap, obtain specific approval to upload and run the bundled
+gesture helper on the selected device, then call `mobile_prepare_gestures`.
+It deploys a read-only DEX to a new private `/data/local/tmp/mobile-use-gestures-*`
+directory, verifies SHA-256 and API compatibility without input, and invalidates
+old observations. No APK, permissions, network connection, service, or daemon
+is installed. The files remain on the device; no automatic deletion is performed.
+Preparation must be approved again after reselection/server restart. Never
+automatically retry uncertain preparation or deploy through shell commands.
 Use `kind: "double_tap"` with
 `target: { elementRef }` or screenshot `target: { x, y }` for exactly two
 consecutive taps at the same revalidated point. It is one bounded action:
 revalidate before the pair and inspect the returned observation afterward,
-not between taps. Optional integer `delayMs` (0-250, default 50) adds a
-device-side pause between taps. Command startup and scheduling add to this
-pause, so it is not the exact inter-tap interval; adding delay cannot fix taps
-that are already too far apart. Hierarchy-only mode permits element references but not
+not between taps. The helper injects both taps within one Android process,
+checks all four injection acknowledgements, and never falls back to launching
+`input` twice. Optional integer `delayMs` (0-250, default 50) requests the
+first-UP to second-DOWN event-time interval. Scheduling may increase it;
+`gestureTiming` reports `requestedDelayMs` and `actualGapMs`. Zero may be below
+Android's minimum double-tap interval. Missing/changed/incompatible helpers fail
+explicitly and are never automatically deployed or replaced.
+Hierarchy-only mode permits element references but not
 coordinates. Device/app timing determines double-tap recognition; dispatch
 alone is not proof. Both taps use the same point even if the first changes the
 screen, so authorize the pair only when safe. Never automatically replay an

@@ -472,21 +472,62 @@ test("input dispatch shares an exact transport and fixed Android key codes", asy
   ]);
 });
 
-test("double-tap dispatch uses a bounded device-side pause on the exact transport with no host delay", async () => {
+test("double-tap dispatch uses one prepared Android process on the exact transport", async () => {
   const adb = new FakeAdb();
   const controller = new AbortController();
-  for (const [delayMs, seconds] of [[0, "0.000"], [1, "0.001"], [50, "0.050"], [250, "0.250"]] as const) {
-    await backend(adb, WIFI).doubleTap(10, 20, delayMs, controller.signal);
+  const android = backend(adb, WIFI);
+  const prepared = await android.prepareGestures();
+  for (const delayMs of [0, 1, 50, 250]) {
+    assert.equal(await android.doubleTap(10, 20, delayMs, controller.signal), delayMs);
     assert.deepEqual(adb.inputs.at(-1)?.args, [
-      "-t", "12", "shell", "input", "tap", "10", "20",
-      "&&", "sleep", seconds, "&&", "input", "tap", "10", "20",
+      "-t", "12", "shell", `CLASSPATH=${prepared.remotePath}`, "app_process", "/",
+      "dev.mobileuse.gestures.GestureMain", "10", "20", String(delayMs),
     ]);
   }
-  assert.equal(adb.calls.length, 4);
   assert.equal(adb.inputs.length, 4);
+  assert.equal(adb.calls.filter((call) => call.args[2] === "push").length, 1);
   assert.equal(adb.inputs[0]?.options.signal?.aborted, false);
   controller.abort();
   assert.equal(adb.inputs[0]?.options.signal?.aborted, true);
+});
+
+test("double-tap never deploys implicitly and rejects changed or missing helper bytes before input", async () => {
+  const adb = new FakeAdb();
+  const android = backend(adb);
+  await assert.rejects(android.doubleTap(10, 20, 50), hasCode("GESTURE_HELPER_NOT_PREPARED"));
+  assert.equal(adb.calls.length, 0);
+  const prepared = await android.prepareGestures();
+  adb.gestureFiles.set(prepared.remotePath, Buffer.from("changed"));
+  await assert.rejects(android.doubleTap(10, 20, 50), hasCode("GESTURE_HELPER_UNAVAILABLE"));
+  adb.gestureFiles.delete(prepared.remotePath);
+  await assert.rejects(android.doubleTap(10, 20, 50), hasCode("ADB_FAILED"));
+  assert.equal(adb.inputs.length, 0);
+});
+
+test("helper compatibility failures leave double-tap unprepared and never inject input", async () => {
+  const adb = new FakeAdb();
+  const android = backend(adb);
+  adb.handler = (call) => call.args.at(-1) === "--check" ? Buffer.from("incompatible\n") : undefined;
+  await assert.rejects(android.prepareGestures(), (error: unknown) => {
+    assert.ok(error instanceof MobileUseError && error.actionMayHaveRun && !error.retryable);
+    return hasCode("GESTURE_HELPER_UNAVAILABLE")(error);
+  });
+  await assert.rejects(android.doubleTap(10, 20, 50), hasCode("GESTURE_HELPER_NOT_PREPARED"));
+  assert.equal(adb.inputs.length, 0);
+});
+
+test("invalid helper acknowledgements are uncertain and are never retried", async () => {
+  const adb = new FakeAdb();
+  const android = backend(adb);
+  await android.prepareGestures();
+  for (const output of ["", "MOBILE_USE_DOUBLE_TAP_V1 301\n", "MOBILE_USE_DOUBLE_TAP_V1 -1\n", "noise\nMOBILE_USE_DOUBLE_TAP_V1 50\n"]) {
+    adb.handler = (call) => call.args[4] === "app_process" ? Buffer.from(output) : undefined;
+    await assert.rejects(android.doubleTap(10, 20, 50), (error: unknown) => {
+      assert.ok(error instanceof MobileUseError && error.actionMayHaveRun && !error.retryable);
+      return hasCode("GESTURE_HELPER_UNAVAILABLE")(error);
+    });
+  }
+  assert.equal(adb.inputs.length, 4);
 });
 
 test("app launch is limited to one resolved installed launcher and confirms only dispatch", async () => {

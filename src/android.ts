@@ -4,7 +4,8 @@ import { XMLParser, XMLValidator } from "fast-xml-parser";
 import type { AdbConnection, RunOptions } from "./adb.js";
 import { localApkFile, parseAndroidUser, parseForegroundApp, parseInstalledApps, parsePackageStopped, validatePackageName } from "./apps.js";
 import { checkCancelled, isRecord, MobileUseError, publicError } from "./errors.js";
-import type { AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, Rect, ScreenElement, WakeResult } from "./types.js";
+import { doubleTap, prepareGestures } from "./gestures.js";
+import type { AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, PreparedGestures, Rect, ScreenElement, WakeResult } from "./types.js";
 
 export interface Hierarchy {
   rotation: number;
@@ -326,6 +327,8 @@ export function parseHierarchy(output: string): Hierarchy {
 }
 
 export class AndroidBackend {
+  private gestureHelperPath: string | undefined;
+
   constructor(
     private readonly adb: AdbConnection,
     private readonly endpoint: DeviceEndpoint,
@@ -431,14 +434,15 @@ export class AndroidBackend {
     await this.input("tap", [x, y], signal);
   }
 
-  async doubleTap(x: number, y: number, delayMs: number, signal?: AbortSignal): Promise<void> {
-    // Keep both taps in one device-side command, without host round trips or observations between them.
-    await this.command(
-      ["shell", "input", "tap", String(x), String(y),
-        "&&", "sleep", (delayMs / 1000).toFixed(3),
-        "&&", "input", "tap", String(x), String(y)],
-      { mutating: true, ...(signal ? { signal } : {}) },
-    );
+  async prepareGestures(signal?: AbortSignal): Promise<PreparedGestures> {
+    this.gestureHelperPath = undefined;
+    const prepared = await prepareGestures((args, options) => this.command(args, options), signal);
+    this.gestureHelperPath = prepared.remotePath;
+    return prepared;
+  }
+
+  async doubleTap(x: number, y: number, delayMs: number, signal?: AbortSignal): Promise<number> {
+    return doubleTap((args, options) => this.command(args, options), this.gestureHelperPath, x, y, delayMs, signal);
   }
 
   async swipe(from: { x: number; y: number }, to: { x: number; y: number }, durationMs: number, signal?: AbortSignal): Promise<void> {

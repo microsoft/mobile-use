@@ -7,7 +7,7 @@ import { checkCancelled, MobileUseError, publicError } from "./errors.js";
 import { actionSchema } from "./types.js";
 import type {
   ActionResult, AdbServerResult, AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, MobileAction, Observation,
-  ObservedScreen, ReadStatus, ScreenElement, SelectedTarget, WakeResult,
+  ObservedScreen, PreparedGestures, ReadStatus, ScreenElement, SelectedTarget, WakeResult,
 } from "./types.js";
 
 const OBSERVATION_MAX_AGE_MS = 30_000;
@@ -386,7 +386,11 @@ export class MobileUseService {
     return this.appOperation(targetToken, true, (backend) => backend.uninstallApp(packageName, signal), signal);
   }
 
-  private async dispatch(state: TargetState, action: MobileAction, previous: Snapshot, live: Snapshot, signal?: AbortSignal): Promise<void> {
+  prepareGestures(targetToken: string, signal?: AbortSignal): Promise<PreparedGestures> {
+    return this.appOperation(targetToken, true, (backend) => backend.prepareGestures(signal), signal);
+  }
+
+  private async dispatch(state: TargetState, action: MobileAction, previous: Snapshot, live: Snapshot, signal?: AbortSignal): Promise<number | undefined> {
     const old = previous.screen.observation;
     const current = live.screen.observation;
     if (old.displayState.status !== "ok" || current.displayState.status !== "ok" ||
@@ -430,7 +434,7 @@ export class MobileUseService {
           point = action.target;
         }
         requirePoint(point, current.display);
-        if (action.kind === "double_tap") await state.backend.doubleTap(point.x, point.y, action.delayMs, signal);
+        if (action.kind === "double_tap") return state.backend.doubleTap(point.x, point.y, action.delayMs, signal);
         else await state.backend.tap(point.x, point.y, signal);
         break;
       }
@@ -477,8 +481,12 @@ export class MobileUseService {
       await this.ensureIdentity(state, signal);
       const includeScreenshot = previous.screen.observation.screenshot.status !== "skipped";
       const live = await this.capture(state, signal, includeScreenshot);
+      let gestureTiming: ActionResult["gestureTiming"];
       try {
-        await this.dispatch(state, action, previous, live, signal);
+        const actualGapMs = await this.dispatch(state, action, previous, live, signal);
+        if (action.kind === "double_tap" && actualGapMs !== undefined) {
+          gestureTiming = { requestedDelayMs: action.delayMs, actualGapMs };
+        }
       } catch (error) {
         const failure = publicError(error);
         if (invalidatingCodes.has(failure.code)) this.invalidate(true);
@@ -494,13 +502,17 @@ export class MobileUseService {
         await this.ensureEndpoint(state, signal);
         const after = await this.capture(state, signal, includeScreenshot);
         this.snapshot = after;
-        return { dispatchStatus: "dispatched", verificationStatus: "requires-observation-review", after: after.screen, error: null };
+        return {
+          dispatchStatus: "dispatched", verificationStatus: "requires-observation-review", after: after.screen, error: null,
+          ...(gestureTiming ? { gestureTiming } : {}),
+        };
       } catch (error) {
         const failure = publicError(error);
         if (invalidatingCodes.has(failure.code)) this.invalidate(true);
         return {
           dispatchStatus: "dispatched", verificationStatus: "unverified", after: null,
           error: { ...failure.toJSON(), retryable: false, actionMayHaveRun: true },
+          ...(gestureTiming ? { gestureTiming } : {}),
         };
       }
     }, signal);

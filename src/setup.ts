@@ -19,6 +19,9 @@ export const onboardingInstructions =
   "Use mobile_list_devices to verify connectivity, preserve unauthorized/offline states and discovery errors, " +
   "and ask which exact endpoint to select. Do not repeat setup steps already verified by current diagnostics. " +
   "No screen observation or control until an explicit target and safe task are authorized. " +
+  "Double-tap additionally requires explicit approval to upload and run the bundled gesture helper on that device, " +
+  "then mobile_prepare_gestures and a fresh observation. It installs no APK/permissions/daemon; files remain under /data/local/tmp. " +
+  "Never automatically deploy a helper, retry uncertain preparation, or fall back to separate input processes. " +
   "When the user requests no screenshots, call mobile_observe with includeScreenshot: false. " +
   "This reads only the UI hierarchy and display state; mobile_act preserves that mode without screen capture. " +
   "Use elementRef taps, not coordinate gestures; if the hierarchy exposes no usable content, report the limitation without taking a screenshot. " +

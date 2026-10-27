@@ -50,6 +50,12 @@ export interface WakeResult {
   keyguardDismissed: boolean;
 }
 
+export interface PreparedGestures {
+  status: "prepared";
+  sha256: string;
+  remotePath: string;
+}
+
 export interface InstalledApps {
   userId: number;
   apps: { packageName: string }[];
@@ -95,6 +101,7 @@ export interface ActionResult {
   verificationStatus: "requires-observation-review" | "unverified";
   after: ObservedScreen | null;
   error: ErrorInfo | null;
+  gestureTiming?: { requestedDelayMs: number; actualGapMs: number };
 }
 
 const pointSchema = z.strictObject({

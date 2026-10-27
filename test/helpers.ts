@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { crc32, deflateSync } from "node:zlib";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { parseDeviceList } from "../src/adb.js";
 import type { AdbConnection, MonitorFactory, RunOptions } from "../src/adb.js";
 import { checkCancelled, MobileUseError } from "../src/errors.js";
@@ -106,6 +108,7 @@ export class FakeAdb implements AdbConnection {
   userId = 0;
   apps = new Set(["android", "example.poc"]);
   stoppedApps = new Set<string>();
+  gestureFiles = new Map<string, Buffer>();
   foreground: string | null = "example.poc/.MainActivity";
   keyguard = {
     showing: false, secure: false, simSecure: false, inputRestricted: false,
@@ -148,6 +151,22 @@ export class FakeAdb implements AdbConnection {
     assert.equal(args[0], "-t", "all device-bound fixture commands need an exact transport");
     assert.match(args[1] ?? "", /^\d+$/);
     const command = args.slice(2).join(" ");
+    if (args[2] === "push") {
+      this.gestureFiles.set(args[4] ?? "", await readFile(args[3] ?? ""));
+      return Buffer.from("1 file pushed\n");
+    }
+    if (command.startsWith("shell mkdir -m 700 /data/local/tmp/mobile-use-gestures-") ||
+      command.startsWith("shell chmod 400 /data/local/tmp/mobile-use-gestures-")) return Buffer.alloc(0);
+    if (command.startsWith("shell sha256sum /data/local/tmp/mobile-use-gestures-")) {
+      const file = args[4] ?? "";
+      const bytes = this.gestureFiles.get(file);
+      if (!bytes) throw new MobileUseError("ADB_FAILED", "Fixture helper missing.", "Prepare again.");
+      return Buffer.from(`${createHash("sha256").update(bytes).digest("hex")}  ${file}\n`);
+    }
+    if (args[3]?.startsWith("CLASSPATH=") && args[4] === "app_process") {
+      if (args.at(-1) === "--check") return Buffer.from("MOBILE_USE_GESTURES_V1_READY\n");
+      return Buffer.from(`MOBILE_USE_DOUBLE_TAP_V1 ${args.at(-1)}\n`);
+    }
     if (command === "shell am get-current-user") return Buffer.from(`${this.userId}\n`);
     if (command.startsWith("shell pm list packages --user ")) {
       return Buffer.from([...this.apps].map((name) => `package:${name}\n`).join(""));
@@ -202,7 +221,11 @@ export class FakeAdb implements AdbConnection {
     throw new Error(`Unexpected fixture command: ${command}`);
   }
 
-  get inputs(): AdbCall[] { return this.calls.filter((call) => call.options.mutating); }
+  get inputs(): AdbCall[] {
+    return this.calls.filter((call) => call.options.mutating &&
+      call.args[2] !== "push" && !["mkdir", "chmod"].includes(call.args[3] ?? "") &&
+      call.args.at(-1) !== "--check");
+  }
   stop(): void { this.stopped = true; }
 }
 
