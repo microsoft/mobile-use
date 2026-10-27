@@ -430,7 +430,7 @@ export class MobileUseService {
           point = action.target;
         }
         requirePoint(point, current.display);
-        if (action.kind === "double_tap") await state.backend.doubleTap(point.x, point.y, signal);
+        if (action.kind === "double_tap") await state.backend.doubleTap(point.x, point.y, action.delayMs, signal);
         else await state.backend.tap(point.x, point.y, signal);
         break;
       }

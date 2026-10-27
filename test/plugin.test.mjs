@@ -118,6 +118,10 @@ for (const mode of ["legacy", "auto"]) {
     const doubleTap = actions.find((action) => action.properties?.kind?.const === "double_tap");
     assert.ok(doubleTap, "the bundled action schema must expose double_tap");
     assert.deepEqual(doubleTap.required, ["kind", "target"]);
+    assert.equal(doubleTap.properties.delayMs.type, "integer");
+    assert.equal(doubleTap.properties.delayMs.minimum, 0);
+    assert.equal(doubleTap.properties.delayMs.maximum, 250);
+    assert.equal(doubleTap.properties.delayMs.default, 50);
     const doctor = await client.callTool({ name: "mobile_doctor", arguments: {} });
     assert.equal(doctor.isError, true);
     const text = doctor.content.find((block) => block.type === "text")?.text;

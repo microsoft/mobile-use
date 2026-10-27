@@ -79,6 +79,7 @@ for (const mode of ["legacy", "auto"] as const) {
     for (const action of [
       { kind: "tap", target: { elementRef: "e1" } },
       { kind: "double_tap", target: { elementRef: "e1" } },
+      { kind: "double_tap", target: { elementRef: "e1" }, delayMs: 75 },
       { kind: "key", key: "BACK" },
     ]) {
       const acted = await client.callTool({
@@ -93,6 +94,16 @@ for (const mode of ["legacy", "auto"] as const) {
       assert.ok(isRecord(result.after));
       observation = result.after;
       assert.deepEqual(observation.screenshot, { status: "skipped", error: null });
+    }
+    for (const delayMs of [-1, 251, 1.5, "50", "0;reboot", null]) {
+      const rejected = await client.callTool({
+        name: "mobile_act",
+        arguments: {
+          targetToken: selected.targetToken, observationId: observation.observationId,
+          action: { kind: "double_tap", target: { elementRef: "e1" }, delayMs },
+        },
+      });
+      assert.equal(rejected.isError, true);
     }
     for (const action of [
       { kind: "tap", target: { x: 10, y: 10 } },

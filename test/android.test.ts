@@ -74,7 +74,13 @@ test("the explicit text alphabet and action union reject unsupported input", () 
   }
   assert.equal(actionSchema.parse({ kind: "swipe", from: { x: 0, y: 0 }, to: { x: 1, y: 1 } }).kind, "swipe");
   for (const target of [{ elementRef: "e1" }, { x: 0, y: 20 }]) {
-    assert.deepEqual(actionSchema.parse({ kind: "double_tap", target }), { kind: "double_tap", target });
+    assert.deepEqual(actionSchema.parse({ kind: "double_tap", target }), { kind: "double_tap", target, delayMs: 50 });
+    for (const delayMs of [0, 1, 50, 250]) {
+      assert.deepEqual(actionSchema.parse({ kind: "double_tap", target, delayMs }), { kind: "double_tap", target, delayMs });
+    }
+    for (const delayMs of [-1, 251, 1.5, "50", "0;reboot", null, NaN, Infinity]) {
+      assert.equal(actionSchema.safeParse({ kind: "double_tap", target, delayMs }).success, false);
+    }
   }
   for (const value of [
     { kind: "shell", command: "reboot" },
@@ -466,14 +472,18 @@ test("input dispatch shares an exact transport and fixed Android key codes", asy
   ]);
 });
 
-test("double-tap dispatch uses one mutating command on the exact transport with no host delay", async () => {
+test("double-tap dispatch uses a bounded device-side pause on the exact transport with no host delay", async () => {
   const adb = new FakeAdb();
   const controller = new AbortController();
-  await backend(adb, WIFI).doubleTap(10, 20, controller.signal);
-  assert.equal(adb.calls.length, 1);
-  assert.deepEqual(adb.inputs[0]?.args, [
-    "-t", "12", "shell", "input", "tap", "10", "20", "&&", "input", "tap", "10", "20",
-  ]);
+  for (const [delayMs, seconds] of [[0, "0.000"], [1, "0.001"], [50, "0.050"], [250, "0.250"]] as const) {
+    await backend(adb, WIFI).doubleTap(10, 20, delayMs, controller.signal);
+    assert.deepEqual(adb.inputs.at(-1)?.args, [
+      "-t", "12", "shell", "input", "tap", "10", "20",
+      "&&", "sleep", seconds, "&&", "input", "tap", "10", "20",
+    ]);
+  }
+  assert.equal(adb.calls.length, 4);
+  assert.equal(adb.inputs.length, 4);
   assert.equal(adb.inputs[0]?.options.signal?.aborted, false);
   controller.abort();
   assert.equal(adb.inputs[0]?.options.signal?.aborted, true);

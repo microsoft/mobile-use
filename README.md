@@ -283,7 +283,7 @@ Supported action objects:
 | `kind` | Additional fields |
 | --- | --- |
 | `tap` | `target: { elementRef }` from the observation, or `target: { x, y }` from its screenshot. |
-| `double_tap` | Same `target` as `tap`; sends exactly two consecutive taps at that point in one device-side command. |
+| `double_tap` | Same `target` as `tap`; optional integer `delayMs` (0-250, default 50) adds a device-side pause between exactly two taps. |
 | `swipe` | `from: { x, y }`, `to: { x, y }`, optional `durationMs` (100-2000, default 400). |
 | `type_text` | `text`: 1-256 ASCII letters, digits, spaces, periods, commas, underscores, or hyphens. |
 | `key` | `key`: `BACK`, `HOME`, or `ENTER`. |
@@ -291,14 +291,20 @@ Supported action objects:
 
 `double_tap` revalidates once before the pair and returns an observation after
 both taps, without a host round trip or observation between them. It uses two
-consecutive Android `input tap` commands with no added delay or helper install;
-device scheduling and app gesture thresholds determine whether the pair is
+Android `input tap` commands with a device-side `sleep` between them and no
+helper install. `delayMs` controls only the added pause, not the full interval:
+command startup and scheduling add time, even at zero. Adding delay may help
+only when taps are too close together; it cannot fix an already excessive
+interval. Device scheduling and app gesture thresholds determine whether the pair is
 recognized as a double-tap. Dispatch does not prove gesture recognition. Verify
 the returned observation and never automatically replay an uncertain or partial
 pair. Both taps target the same point even if the first changes the screen, so
 authorize the pair only when that is safe. Hierarchy-only mode supports
 `elementRef` double-taps but rejects coordinate double-taps without capturing
 a screenshot.
+
+For example, `{ "kind": "double_tap", "target": { "x": 360, "y": 800 }, "delayMs": 50 }`
+requests a 50 ms added pause at a point from a fresh screenshot.
 
 Text appends to one unchanged, focused, enabled, non-password native EditText;
 it does not clear or submit the field. Unicode/control characters, other

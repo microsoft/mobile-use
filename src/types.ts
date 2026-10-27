@@ -119,6 +119,7 @@ export const actionSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("double_tap"),
     target: tapTargetSchema,
+    delayMs: z.number().int().min(0).max(250).default(50),
   }),
   z.strictObject({
     kind: z.literal("swipe"),

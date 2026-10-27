@@ -254,25 +254,44 @@ test("hierarchy-only coordinate taps and swipes fail without input or screen cap
 test("double-taps revalidate a single target, consume one observation, and return a fresh screen", async (t) => {
   const { adb, service } = harness(t);
   const selected = await service.selectDevice(USB);
-  for (const target of [{ elementRef: "e1" }, { x: 24, y: 18 }]) {
+  for (const action of [
+    { kind: "double_tap", target: { elementRef: "e1" } },
+    { kind: "double_tap", target: { x: 24, y: 18 }, delayMs: 125 },
+  ]) {
     const screen = await service.observe(selected.targetToken);
     const before = adb.calls.length;
-    const result = await service.act(selected.targetToken, screen.observation.observationId, {
-      kind: "double_tap", target,
-    });
+    const result = await service.act(selected.targetToken, screen.observation.observationId, action);
     assert.equal(result.dispatchStatus, "dispatched");
     assert.equal(result.verificationStatus, "requires-observation-review");
     assert.notEqual(result.after?.observation.observationId, screen.observation.observationId);
     assert.deepEqual(adb.inputs.at(-1)?.args, [
-      "-t", "7", "shell", "input", "tap", "24", "18", "&&", "input", "tap", "24", "18",
+      "-t", "7", "shell", "input", "tap", "24", "18",
+      "&&", "sleep", action.delayMs === undefined ? "0.050" : "0.125",
+      "&&", "input", "tap", "24", "18",
     ]);
     assert.equal(adb.calls.slice(before).filter((call) => call.args.includes("screencap")).length, 2,
       "capture only before and after the pair, never between taps");
-    await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
-      kind: "double_tap", target,
-    }), hasCode("STALE_OBSERVATION"));
+    await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, action), hasCode("STALE_OBSERVATION"));
   }
   assert.equal(adb.inputs.length, 2);
+});
+
+test("invalid double-tap pauses fail before device I/O and do not consume the observation", async (t) => {
+  const { adb, service } = harness(t);
+  const { selected, screen } = await ready(service);
+  const calls = adb.calls.length;
+  for (const delayMs of [-1, 251, 1.5, "50", "0;reboot", null]) {
+    await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+      kind: "double_tap", target: { elementRef: "e1" }, delayMs,
+    }), hasCode("INVALID_INPUT"));
+  }
+  assert.equal(adb.calls.length, calls);
+  const result = await service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "double_tap", target: { elementRef: "e1" }, delayMs: 0,
+  });
+  assert.equal(result.dispatchStatus, "dispatched");
+  assert.equal(adb.inputs.length, 1);
+  assert.ok(adb.inputs[0]?.args.includes("0.000"));
 });
 
 test("an uncertain double-tap is not retried and consumes its observation", async (t) => {

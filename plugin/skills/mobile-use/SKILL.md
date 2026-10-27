@@ -175,7 +175,10 @@ Use `kind: "double_tap"` with
 `target: { elementRef }` or screenshot `target: { x, y }` for exactly two
 consecutive taps at the same revalidated point. It is one bounded action:
 revalidate before the pair and inspect the returned observation afterward,
-not between taps. Hierarchy-only mode permits element references but not
+not between taps. Optional integer `delayMs` (0-250, default 50) adds a
+device-side pause between taps. Command startup and scheduling add to this
+pause, so it is not the exact inter-tap interval; adding delay cannot fix taps
+that are already too far apart. Hierarchy-only mode permits element references but not
 coordinates. Device/app timing determines double-tap recognition; dispatch
 alone is not proof. Both taps use the same point even if the first changes the
 screen, so authorize the pair only when safe. Never automatically replay an
