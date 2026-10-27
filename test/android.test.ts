@@ -73,12 +73,21 @@ test("the explicit text alphabet and action union reject unsupported input", () 
     else assert.throws(() => validateText(character), hasCode("UNSUPPORTED_TEXT"));
   }
   assert.equal(actionSchema.parse({ kind: "swipe", from: { x: 0, y: 0 }, to: { x: 1, y: 1 } }).kind, "swipe");
+  for (const target of [{ elementRef: "e1" }, { x: 0, y: 20 }]) {
+    assert.deepEqual(actionSchema.parse({ kind: "double_tap", target }), { kind: "double_tap", target });
+  }
   for (const value of [
     { kind: "shell", command: "reboot" },
     { kind: "key", key: "POWER" },
     { kind: "tap", target: { x: 1, y: 1, elementRef: "e1" } },
     { kind: "tap", target: { x: -1, y: 0 } },
     { kind: "tap", target: { x: 1.5, y: 0 } },
+    { kind: "double_tap", target: { x: 1, y: 1, elementRef: "e1" } },
+    { kind: "double_tap", target: { x: -1, y: 0 } },
+    { kind: "double_tap", target: { x: 1.5, y: 0 } },
+    { kind: "double_tap", target: { x: "1;reboot", y: 0 } },
+    { kind: "double_tap", target: { elementRef: "e0" } },
+    { kind: "double_tap", target: { x: 1, y: 1 }, count: 3 },
     { kind: "launch_app", packageName: "example.app;reboot" },
     { kind: "swipe", from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, durationMs: 2001 },
   ]) assert.equal(actionSchema.safeParse(value).success, false);
@@ -455,6 +464,19 @@ test("input dispatch shares an exact transport and fixed Android key codes", asy
     ["-t", "7", "shell", "input", "keyevent", "4"],
     ["-t", "7", "shell", "input", "keyevent", "66"],
   ]);
+});
+
+test("double-tap dispatch uses one mutating command on the exact transport with no host delay", async () => {
+  const adb = new FakeAdb();
+  const controller = new AbortController();
+  await backend(adb, WIFI).doubleTap(10, 20, controller.signal);
+  assert.equal(adb.calls.length, 1);
+  assert.deepEqual(adb.inputs[0]?.args, [
+    "-t", "12", "shell", "input", "tap", "10", "20", "&&", "input", "tap", "10", "20",
+  ]);
+  assert.equal(adb.inputs[0]?.options.signal?.aborted, false);
+  controller.abort();
+  assert.equal(adb.inputs[0]?.options.signal?.aborted, true);
 });
 
 test("app launch is limited to one resolved installed launcher and confirms only dispatch", async () => {

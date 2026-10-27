@@ -217,6 +217,7 @@ test("hierarchy-only observations and chained actions never invoke screen captur
   assert.deepEqual(screen.observation.hierarchy, { status: "ok", error: null });
   for (const action of [
     { kind: "tap", target: { elementRef: "e1" } },
+    { kind: "double_tap", target: { elementRef: "e1" } },
     { kind: "type_text", text: "POC" },
     { kind: "key", key: "BACK" },
     { kind: "launch_app", packageName: "example.poc" },
@@ -231,7 +232,7 @@ test("hierarchy-only observations and chained actions never invoke screen captur
   }
   assert.equal(screen.image, null);
   assert.deepEqual(screen.observation.screenshot, { status: "skipped", error: null });
-  assert.equal(adb.inputs.length, 4);
+  assert.equal(adb.inputs.length, 5);
   assert.equal(adb.calls.some((call) => call.args.includes("screencap")), false);
 });
 
@@ -240,6 +241,7 @@ test("hierarchy-only coordinate taps and swipes fail without input or screen cap
   const selected = await service.selectDevice(USB);
   for (const action of [
     { kind: "tap", target: { x: 10, y: 10 } },
+    { kind: "double_tap", target: { x: 10, y: 10 } },
     { kind: "swipe", from: { x: 10, y: 100 }, to: { x: 10, y: 50 } },
   ]) {
     const screen = await service.observe(selected.targetToken, undefined, false);
@@ -247,6 +249,73 @@ test("hierarchy-only coordinate taps and swipes fail without input or screen cap
   }
   assert.equal(adb.inputs.length, 0);
   assert.equal(adb.calls.some((call) => call.args.includes("screencap")), false);
+});
+
+test("double-taps revalidate a single target, consume one observation, and return a fresh screen", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  for (const target of [{ elementRef: "e1" }, { x: 24, y: 18 }]) {
+    const screen = await service.observe(selected.targetToken);
+    const before = adb.calls.length;
+    const result = await service.act(selected.targetToken, screen.observation.observationId, {
+      kind: "double_tap", target,
+    });
+    assert.equal(result.dispatchStatus, "dispatched");
+    assert.equal(result.verificationStatus, "requires-observation-review");
+    assert.notEqual(result.after?.observation.observationId, screen.observation.observationId);
+    assert.deepEqual(adb.inputs.at(-1)?.args, [
+      "-t", "7", "shell", "input", "tap", "24", "18", "&&", "input", "tap", "24", "18",
+    ]);
+    assert.equal(adb.calls.slice(before).filter((call) => call.args.includes("screencap")).length, 2,
+      "capture only before and after the pair, never between taps");
+    await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+      kind: "double_tap", target,
+    }), hasCode("STALE_OBSERVATION"));
+  }
+  assert.equal(adb.inputs.length, 2);
+});
+
+test("an uncertain double-tap is not retried and consumes its observation", async (t) => {
+  const { adb, service } = harness(t);
+  const { selected, screen } = await ready(service);
+  adb.handler = (call) => {
+    if (call.options.mutating) {
+      throw new MobileUseError("ADB_TIMEOUT", "Fixture double-tap may be partial.", "Observe before continuing.", false, true);
+    }
+    return undefined;
+  };
+  const result = await service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "double_tap", target: { elementRef: "e1" },
+  });
+  assert.equal(result.dispatchStatus, "outcome-unknown");
+  assert.equal(result.verificationStatus, "unverified");
+  assert.equal(result.after, null);
+  assert.equal(result.error?.code, "ADB_TIMEOUT");
+  assert.equal(result.error?.actionMayHaveRun, true);
+  assert.equal(result.error?.retryable, false);
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "double_tap", target: { elementRef: "e1" },
+  }), hasCode("STALE_OBSERVATION"));
+  assert.equal(adb.inputs.length, 1);
+});
+
+test("expired observations and cancellation block double-taps before input", async (t) => {
+  let time = 100_000;
+  const { adb, service } = harness(t, () => time);
+  const { selected, screen } = await ready(service);
+  time += 30_001;
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "double_tap", target: { elementRef: "e1" },
+  }), hasCode("STALE_OBSERVATION"));
+  const fresh = await service.observe(selected.targetToken);
+  const calls = adb.calls.length;
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(service.act(selected.targetToken, fresh.observation.observationId, {
+    kind: "double_tap", target: { x: 10, y: 10 },
+  }, controller.signal), hasCode("CANCELLED"));
+  assert.equal(adb.calls.length, calls);
+  assert.equal(adb.inputs.length, 0);
 });
 
 test("hierarchy-only capture failure and empty content never fall back to screenshots", async (t) => {
@@ -343,12 +412,14 @@ test("element revalidation is independent of freshly assigned reference numbers"
 test("changed, ambiguous, disabled, or absent elements reject input and consume the attempt", async (t) => {
   const { adb, service } = harness(t);
   const selected = await service.selectDevice(USB);
-  for (const changed of [node({ text: "Changed" }), node() + node(), node({ enabled: "false" }), ""]) {
-    adb.xml = hierarchy();
-    const screen = await service.observe(selected.targetToken);
-    adb.xml = hierarchy(changed);
-    await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "tap", target: { elementRef: "e1" } }), hasCode("ELEMENT_CHANGED"));
-    await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "key", key: "HOME" }), hasCode("STALE_OBSERVATION"));
+  for (const kind of ["tap", "double_tap"] as const) {
+    for (const changed of [node({ text: "Changed" }), node() + node(), node({ enabled: "false" }), ""]) {
+      adb.xml = hierarchy();
+      const screen = await service.observe(selected.targetToken);
+      adb.xml = hierarchy(changed);
+      await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind, target: { elementRef: "e1" } }), hasCode("ELEMENT_CHANGED"));
+      await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "key", key: "HOME" }), hasCode("STALE_OBSERVATION"));
+    }
   }
   assert.equal(adb.inputs.length, 0);
 });
@@ -377,11 +448,15 @@ test("the exact 30-second age boundary is enforced, including clock rollback", a
 
 test("coordinate gestures require the unchanged image and exact in-bounds endpoints", async (t) => {
   const { adb, service } = harness(t);
-  const { selected, screen } = await ready(service);
-  adb.image = png(80, 160, 9);
-  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "tap", target: { x: 10, y: 10 } }), hasCode("STALE_OBSERVATION"));
-  const outside = await service.observe(selected.targetToken);
-  await assert.rejects(service.act(selected.targetToken, outside.observation.observationId, { kind: "tap", target: { x: 80, y: 159 } }), hasCode("INVALID_INPUT"));
+  const selected = await service.selectDevice(USB);
+  for (const kind of ["tap", "double_tap"] as const) {
+    adb.image = png();
+    const screen = await service.observe(selected.targetToken);
+    adb.image = png(80, 160, 9);
+    await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind, target: { x: 10, y: 10 } }), hasCode("STALE_OBSERVATION"));
+    const outside = await service.observe(selected.targetToken);
+    await assert.rejects(service.act(selected.targetToken, outside.observation.observationId, { kind, target: { x: 80, y: 159 } }), hasCode("INVALID_INPUT"));
+  }
   const swipe = await service.observe(selected.targetToken);
   await service.act(selected.targetToken, swipe.observation.observationId, { kind: "swipe", from: { x: 79, y: 159 }, to: { x: 0, y: 0 } });
   assert.deepEqual(adb.inputs[0]?.args, ["-t", "7", "shell", "input", "swipe", "79", "159", "0", "0", "400"]);
@@ -433,6 +508,9 @@ test("unsupported text and raw/invalid actions fail before device I/O", async (t
   const calls = adb.calls.length;
   await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "type_text", text: "你好" }), hasCode("UNSUPPORTED_TEXT"));
   await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "shell", command: "reboot" }), hasCode("INVALID_INPUT"));
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "double_tap", target: { x: "10;reboot", y: 10 },
+  }), hasCode("INVALID_INPUT"));
   assert.equal(adb.calls.length, calls);
 });
 
@@ -476,7 +554,7 @@ test("a real 180-degree rotation blocks input even with identical pixels and no 
   const { selected, screen } = await ready(service);
   adb.display = displayDiagnostics(2);
   await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
-    kind: "tap", target: { x: 10, y: 10 },
+    kind: "double_tap", target: { x: 10, y: 10 },
   }), hasCode("STALE_OBSERVATION"));
   assert.equal(adb.inputs.length, 0);
   const rotated = await service.observe(selected.targetToken);
@@ -490,6 +568,8 @@ test("unverified display state is explicit and blocks every action instead of tr
   for (const action of [
     { kind: "tap", target: { x: 10, y: 10 } },
     { kind: "tap", target: { elementRef: "e1" } },
+    { kind: "double_tap", target: { x: 10, y: 10 } },
+    { kind: "double_tap", target: { elementRef: "e1" } },
     { kind: "swipe", from: { x: 10, y: 100 }, to: { x: 10, y: 50 } },
     { kind: "key", key: "HOME" },
     { kind: "launch_app", packageName: "example.poc" },

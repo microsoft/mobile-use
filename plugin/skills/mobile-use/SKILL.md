@@ -169,9 +169,17 @@ enabling screenshots. UI text can still contain sensitive information and is
 subject to the same consent and no-saving rules as images.
 
 UI actions are limited to explicit waking/unsecured-keyguard dismissal, safe
-navigation, one bounded swipe, supported ASCII entry, Back/Home/Enter, and
-launching a specifically requested installed app. Separate app-management
-tools are described below. Text input
+navigation, single taps, double-taps, one bounded swipe, supported ASCII entry,
+Back/Home/Enter, and launching a specifically requested installed app.
+Use `kind: "double_tap"` with
+`target: { elementRef }` or screenshot `target: { x, y }` for exactly two
+consecutive taps at the same revalidated point. It is one bounded action:
+revalidate before the pair and inspect the returned observation afterward,
+not between taps. Hierarchy-only mode permits element references but not
+coordinates. Device/app timing determines double-tap recognition; dispatch
+alone is not proof. Both taps use the same point even if the first changes the
+screen, so authorize the pair only when safe. Never automatically replay an
+uncertain or partial pair. Separate app-management tools are described below. Text input
 appends to the currently focused field; it does not clear or submit it. The
 supported subset is letters, digits, spaces, periods, commas, underscores, and
 hyphens, up to 256 characters. No Unicode input, clipboard fallback, keyboard

@@ -283,10 +283,22 @@ Supported action objects:
 | `kind` | Additional fields |
 | --- | --- |
 | `tap` | `target: { elementRef }` from the observation, or `target: { x, y }` from its screenshot. |
+| `double_tap` | Same `target` as `tap`; sends exactly two consecutive taps at that point in one device-side command. |
 | `swipe` | `from: { x, y }`, `to: { x, y }`, optional `durationMs` (100-2000, default 400). |
 | `type_text` | `text`: 1-256 ASCII letters, digits, spaces, periods, commas, underscores, or hyphens. |
 | `key` | `key`: `BACK`, `HOME`, or `ENTER`. |
 | `launch_app` | `packageName` of a specifically requested, already-installed app with one resolved launcher. |
+
+`double_tap` revalidates once before the pair and returns an observation after
+both taps, without a host round trip or observation between them. It uses two
+consecutive Android `input tap` commands with no added delay or helper install;
+device scheduling and app gesture thresholds determine whether the pair is
+recognized as a double-tap. Dispatch does not prove gesture recognition. Verify
+the returned observation and never automatically replay an uncertain or partial
+pair. Both taps target the same point even if the first changes the screen, so
+authorize the pair only when that is safe. Hierarchy-only mode supports
+`elementRef` double-taps but rejects coordinate double-taps without capturing
+a screenshot.
 
 Text appends to one unchanged, focused, enabled, non-password native EditText;
 it does not clear or submit the field. Unicode/control characters, other

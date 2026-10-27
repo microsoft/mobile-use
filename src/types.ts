@@ -102,6 +102,11 @@ const pointSchema = z.strictObject({
   y: z.number().int().nonnegative(),
 });
 
+const tapTargetSchema = z.union([
+  z.strictObject({ elementRef: z.string().regex(/^e[1-9]\d*$/) }),
+  pointSchema,
+]);
+
 export const packageNameSchema = z.string().max(255).regex(
   /^(?:android|[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+)(?![\s\S])/,
 );
@@ -109,10 +114,11 @@ export const packageNameSchema = z.string().max(255).regex(
 export const actionSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("tap"),
-    target: z.union([
-      z.strictObject({ elementRef: z.string().regex(/^e[1-9]\d*$/) }),
-      pointSchema,
-    ]),
+    target: tapTargetSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("double_tap"),
+    target: tapTargetSchema,
   }),
   z.strictObject({
     kind: z.literal("swipe"),

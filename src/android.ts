@@ -431,6 +431,14 @@ export class AndroidBackend {
     await this.input("tap", [x, y], signal);
   }
 
+  async doubleTap(x: number, y: number, signal?: AbortSignal): Promise<void> {
+    // Keep both taps in one device-side command, without host round trips or observations between them.
+    await this.command(
+      ["shell", "input", "tap", String(x), String(y), "&&", "input", "tap", String(x), String(y)],
+      { mutating: true, ...(signal ? { signal } : {}) },
+    );
+  }
+
   async swipe(from: { x: number; y: number }, to: { x: number; y: number }, durationMs: number, signal?: AbortSignal): Promise<void> {
     await this.input("swipe", [from.x, from.y, to.x, to.y, durationMs], signal);
   }

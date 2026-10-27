@@ -76,7 +76,11 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.deepEqual(observation.hierarchy, { status: "ok", error: null });
     assert.ok(Array.isArray(observation.elements) && isRecord(observation.elements[0]));
     assert.equal(observation.elements[0].text, "Demo");
-    for (const action of [{ kind: "tap", target: { elementRef: "e1" } }, { kind: "key", key: "BACK" }]) {
+    for (const action of [
+      { kind: "tap", target: { elementRef: "e1" } },
+      { kind: "double_tap", target: { elementRef: "e1" } },
+      { kind: "key", key: "BACK" },
+    ]) {
       const acted = await client.callTool({
         name: "mobile_act",
         arguments: { targetToken: selected.targetToken, observationId: observation.observationId, action },
@@ -92,6 +96,7 @@ for (const mode of ["legacy", "auto"] as const) {
     }
     for (const action of [
       { kind: "tap", target: { x: 10, y: 10 } },
+      { kind: "double_tap", target: { x: 10, y: 10 } },
       { kind: "swipe", from: { x: 10, y: 100 }, to: { x: 10, y: 50 } },
     ]) {
       const fresh = payload(await client.callTool({
