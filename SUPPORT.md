@@ -1,29 +1,16 @@
 # Support
 
-## How to file issues and get help  
+This branch is an experimental MSMT architecture and simulation MVP, not a
+production-supported Microsoft product or a device automation plugin.
 
-This is an experimental Windows/real-Android POC with best-effort GitHub issue
-support, not a production-supported Microsoft product. Search
-[existing issues](https://github.com/microsoft/mobile-use/issues) before opening
-a bug, question, or feature request. Follow the [README](README.md) for supported
-scope, setup boundaries, and pending hardware qualification.
+Search [existing issues](https://github.com/microsoft/mobile-use/issues) before
+opening a report. Include the branch/revision, host OS, Node/npm versions,
+command, error code, and sanitized reproduction steps. Distinguish simulated
+results from real hardware evidence; this branch has no real device adapter.
 
-Include the plugin version, Windows/Node/Copilot App/CLI/Platform-Tools versions,
-Android version/build, selected transport kind, stable tool error code, expected
-versus actual behavior, and whether the reproduction used fixtures or real
-hardware. Use a device alias and sanitized steps. Distinguish failed discovery
-from a successful empty inventory, dispatch from verified UI state, and
-fixture-only results from actual App/USB/wireless results.
-
-Do not post pairing codes, private ADB keys, credentials, raw serials/IPs,
-account/app data, environment dumps, command traces with input text, or
-unreviewed screenshots/UI dumps. A minimal non-sensitive error code and status
-is preferable to a full transcript. Do not revoke debugging trust, change
-network/OS settings, or install helpers merely to reproduce a report.
-
-Report suspected security vulnerabilities through [SECURITY.md](SECURITY.md),
+Do not post credentials, private keys, device identifiers, account data, raw
+screenshots, or environment dumps. Prefer synthetic fixtures and minimal error
+codes. Report suspected security vulnerabilities through [SECURITY.md](SECURITY.md),
 not a public issue.
 
-## Microsoft Support Policy  
-
-Support for this project is limited to the resources listed above.
+Support is best-effort through the resources above.
