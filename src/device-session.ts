@@ -227,15 +227,17 @@ export class MobileUseService {
     }, signal);
   }
 
-  private async capture(state: TargetState, signal?: AbortSignal): Promise<Snapshot> {
+  private async capture(state: TargetState, signal?: AbortSignal, includeScreenshot = true): Promise<Snapshot> {
     const results = await Promise.allSettled([
-      state.backend.screenshot(signal),
+      includeScreenshot ? state.backend.screenshot(signal) : Promise.resolve(null),
       state.backend.hierarchy(signal),
       state.backend.displayState(signal),
     ]);
     const [imageResult, hierarchyResult, displayResult] = results;
-    const screenshotStatus: ReadStatus = imageResult.status === "fulfilled"
-      ? { status: "ok", error: null } : readFailure(imageResult.reason);
+    const screenshotStatus: Observation["screenshot"] = !includeScreenshot
+      ? { status: "skipped", error: null }
+      : imageResult.status === "fulfilled"
+        ? { status: "ok", error: null } : readFailure(imageResult.reason);
     const hierarchyStatus: ReadStatus = hierarchyResult.status === "fulfilled"
       ? { status: "ok", error: null } : readFailure(hierarchyResult.reason);
     const displayStatus: ReadStatus = displayResult.status === "fulfilled"
@@ -248,7 +250,9 @@ export class MobileUseService {
     if (!screenshot && !hierarchy) {
       throw new MobileUseError(
         "OBSERVATION_UNAVAILABLE",
-        `Neither image nor UI hierarchy is usable (${screenshotStatus.error?.code}, ${hierarchyStatus.error?.code}).`,
+        includeScreenshot
+          ? `Neither image nor UI hierarchy is usable (${screenshotStatus.error?.code}, ${hierarchyStatus.error?.code}).`
+          : `Screenshot capture was skipped and no UI hierarchy is usable (${hierarchyStatus.error?.code}).`,
         "Stop input. The user should expose an unlocked, observable safe screen; do not bypass protection.",
       );
     }
@@ -260,7 +264,8 @@ export class MobileUseService {
     const dimensions = screenshot ? { width: screenshot.width, height: screenshot.height } : verifiedDisplay;
     const display = dimensions ? { width: dimensions.width, height: dimensions.height, rotation: verifiedDisplay?.rotation ?? null } : null;
     const warnings: string[] = [];
-    if (!screenshot) warnings.push("Image unavailable; no screenshot-coordinate actions are permitted.");
+    if (!includeScreenshot) warnings.push("Screenshot capture skipped by request; no screenshot-coordinate actions are permitted.");
+    else if (!screenshot) warnings.push("Image unavailable; no screenshot-coordinate actions are permitted.");
     if (!hierarchy) warnings.push("Hierarchy unavailable; no semantic element or focused-field claims can be made.");
     if (hierarchy && !hierarchy.elements.length) warnings.push("No semantic elements were exposed; content may be custom-drawn or unavailable.");
     if (!verifiedDisplay) warnings.push("Primary display state could not be verified; input is blocked until a fresh observation verifies it.");
@@ -291,12 +296,12 @@ export class MobileUseService {
     };
   }
 
-  observe(targetToken: string, signal?: AbortSignal): Promise<ObservedScreen> {
+  observe(targetToken: string, signal?: AbortSignal, includeScreenshot = true): Promise<ObservedScreen> {
     return this.serialize(async () => {
       const state = this.target(targetToken);
       this.snapshot = undefined;
       await this.ensureEndpoint(state, signal);
-      const snapshot = await this.capture(state, signal);
+      const snapshot = await this.capture(state, signal, includeScreenshot);
       this.snapshot = snapshot;
       return snapshot.screen;
     }, signal);
@@ -393,6 +398,13 @@ export class MobileUseService {
       throw new MobileUseError("STALE_OBSERVATION", "Display geometry or rotation changed.", "Inspect a new observation before input.");
     }
     const unchangedImage = (): void => {
+      if (old.screenshot.status === "skipped") {
+        throw new MobileUseError(
+          "CAPTURE_UNAVAILABLE",
+          "Screenshot capture was disabled for this observation; coordinate actions are not permitted.",
+          "Use a fresh hierarchy observation and an enabled clickable elementRef.",
+        );
+      }
       if (!previous.imageHash || previous.imageHash !== live.imageHash) {
         throw new MobileUseError("STALE_OBSERVATION", "The screenshot changed before coordinate input.", "Observe again and choose coordinates from the new screen.");
       }
@@ -461,7 +473,8 @@ export class MobileUseService {
         throw new MobileUseError("STALE_OBSERVATION", "The observation is missing, expired, or already consumed.", "Observe again; each observation authorizes at most one attempt.");
       }
       await this.ensureIdentity(state, signal);
-      const live = await this.capture(state, signal);
+      const includeScreenshot = previous.screen.observation.screenshot.status !== "skipped";
+      const live = await this.capture(state, signal, includeScreenshot);
       try {
         await this.dispatch(state, action, previous, live, signal);
       } catch (error) {
@@ -477,7 +490,7 @@ export class MobileUseService {
       }
       try {
         await this.ensureEndpoint(state, signal);
-        const after = await this.capture(state, signal);
+        const after = await this.capture(state, signal, includeScreenshot);
         this.snapshot = after;
         return { dispatchStatus: "dispatched", verificationStatus: "requires-observation-review", after: after.screen, error: null };
       } catch (error) {
