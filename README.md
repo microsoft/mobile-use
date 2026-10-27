@@ -332,8 +332,12 @@ authorize the pair only when that is safe. Hierarchy-only mode supports
 On one Redmi running Android 11 over USB, the former two-`input` implementation
 produced a measured UP-to-DOWN gap of 993 ms at zero added delay and 1,080 ms at
 50 ms, exceeding the phone's 300 ms framework timeout. A manual double-tap
-measured 108 ms and was recognized. Single-process helper hardware acceptance
-is pending; Java-stub tests are not physical-device proof.
+measured 108 ms and was recognized. After approved preparation, the single-process
+helper produced recognized double-taps in the diagnostic app at requested and
+measured gaps of 50 ms and 125 ms. Gallery visibly zoomed in and back out with
+50 ms requested and 51 ms reported for each pair. These results cover this
+Android 11 Redmi over USB only; other devices, Android versions, and paired
+wireless double-taps remain unverified.
 
 For example, `{ "kind": "double_tap", "target": { "x": 360, "y": 800 }, "delayMs": 50 }`
 requests a 50 ms event-time gap at a point from a fresh screenshot.
@@ -490,8 +494,9 @@ assertions, no-fallback result, and approved images only. Never commit evidence.
 | --- | --- |
 | Fixture/subprocess/MCP/package behavior | Local automated checks; no real ADB/device access. |
 | Plugin recognition | Read-only Copilot CLI 1.0.99-2 mount on Node 22.15.1. |
-| Actual Copilot App tool loading | Verified with thirteen registered tools and the full USB app-management lifecycle on one Android 11 phone. |
+| Actual Copilot App tool loading | Verified with fourteen registered tools, including gesture preparation and double-tap dispatch, on one Android 11 phone. |
 | USB app-management lifecycle | All six operations passed through the reinstalled plugin on one Android 11 phone, including the package-state parser fix. |
+| USB double-tap recognition | Diagnostic app recognized 50 ms and 125 ms gaps; Gallery zoomed in and back out with 50 ms requested and 51 ms reported on one Android 11 Redmi. |
 | Physical USB and unplugged paired Wi-Fi journeys | Unverified; hardware and control consent required. |
 
 Full POC acceptance requires App loading and the physical runs/no-fallback
