@@ -155,7 +155,7 @@ function invalidImage(): never {
   );
 }
 
-export function validatePng(image: Buffer): { width: number; height: number } {
+function readPng(image: Buffer): { width: number; height: number; channels: number; raw: Buffer } {
   if (image.length > 5 * 1024 * 1024) {
     throw new MobileUseError(
       "CAPTURE_UNAVAILABLE",
@@ -192,7 +192,7 @@ export function validatePng(image: Buffer): { width: number; height: number } {
       if (size !== 0 || offset + 12 !== image.length) invalidImage();
       ended = true;
       break;
-    } else if (/^[A-Z]/.test(type)) {
+    } else if (/^[A-Z]/.test(type) || type === "tRNS") {
       invalidImage();
     }
     offset += size + 12;
@@ -210,7 +210,45 @@ export function validatePng(image: Buffer): { width: number; height: number } {
   for (let row = 0; row < height; row++) {
     if ((raw[row * stride] ?? 255) > 4) invalidImage();
   }
+  return { width, height, channels, raw };
+}
+
+export function validatePng(image: Buffer): { width: number; height: number } {
+  const { width, height } = readPng(image);
   return { width, height };
+}
+
+export function decodePng(image: Buffer): { width: number; height: number; channels: number; pixels: Buffer } {
+  const { width, height, channels, raw } = readPng(image);
+  const rowBytes = width * channels;
+  const pixels = Buffer.alloc(rowBytes * height);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (rowBytes + 1)];
+    for (let x = 0; x < rowBytes; x++) {
+      const offset = y * rowBytes + x;
+      const left = x >= channels ? pixels[offset - channels] ?? 0 : 0;
+      const above = y > 0 ? pixels[offset - rowBytes] ?? 0 : 0;
+      const upperLeft = y > 0 && x >= channels ? pixels[offset - rowBytes - channels] ?? 0 : 0;
+      let predictor = 0;
+      switch (filter) {
+        case 0: break;
+        case 1: predictor = left; break;
+        case 2: predictor = above; break;
+        case 3: predictor = Math.floor((left + above) / 2); break;
+        case 4: {
+          const estimate = left + above - upperLeft;
+          const a = Math.abs(estimate - left);
+          const b = Math.abs(estimate - above);
+          const c = Math.abs(estimate - upperLeft);
+          predictor = a <= b && a <= c ? left : b <= c ? above : upperLeft;
+          break;
+        }
+        default: invalidImage();
+      }
+      pixels[offset] = (raw[y * (rowBytes + 1) + x + 1] ?? 0) + predictor;
+    }
+  }
+  return { width, height, channels, pixels };
 }
 
 function hierarchyError(): never {

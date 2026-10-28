@@ -4,7 +4,7 @@ import type { TestContext } from "node:test";
 import type { MonitorFactory } from "../src/adb.js";
 import { MobileUseService } from "../src/device-session.js";
 import { MobileUseError } from "../src/errors.js";
-import { FakeAdb, FakeMonitors, displayDiagnostics, editField, hasCode, hierarchy, INVENTORY, node, png, USB, USB_LINE, WIFI, WIFI_LINE } from "./helpers.js";
+import { chunk, FakeAdb, FakeMonitors, displayDiagnostics, editField, hasCode, hierarchy, INVENTORY, node, pixelPng, png, USB, USB_LINE, WIFI, WIFI_LINE } from "./helpers.js";
 
 function harness(t: TestContext, now?: () => number) {
   const adb = new FakeAdb();
@@ -375,7 +375,7 @@ test("the exact 30-second age boundary is enforced, including clock rollback", a
   assert.equal(adb.inputs.length, 1);
 });
 
-test("coordinate gestures require the unchanged image and exact in-bounds endpoints", async (t) => {
+test("coordinate gestures reject changes at their target and require exact in-bounds endpoints", async (t) => {
   const { adb, service } = harness(t);
   const { selected, screen } = await ready(service);
   adb.image = png(80, 160, 9);
@@ -385,6 +385,161 @@ test("coordinate gestures require the unchanged image and exact in-bounds endpoi
   const swipe = await service.observe(selected.targetToken);
   await service.act(selected.targetToken, swipe.observation.observationId, { kind: "swipe", from: { x: 79, y: 159 }, to: { x: 0, y: 0 } });
   assert.deepEqual(adb.inputs[0]?.args, ["-t", "7", "shell", "input", "swipe", "79", "159", "0", "0", "400"]);
+});
+
+test("coordinate taps on custom-drawn pages tolerate status-bar and ad changes outside the interaction band", async (t) => {
+  const { adb, service } = harness(t);
+  adb.display = displayDiagnostics(0, 720, 1600);
+  adb.xml = hierarchy(node({
+    class: "android.widget.FrameLayout", text: "", clickable: "false",
+    "resource-id": "example.poc:id/container", bounds: "[0,0][720,1600]",
+  }));
+  adb.image = pixelPng(720, 1600, () => [255, 255, 255, 255]);
+  const { selected, screen } = await ready(service);
+  adb.image = pixelPng(720, 1600, (_x, y) => y < 48 || (y >= 500 && y < 650)
+    ? [80, 80, 80, 255] : [255, 255, 255, 255]);
+  const result = await service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "tap", target: { x: 630, y: 171 },
+  });
+  assert.equal(result.dispatchStatus, "dispatched");
+  assert.equal(result.verificationStatus, "requires-observation-review");
+  assert.ok(result.after?.image);
+  assert.deepEqual(adb.inputs[0]?.args, ["-t", "7", "shell", "input", "tap", "630", "171"]);
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "tap", target: { x: 630, y: 171 },
+  }), hasCode("STALE_OBSERVATION"));
+  assert.equal(adb.inputs.length, 1);
+});
+
+test("PNG metadata changes do not make unchanged visible pixels stale", async (t) => {
+  const { adb, service } = harness(t);
+  const { selected, screen } = await ready(service);
+  adb.image = Buffer.concat([adb.image.subarray(0, -12), chunk("tEXt", Buffer.from("fixture\0metadata")), adb.image.subarray(-12)]);
+  await service.act(selected.targetToken, screen.observation.observationId, { kind: "tap", target: { x: 10, y: 10 } });
+  assert.equal(adb.inputs.length, 1);
+});
+
+test("the 20-percent screen-context limit accepts its boundary and rejects one additional pixel", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  for (const extraPixel of [false, true]) {
+    adb.image = pixelPng(80, 160, () => [255, 255, 255, 255]);
+    const screen = await service.observe(selected.targetToken);
+    adb.image = pixelPng(80, 160, (x, y) => y < 32 || (extraPixel && x === 0 && y === 32)
+      ? [0, 0, 0, 255] : [255, 255, 255, 255]);
+    const action = service.act(selected.targetToken, screen.observation.observationId, { kind: "tap", target: { x: 40, y: 120 } });
+    if (extraPixel) {
+      await assert.rejects(action, (error: unknown) => {
+        hasCode("STALE_OBSERVATION")(error);
+        assert.ok(error instanceof MobileUseError && /More than 20%/.test(error.message) && !error.actionMayHaveRun);
+        return true;
+      });
+    } else {
+      assert.equal((await action).dispatchStatus, "dispatched");
+    }
+  }
+  assert.equal(adb.inputs.length, 1);
+});
+
+test("a single changed pixel anywhere in the target row blocks input and consumes the observation", async (t) => {
+  const { adb, service } = harness(t);
+  adb.image = pixelPng(80, 160, () => [255, 255, 255, 255]);
+  const { selected, screen } = await ready(service);
+  adb.image = pixelPng(80, 160, (x, y) => x === 0 && y === 72 ? [0, 0, 0, 255] : [255, 255, 255, 255]);
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "tap", target: { x: 40, y: 80 },
+  }), (error: unknown) => {
+    hasCode("STALE_OBSERVATION")(error);
+    assert.ok(error instanceof MobileUseError && /Pixels.*interaction region/.test(error.message));
+    assert.equal(error.actionMayHaveRun, false);
+    return true;
+  });
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "key", key: "HOME",
+  }), hasCode("STALE_OBSERVATION"));
+  assert.equal(adb.inputs.length, 0);
+});
+
+test("swipes protect their whole path, not just the start and end points", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  for (const changedY of [10, 80]) {
+    adb.image = pixelPng(80, 160, () => [255, 255, 255, 255]);
+    const screen = await service.observe(selected.targetToken);
+    adb.image = pixelPng(80, 160, (x, y) => x === 0 && y === changedY ? [0, 0, 0, 255] : [255, 255, 255, 255]);
+    const action = service.act(selected.targetToken, screen.observation.observationId, {
+      kind: "swipe", from: { x: 40, y: 120 }, to: { x: 40, y: 40 },
+    });
+    if (changedY === 80) await assert.rejects(action, hasCode("STALE_OBSERVATION"));
+    else assert.equal((await action).dispatchStatus, "dispatched");
+  }
+  assert.equal(adb.inputs.length, 1);
+});
+
+test("changed or overlaid hierarchy controls block coordinate input even when the image is identical", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  for (const nodes of [node({ enabled: "false" }), node({ text: "Changed label" }), node() + node({ text: "Overlay" })]) {
+    adb.xml = hierarchy();
+    const screen = await service.observe(selected.targetToken);
+    adb.xml = hierarchy(nodes);
+    await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+      kind: "tap", target: { x: 24, y: 18 },
+    }), hasCode("STALE_OBSERVATION"));
+  }
+  assert.equal(adb.inputs.length, 0);
+});
+
+test("app, activity, and Android user switches block coordinate input even with identical images", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  for (const change of ["app", "activity", "user"]) {
+    adb.foreground = "example.poc/.MainActivity";
+    adb.userId = 0;
+    const screen = await service.observe(selected.targetToken);
+    if (change === "app") adb.foreground = "example.other/.MainActivity";
+    if (change === "activity") adb.foreground = "example.poc/.OtherActivity";
+    if (change === "user") adb.userId = 10;
+    await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+      kind: "tap", target: { x: 24, y: 18 },
+    }), hasCode("STALE_OBSERVATION"));
+  }
+  assert.equal(adb.inputs.length, 0);
+});
+
+test("unverifiable foreground context is explicit and cannot enable changed-image coordinate input", async (t) => {
+  const { adb, service } = harness(t);
+  adb.image = pixelPng(80, 160, () => [255, 255, 255, 255]);
+  adb.handler = (call) => call.args.includes("activities") ? Buffer.from("Unrecognized activity diagnostics") : undefined;
+  const { selected, screen } = await ready(service);
+  assert.match(screen.observation.warnings.join(" "), /Foreground activity.*APP_FOREGROUND_UNAVAILABLE/);
+  adb.image = pixelPng(80, 160, (x, y) => x === 0 && y === 0 ? [0, 0, 0, 255] : [255, 255, 255, 255]);
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "tap", target: { x: 40, y: 120 },
+  }), hasCode("STALE_OBSERVATION"));
+  const unchanged = await service.observe(selected.targetToken);
+  await service.act(selected.targetToken, unchanged.observation.observationId, {
+    kind: "tap", target: { x: 40, y: 120 },
+  });
+  assert.equal(adb.inputs.length, 1);
+});
+
+test("changed images cannot use relaxed comparison across hierarchy loss or a missing foreground activity", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  for (const change of ["hierarchy", "foreground"]) {
+    adb.image = pixelPng(80, 160, () => [255, 255, 255, 255]);
+    adb.xml = hierarchy();
+    adb.foreground = "example.poc/.MainActivity";
+    const screen = await service.observe(selected.targetToken);
+    adb.image = pixelPng(80, 160, (x, y) => x === 0 && y === 0 ? [0, 0, 0, 255] : [255, 255, 255, 255]);
+    if (change === "hierarchy") adb.xml = "ERROR: null root node";
+    else adb.foreground = null;
+    await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+      kind: "tap", target: { x: 40, y: 120 },
+    }), hasCode("STALE_OBSERVATION"));
+  }
+  assert.equal(adb.inputs.length, 0);
 });
 
 test("display rotation is mapped and a later geometry change blocks input", async (t) => {
@@ -530,7 +685,7 @@ test("unavailable capture is not a black-image success or permission to use coor
   assert.equal(screen.image, null);
   assert.equal(screen.observation.screenshot.status, "unavailable");
   assert.deepEqual(screen.observation.display, { width: 80, height: 160, rotation: 0 });
-  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "tap", target: { x: 10, y: 10 } }), hasCode("STALE_OBSERVATION"));
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "tap", target: { x: 10, y: 10 } }), hasCode("CAPTURE_UNAVAILABLE"));
   const semantic = await service.observe(selected.targetToken);
   await service.act(selected.targetToken, semantic.observation.observationId, { kind: "tap", target: { elementRef: "e1" } });
   adb.xml = "";

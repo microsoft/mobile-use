@@ -2,7 +2,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { MobileUseService } from "../src/device-session.js";
 import { MobileUseError } from "../src/errors.js";
 import { createMobileUseServer } from "../src/tools.js";
-import { chunk, FakeAdb, FakeMonitors, hierarchy, node } from "./helpers.js";
+import { chunk, FakeAdb, FakeMonitors, hierarchy, node, pixelPng } from "./helpers.js";
 
 const adb = new FakeAdb();
 const monitors = new FakeMonitors(adb);
@@ -41,6 +41,20 @@ if (setupScenario === "no-screenshots") {
   adb.handler = (call) => {
     if (call.args.includes("screencap")) throw new Error("Screen capture is forbidden in this fixture.");
     return undefined;
+  };
+}
+if (setupScenario === "coordinate-animation" || setupScenario === "coordinate-target-change") {
+  adb.xml = hierarchy(node({
+    class: "android.widget.FrameLayout", text: "", clickable: "false",
+    "resource-id": "example.poc:id/container", bounds: "[0,0][80,160]",
+  }));
+  let captures = 0;
+  adb.handler = (call) => {
+    if (!call.args.includes("screencap")) return undefined;
+    const changed = ++captures > 1;
+    const changedY = setupScenario === "coordinate-animation" ? 0 : 120;
+    return pixelPng(80, 160, (x, y) => changed && x === 0 && y === changedY
+      ? [0, 0, 0, 255] : [255, 255, 255, 255]);
   };
 }
 if (setupScenario === "server-conflict" || setupScenario === "server-start-uncertain") {

@@ -1,9 +1,10 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { parseAdbVersion, parseDeviceList, startTransportMonitor } from "./adb.js";
 import type { AdbConnection, MonitorFactory, TransportMonitor } from "./adb.js";
 import { AndroidBackend, validateText } from "./android.js";
 import type { Hierarchy, Screenshot } from "./android.js";
 import { checkCancelled, MobileUseError, publicError } from "./errors.js";
+import { compareScreens, interactionBand, MAX_CHANGED_SCREEN_FRACTION } from "./screen-guard.js";
 import { actionSchema } from "./types.js";
 import type {
   ActionResult, AdbServerResult, AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, MobileAction, Observation,
@@ -28,7 +29,7 @@ interface TargetState {
 interface Snapshot {
   screen: ObservedScreen;
   createdAt: number;
-  imageHash: string | null;
+  foregroundApp: ForegroundApp | null;
 }
 
 function sameEndpoint(inventory: DeviceEndpoint[], expected: DeviceEndpoint): boolean {
@@ -232,8 +233,9 @@ export class MobileUseService {
       includeScreenshot ? state.backend.screenshot(signal) : Promise.resolve(null),
       state.backend.hierarchy(signal),
       state.backend.displayState(signal),
+      includeScreenshot ? state.backend.getForegroundApp(signal) : Promise.resolve(null),
     ]);
-    const [imageResult, hierarchyResult, displayResult] = results;
+    const [imageResult, hierarchyResult, displayResult, foregroundResult] = results;
     const screenshotStatus: Observation["screenshot"] = !includeScreenshot
       ? { status: "skipped", error: null }
       : imageResult.status === "fulfilled"
@@ -242,6 +244,9 @@ export class MobileUseService {
       ? { status: "ok", error: null } : readFailure(hierarchyResult.reason);
     const displayStatus: ReadStatus = displayResult.status === "fulfilled"
       ? { status: "ok", error: null } : readFailure(displayResult.reason);
+    const foregroundStatus: ReadStatus = foregroundResult.status === "fulfilled"
+      ? { status: "ok", error: null } : readFailure(foregroundResult.reason);
+    const foregroundApp = foregroundResult.status === "fulfilled" ? foregroundResult.value : null;
     const screenshot: Screenshot | null = imageResult.status === "fulfilled" ? imageResult.value : null;
     const hierarchy: Hierarchy | null = hierarchyResult.status === "fulfilled" ? hierarchyResult.value : null;
     const verifiedDisplay = displayResult.status === "fulfilled" ? displayResult.value : null;
@@ -264,6 +269,9 @@ export class MobileUseService {
     const dimensions = screenshot ? { width: screenshot.width, height: screenshot.height } : verifiedDisplay;
     const display = dimensions ? { width: dimensions.width, height: dimensions.height, rotation: verifiedDisplay?.rotation ?? null } : null;
     const warnings: string[] = [];
+    if (includeScreenshot && !foregroundApp) {
+      warnings.push(`Foreground activity is unavailable (${foregroundStatus.error?.code ?? "no resumed activity"}); coordinate input requires identical visible pixels.`);
+    }
     if (!includeScreenshot) warnings.push("Screenshot capture skipped by request; no screenshot-coordinate actions are permitted.");
     else if (!screenshot) warnings.push("Image unavailable; no screenshot-coordinate actions are permitted.");
     if (!hierarchy) warnings.push("Hierarchy unavailable; no semantic element or focused-field claims can be made.");
@@ -292,7 +300,7 @@ export class MobileUseService {
     return {
       screen: { observation, image },
       createdAt: now,
-      imageHash: image ? createHash("sha256").update(image).digest("hex") : null,
+      foregroundApp,
     };
   }
 
@@ -397,7 +405,10 @@ export class MobileUseService {
       old.display.rotation !== current.display.rotation) {
       throw new MobileUseError("STALE_OBSERVATION", "Display geometry or rotation changed.", "Inspect a new observation before input.");
     }
-    const unchangedImage = (): void => {
+    const display = current.display;
+    const unchangedCoordinateContext = (from: { x: number; y: number }, to = from): void => {
+      requirePoint(from, display);
+      requirePoint(to, display);
       if (old.screenshot.status === "skipped") {
         throw new MobileUseError(
           "CAPTURE_UNAVAILABLE",
@@ -405,8 +416,36 @@ export class MobileUseService {
           "Use a fresh hierarchy observation and an enabled clickable elementRef.",
         );
       }
-      if (!previous.imageHash || previous.imageHash !== live.imageHash) {
-        throw new MobileUseError("STALE_OBSERVATION", "The screenshot changed before coordinate input.", "Observe again and choose coordinates from the new screen.");
+      const before = previous.screen.image;
+      const after = live.screen.image;
+      if (!before || !after) {
+        throw new MobileUseError("CAPTURE_UNAVAILABLE", "A usable screenshot is required before coordinate input.", "Observe again or use an enabled clickable elementRef.");
+      }
+      const oldApp = previous.foregroundApp;
+      const newApp = live.foregroundApp;
+      if (oldApp && newApp && (oldApp.packageName !== newApp.packageName ||
+        oldApp.activityName !== newApp.activityName || oldApp.userId !== newApp.userId)) {
+        throw new MobileUseError("STALE_OBSERVATION", "The foreground app, activity, or Android user changed before coordinate input.", "Inspect a new observation before input.");
+      }
+      const region = interactionBand(display, from, to);
+      if (old.hierarchy.status === "ok" && current.hierarchy.status === "ok") {
+        const signatures = (observation: Observation): string => JSON.stringify(observation.elements
+          .filter(({ bounds }) => bounds.y < region.y + region.height && bounds.y + bounds.height > region.y)
+          .map(elementSignature).sort());
+        if (signatures(old) !== signatures(current)) {
+          throw new MobileUseError("STALE_OBSERVATION", "UI elements in the coordinate action's interaction region changed before input.", "Inspect a new observation and prefer an enabled clickable elementRef.");
+        }
+      }
+      if (before.equals(after)) return;
+      const difference = compareScreens(before, after, region);
+      if (difference.regionChangedPixels) {
+        throw new MobileUseError("STALE_OBSERVATION", "Pixels in the coordinate action's interaction region changed before input.", "Observe again and verify the target and nearby controls. No input was sent.");
+      }
+      if (difference.changedPixels > difference.totalPixels * MAX_CHANGED_SCREEN_FRACTION) {
+        throw new MobileUseError("STALE_OBSERVATION", "More than 20% of the screen changed before coordinate input.", "Inspect a new observation for a page transition, scrolling, or overlay. No input was sent.");
+      }
+      if (difference.changedPixels && (!oldApp || !newApp || old.hierarchy.status !== current.hierarchy.status)) {
+        throw new MobileUseError("STALE_OBSERVATION", "The screenshot changed and its app or hierarchy context could not be matched before coordinate input.", "Observe again with a verifiable foreground activity and consistent hierarchy availability. No input was sent.");
       }
     };
     switch (action.kind) {
@@ -425,7 +464,7 @@ export class MobileUseService {
             y: Math.floor(element.bounds.y + element.bounds.height / 2),
           };
         } else {
-          unchangedImage();
+          unchangedCoordinateContext(action.target);
           point = action.target;
         }
         requirePoint(point, current.display);
@@ -433,9 +472,7 @@ export class MobileUseService {
         break;
       }
       case "swipe":
-        unchangedImage();
-        requirePoint(action.from, current.display);
-        requirePoint(action.to, current.display);
+        unchangedCoordinateContext(action.from, action.to);
         await state.backend.swipe(action.from, action.to, action.durationMs, signal);
         break;
       case "type_text": {
