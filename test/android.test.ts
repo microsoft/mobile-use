@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseDeviceList } from "../src/adb.js";
-import { AndroidBackend, parseDisplayState, parseHierarchy, parseKeyguardState, validatePng, validateText } from "../src/android.js";
+import { AndroidBackend, decodePng, parseDisplayState, parseHierarchy, parseKeyguardState, validatePng, validateText } from "../src/android.js";
 import { MobileUseError } from "../src/errors.js";
 import { actionSchema } from "../src/types.js";
-import { FakeAdb, displayDiagnostics, editField, hasCode, hierarchy, keyguardPolicy, node, png, USB, WIFI } from "./helpers.js";
+import { chunk, FakeAdb, displayDiagnostics, editField, hasCode, hierarchy, keyguardPolicy, node, pixelPng, png, USB, WIFI } from "./helpers.js";
 
 test("PNG validation preserves binary data and handles rotated dimensions", () => {
   assert.deepEqual(validatePng(png()), { width: 80, height: 160 });
@@ -19,8 +19,29 @@ test("PNG validation rejects truncated, corrupt, trailing, unsupported, and over
   for (const invalid of [
     Buffer.from("capture denied"), valid.subarray(0, -5), corrupt,
     Buffer.concat([valid, Buffer.from("extra")]), png(80, 160, 8, 5),
+    Buffer.concat([valid.subarray(0, 33), chunk("tRNS", Buffer.alloc(6)), valid.subarray(33)]),
   ]) assert.throws(() => validatePng(invalid), hasCode("INVALID_IMAGE"));
   assert.throws(() => validatePng(Buffer.alloc(5 * 1024 * 1024 + 1)), hasCode("CAPTURE_UNAVAILABLE"));
+});
+
+test("pixel decoding reverses every supported PNG row filter, including byte wrapping", () => {
+  const expected = [
+    [8, 8, 8, 8],
+    [8, 16, 8, 16],
+    [8, 8, 16, 16],
+    [8, 12, 12, 20],
+    [8, 16, 16, 24],
+  ];
+  for (const filter of [0, 1, 2, 3, 4]) {
+    const decoded = decodePng(png(2, 2, 8, filter));
+    assert.equal(decoded.channels, 4);
+    assert.deepEqual([...decoded.pixels], expected[filter]?.flatMap((value) => [value, value, value, value]));
+  }
+  assert.deepEqual([...decodePng(png(2, 1, 200, 1)).pixels], [200, 200, 200, 200, 144, 144, 144, 144]);
+  const rgb = decodePng(pixelPng(2, 1, (x) => [10 + x, 20 + x, 30 + x, 255], 3));
+  assert.equal(rgb.channels, 3);
+  assert.deepEqual([...rgb.pixels], [10, 20, 30, 11, 21, 31]);
+  assert.throws(() => decodePng(png(2, 2, 8, 5)), hasCode("INVALID_IMAGE"));
 });
 
 test("hierarchies retain Unicode labels, nullable unknowns, and native field status", () => {
