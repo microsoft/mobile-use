@@ -46,6 +46,34 @@ function setupSteps(value: Record<string, unknown>, stage: string): string {
 }
 
 for (const mode of ["legacy", "auto"] as const) {
+  for (const scenario of ["coordinate-animation", "coordinate-target-change"]) {
+    test(`coordinate revalidation distinguishes unrelated changes from changed targets over ${mode}: ${scenario}`, async (t) => {
+      const { client } = await fixture(t, mode, scenario);
+      const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+      const screen = payload(await client.callTool({
+        name: "mobile_observe", arguments: { targetToken: selected.targetToken },
+      })).observation;
+      assert.ok(isRecord(screen));
+      const acted = await client.callTool({
+        name: "mobile_act",
+        arguments: { targetToken: selected.targetToken, observationId: screen.observationId, action: { kind: "tap", target: { x: 40, y: 120 } } },
+      });
+      const result = payload(acted);
+      if (scenario === "coordinate-animation") {
+        assert.equal(acted.isError, undefined);
+        assert.equal(result.dispatchStatus, "dispatched");
+        assert.equal(result.verificationStatus, "requires-observation-review");
+        assert.ok(isRecord(result.after) && result.after.observationId !== screen.observationId);
+      } else {
+        assert.equal(acted.isError, true);
+        assert.ok(isRecord(result.error));
+        assert.equal(result.error.code, "STALE_OBSERVATION");
+        assert.equal(result.error.actionMayHaveRun, false);
+        assert.match(String(result.error.message), /Pixels.*interaction region/);
+      }
+    });
+  }
+
   test(`hierarchy-only observation and action results remain screenshot-free over ${mode}`, async (t) => {
     const { client } = await fixture(t, mode, "no-screenshots");
     assert.match(client.getInstructions() ?? "", /includeScreenshot: false/);

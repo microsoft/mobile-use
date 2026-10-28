@@ -12,8 +12,11 @@ verified through the reinstalled plugin over USB on one Android 11 phone,
 including termination verification after a package-diagnostic parser fix.
 Hierarchy-only observation and element-reference tab navigation have also been
 verified through the reinstalled Copilot App plugin over USB on that phone.
-Screenshot-based observe-act journeys and paired-wireless acceptance remain
-**unverified**.
+Screenshot-coordinate navigation through menu, product, checkout, and coupon
+screens has also been verified in one non-submitting journey through the
+reinstalled plugin over USB. A changed interaction region correctly rejected
+input, and a fresh observation allowed navigation to continue without manual
+taps. Paired-wireless acceptance remains **unverified**.
 This is not a released or production-supported capability.
 
 ## Prerequisites
@@ -348,9 +351,28 @@ punctuation, clipboard/helper fallback, and arbitrary shell are rejected.
 
 Observations expire after 30 seconds and are consumed on an action attempt.
 Elements are revalidated before dispatch; coordinate gestures additionally
-require an unchanged screenshot and in-bounds points. Animated/changing screens
-may therefore require another observation. Only the primary display is covered,
-and screenshots/hierarchies are non-atomic.
+require in-bounds points and unchanged decoded pixels in a full-width interaction
+band. The band extends above/below a tap by 8% of the shorter display dimension
+(rounded up, at least 8 pixels, clipped to the display). For swipes, it covers the
+entire vertical path plus that padding, not just the endpoints. Exposed hierarchy
+elements intersecting the band must also remain unchanged when both reads succeed.
+
+Up to 20% of screen pixels may change **outside** this band, allowing unrelated
+ads, price animations, and status-bar updates without requiring a byte-identical
+PNG. Any changed target-band pixel, larger screen change, or known foreground
+app/activity/Android-user switch still rejects input. Allowing changed pixels
+elsewhere requires a verified matching foreground activity and consistent
+hierarchy availability; unavailable foreground diagnostics produce an explicit
+observation warning and retain the identical-visible-pixels requirement.
+Equivalent PNG encodings/metadata are compared by decoded RGB/RGBA pixels,
+including alpha, rather than file hashes. These are conservative visual/context
+checks, not proof of an unchanged page or permission to submit a transaction.
+Only the primary display is covered; capture sources and input remain non-atomic.
+
+`STALE_OBSERVATION` describes the local pre-input check that failed, not an
+app-level security block. It does not by itself identify ads or price animations
+as the cause. Observe again and inspect the target before another attempt;
+observations remain single-use, and uncertain input is never automatically retried.
 
 Display geometry and rotation are verified independently of UI Automator using
 the primary logical display in `dumpsys window displays`. A failed hierarchy read
@@ -359,7 +381,7 @@ Observations include a separate `displayState` status. Unavailable display state
 leaves rotation unknown and blocks normal input with
 `DISPLAY_STATE_UNAVAILABLE`; old rotation is never cached or assumed to be zero.
 Actual geometry/rotation changes (including 180-degree rotation), disagreement
-between capture sources, and changed screenshots still reject stale input.
+between capture sources, and changed interaction regions still reject stale input.
 Unrecognized OEM display formats fail explicitly rather than guessing. Input
 viewport orientation is not used because it can include a physical panel offset
 rather than just the logical UI rotation.

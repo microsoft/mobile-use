@@ -37,6 +37,32 @@ export function png(width = 80, height = 160, shade = 8, filter = 0): Buffer {
   ]);
 }
 
+export function pixelPng(
+  width: number,
+  height: number,
+  pixel: (x: number, y: number) => readonly [number, number, number, number],
+  channels: 3 | 4 = 4,
+): Buffer {
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8;
+  ihdr[9] = channels === 4 ? 6 : 2;
+  const raw = Buffer.alloc((width * channels + 1) * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const rgba = pixel(x, y);
+      for (let channel = 0; channel < channels; channel++) {
+        raw[y * (width * channels + 1) + 1 + x * channels + channel] = rgba[channel] ?? 0;
+      }
+    }
+  }
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", ihdr), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
 function xmlAttribute(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
 }

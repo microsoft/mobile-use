@@ -45,6 +45,8 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.match(skill, /includeScreenshot: false/);
   assert.match(skill, /Hierarchy-only actions never\s+capture screenshots/);
   assert.match(skill, /kind: "double_tap"/);
+  assert.match(skill, /coordinate gestures also revalidate decoded screenshot pixels/);
+  assert.match(skill, /not evidence that the app blocked/);
   const notices = await readFile(path.join(artifact, "THIRD_PARTY_NOTICES"), "utf8");
   assert.match(notices, /@modelcontextprotocol\/server@2\.3\.1/);
   assert.match(notices, /zod@4\.6\.7/);
@@ -123,6 +125,8 @@ for (const mode of ["legacy", "auto"]) {
     assert.equal(doubleTap.properties.delayMs.minimum, 0);
     assert.equal(doubleTap.properties.delayMs.maximum, 250);
     assert.equal(doubleTap.properties.delayMs.default, 50);
+    assert.match(act?.description ?? "", /unchanged full-width interaction band/);
+    assert.match(act?.description ?? "", /not proof of an app security block/);
     const doctor = await client.callTool({ name: "mobile_doctor", arguments: {} });
     assert.equal(doctor.isError, true);
     const text = doctor.content.find((block) => block.type === "text")?.text;

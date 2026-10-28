@@ -153,7 +153,12 @@ unless the user approves that specific evidence and destination.
    justified action. Use an observed element reference when possible; screenshot
    coordinates require a usable screenshot. Do not guess invisible elements.
    An observation expires after 30 seconds and is consumed on an action attempt;
-   coordinate gestures also require an unchanged screenshot at dispatch.
+   coordinate gestures also revalidate decoded screenshot pixels. The full-width
+   band around a tap, or the entire swipe path plus padding, must be unchanged,
+   including exposed UI elements in that band. Changes outside it are allowed
+   only up to 20% of screen pixels, with matching foreground app/activity/user
+   and consistent hierarchy availability. PNG encoding/metadata alone does not
+   make an observation stale. Geometry changes and app switches still block input.
    `mobile_act` preserves the observation's screenshot setting during
    revalidation and in its returned observation. Hierarchy-only actions never
    capture screenshots; coordinate taps and swipes fail with `CAPTURE_UNAVAILABLE`.
@@ -254,6 +259,13 @@ settings as recovery.
 If an action may have run but timed out, do not replay it. Observe the state and
 report uncertainty first. Stale references require another observation. If an
 element changed or became ambiguous, stop and re-observe.
+
+For `STALE_OBSERVATION`, report the actual failed check (interaction-region
+pixels/controls, large screen change, app context, geometry, or observation age).
+It is a local pre-input revalidation failure, not evidence that the app blocked
+automation. Do not attribute it to ads, price animations, or security measures
+without independent evidence. Inspect a fresh observation before retrying;
+never disable the guard or replay a consumed observation.
 
 Hierarchy data may be incomplete for custom-drawn content. Protected capture may
 be obscured without an explicit error; a dark image alone does not establish the
