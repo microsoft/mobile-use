@@ -87,13 +87,13 @@ test("prepared hierarchies expose validated non-password raw-text fingerprints",
   }
 });
 
-test("prepared hierarchies preserve canonical native window IDs and reject unknown or invalid identities", () => {
-  for (const windowId of [0, 1, 7, 0x7fffffff]) {
-    assert.equal(parseHierarchy(hierarchy(editField({ "window-id": String(windowId) }))).elements[0]?.windowId, windowId);
+test("prepared hierarchies preserve stable window identities and reject unknown or invalid identities", () => {
+  for (const windowIdentity of ["0:u0", "abc:u1", "ffffffff:u2147483647"]) {
+    assert.equal(parseHierarchy(hierarchy(editField({ "window-identity": windowIdentity }))).elements[0]?.windowIdentity, windowIdentity);
   }
-  assert.equal(parseHierarchy(hierarchy(editField())).elements[0]?.windowId, undefined);
-  for (const invalid of ["", "-1", "01", "1.5", "2147483648", "NaN", "unknown"]) {
-    assert.throws(() => parseHierarchy(hierarchy(editField({ "window-id": invalid }))), hasCode("HIERARCHY_UNAVAILABLE"));
+  assert.equal(parseHierarchy(hierarchy(editField())).elements[0]?.windowIdentity, undefined);
+  for (const invalid of ["", "abc", "ABC:u0", "abc:u01", "abc:u-1", "abc:u2147483648", "abcdefabc:u0", "unknown"]) {
+    assert.throws(() => parseHierarchy(hierarchy(editField({ "window-identity": invalid }))), hasCode("HIERARCHY_UNAVAILABLE"));
   }
 });
 

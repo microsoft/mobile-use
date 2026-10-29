@@ -10,7 +10,7 @@ export type ScreenElement = {
   label: string;
   text: string;
   textHash?: string;
-  windowId?: number;
+  windowIdentity?: string;
   resourceId: string | null;
   editable: boolean;
 } & Record<"enabled" | "clickable" | "focused" | "password", boolean | null>;

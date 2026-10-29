@@ -58,7 +58,8 @@ export async function unicodeHierarchy(command: DeviceCommand, remotePath: strin
 }
 
 function helperFailurePhase(response: string): string | undefined {
-  return /^MOBILE_USE_TEXT_V1_ERROR_(REQUEST|CONNECT|CONFIGURE|ROOT|WINDOW|HIERARCHY|TARGET|WRITE|VERIFY|DISCONNECT)\r?\n?$/.exec(response)?.[1];
+  const failure = /^MOBILE_USE_TEXT_V1_ERROR_(REQUEST|CONNECT|CONFIGURE|ROOT|WINDOW|HIERARCHY|TARGET|WRITE|VERIFY|DISCONNECT)(?:_(MISSING|DISPLAY|TYPE|ACTIVE|FOCUS|REGISTRATION|READ|LIMIT|PREFIX|HASH|OWNER|ENDING|NONE|USER|AMBIGUOUS|CHANGED))?\r?\n?$/.exec(response);
+  return failure ? failure[1] + (failure[2] ? `_${failure[2]}` : "") : undefined;
 }
 
 export async function appendUnicodeText(
@@ -75,17 +76,19 @@ export async function appendUnicodeText(
   if (!field.textHash || !/^[0-9a-f]{64}$/.test(field.textHash)) {
     throw new MobileUseError("ELEMENT_CHANGED", "Unicode input requires the exact text fingerprint from a prepared-helper observation.", "Observe the approved text field again. No input was sent.");
   }
-  if (field.windowId === undefined || !Number.isInteger(field.windowId) || field.windowId < 0 || field.windowId > 0x7fffffff) {
+  const observedWindowIdentity = field.windowIdentity;
+  const windowIdentity = /^([0-9a-f]{1,8}):u(0|[1-9]\d*)$/.exec(observedWindowIdentity ?? "");
+  if (!observedWindowIdentity || !windowIdentity || Number(windowIdentity[2]) !== foreground.userId) {
     throw new MobileUseError("ELEMENT_CHANGED", "Unicode input requires the original observed window identity.", "Observe the approved text field again. No input was sent.");
   }
-  const numbers = [3, foreground.userId, field.windowId, field.bounds.x, field.bounds.y, field.bounds.width, field.bounds.height];
+  const numbers = [4, foreground.userId, field.bounds.x, field.bounds.y, field.bounds.width, field.bounds.height];
   if (!numbers.every((number) => Number.isInteger(number) && number >= 0 && number <= 0x7fffffff)) {
     throw new MobileUseError("INVALID_INPUT", "The text target has invalid user or bounds metadata.", "Observe a native text field on the primary display again.");
   }
   const header = Buffer.alloc(numbers.length * 4);
   numbers.forEach((number, index) => header.writeInt32BE(number, index * 4));
   const parts = [header];
-  for (const value of [foreground.packageName, field.className, field.resourceId ?? "", field.textHash, text]) {
+  for (const value of [observedWindowIdentity, foreground.packageName, field.className, field.resourceId ?? "", field.textHash, text]) {
     const bytes = Buffer.from(value, "utf8");
     const length = Buffer.alloc(4);
     length.writeInt32BE(bytes.length);
@@ -109,7 +112,7 @@ export async function appendUnicodeText(
     throw new MobileUseError("TEXT_INPUT_UNSUPPORTED", "The field does not support bounded text-setting, or its resulting text plus exposed label/hint exceeds 4096 UTF-16 code units.", "Use an editable native field that exposes ACTION_SET_TEXT. No clipboard or keyboard fallback was attempted.");
   }
   const phase = helperFailurePhase(response);
-  const actionMayHaveRun = !["REQUEST", "CONNECT", "CONFIGURE", "ROOT", "WINDOW", "HIERARCHY", "TARGET"].includes(phase ?? "");
+  const actionMayHaveRun = !["REQUEST", "CONNECT", "CONFIGURE", "ROOT", "WINDOW", "HIERARCHY", "TARGET"].includes(phase?.split("_")[0] ?? "");
   throw new MobileUseError(
     "TEXT_INPUT_FAILED", phase
       ? `The Unicode text helper failed during ${phase}.`

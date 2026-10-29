@@ -11,39 +11,61 @@ import android.util.Base64;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.view.accessibility.AccessibilityWindowInfo;
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public final class TextMain {
     private static final String PREFIX = "MOBILE_USE_TEXT_V1_";
     private static final long ROOT_TIMEOUT_MS = 2000;
     private static String phase = "REQUEST";
 
+    interface WindowDiagnostics {
+        String read() throws IOException, InterruptedException;
+    }
+
+    private enum WindowCheck { MISSING, DISPLAY, TYPE, ACTIVE, FOCUS, REGISTRATION, READ, LIMIT, PREFIX, HASH, OWNER, ENDING, NONE, USER, AMBIGUOUS, CHANGED }
+
+    private static final class WindowFailure extends IllegalStateException {
+        final WindowCheck check;
+        WindowFailure(WindowCheck check) {
+            super("Window validation failed");
+            this.check = check;
+        }
+    }
+
     private static final class Request {
-        final int user, windowId;
+        final int user;
         final Rect bounds;
-        final String packageName, className, resourceId, textHash, text;
+        final String windowIdentity, packageName, className, resourceId, textHash, text;
 
         Request(String encoded) throws IOException {
             if (encoded.length() > 32768) throw new IllegalArgumentException("Payload too large");
             DataInputStream input = new DataInputStream(
                 new ByteArrayInputStream(Base64.decode(encoded, Base64.NO_WRAP)));
-            if (input.readInt() != 3) throw new IllegalArgumentException("Unknown protocol");
+            if (input.readInt() != 4) throw new IllegalArgumentException("Unknown protocol");
             user = input.readInt();
-            windowId = input.readInt();
             int x = input.readInt(), y = input.readInt();
             int width = input.readInt(), height = input.readInt();
-            if (user < 0 || windowId < 0 || x < 0 || y < 0 || width <= 0 || height <= 0 ||
+            if (user < 0 || x < 0 || y < 0 || width <= 0 || height <= 0 ||
                     (long) x + width > Integer.MAX_VALUE || (long) y + height > Integer.MAX_VALUE) {
                 throw new IllegalArgumentException("Invalid target");
             }
             bounds = new Rect(x, y, x + width, y + height);
+            windowIdentity = readString(input);
+            if (!windowIdentity.matches("[0-9a-f]{1,8}:u" + user)) {
+                throw new IllegalArgumentException("Invalid window identity");
+            }
             packageName = readString(input);
             className = readString(input);
             resourceId = readString(input);
@@ -78,7 +100,7 @@ public final class TextMain {
         return (Integer) Class.forName("android.app.ActivityManager").getMethod("getCurrentUser").invoke(null);
     }
 
-    private static String mismatch(AccessibilityNodeInfo node, Request request, boolean checkBounds) {
+    private static String mismatch(AccessibilityNodeInfo node, Request request, int windowId, boolean checkBounds) {
         Rect bounds = new Rect();
         node.getBoundsInScreen(bounds);
         if (!node.isVisibleToUser()) return "FIELD_VISIBLE";
@@ -86,7 +108,7 @@ public final class TextMain {
         if (!node.isFocused()) return "FIELD_FOCUS";
         if (!node.isEnabled()) return "FIELD_ENABLED";
         if (node.isPassword()) return "FIELD_PASSWORD";
-        if (node.getWindowId() != request.windowId) return "FIELD_WINDOW";
+        if (node.getWindowId() != windowId) return "FIELD_WINDOW";
         if (!request.packageName.equals(string(node.getPackageName()))) return "FIELD_PACKAGE";
         if (!request.className.equals(string(node.getClassName())) || !request.className.endsWith("EditText")) return "FIELD_CLASS";
         if (!request.resourceId.equals(string(node.getViewIdResourceName()))) return "FIELD_ID";
@@ -98,10 +120,76 @@ public final class TextMain {
         if (window == null) return false;
         try {
             return window.getDisplayId() == 0 &&
-                window.getType() == AccessibilityWindowInfo.TYPE_APPLICATION && window.isActive();
+                window.getType() == AccessibilityWindowInfo.TYPE_APPLICATION &&
+                window.isActive() && window.isFocused();
         } finally {
             window.recycle();
         }
+    }
+
+    private static String readWindowDiagnostics() throws IOException, InterruptedException {
+        Process process = new ProcessBuilder("dumpsys", "-t", "2", "window", "displays")
+            .redirectErrorStream(true).start();
+        try (InputStream input = process.getInputStream()) {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = input.read(buffer)) != -1) {
+                if (output.size() + count > 1024 * 1024) {
+                    throw new WindowFailure(WindowCheck.LIMIT);
+                }
+                output.write(buffer, 0, count);
+            }
+            if (process.waitFor() != 0) throw new WindowFailure(WindowCheck.READ);
+            return new String(output.toByteArray(), StandardCharsets.UTF_8);
+        } finally {
+            process.destroy();
+        }
+    }
+
+    private static String windowIdentity(WindowDiagnostics diagnostics, int user) throws IOException, InterruptedException {
+        String output;
+        try {
+            output = diagnostics.read();
+        } catch (IOException failure) {
+            throw new WindowFailure(WindowCheck.READ);
+        }
+        if (output.getBytes(StandardCharsets.UTF_8).length > 1024 * 1024) {
+            throw new WindowFailure(WindowCheck.LIMIT);
+        }
+        Pattern display = Pattern.compile("\\s*Display: mDisplayId=(0|[1-9]\\d*)(?:\\s.*)?");
+        String metadata = "(?:[A-Za-z][A-Za-z0-9_]*=-?(?:0|[1-9]\\d*)\\s+)*";
+        Pattern focus = Pattern.compile("\\s*mCurrentFocus=Window\\{([0-9a-fA-F]{1,8})\\s+" +
+            metadata + "u(0|[1-9]\\d*)\\s+[^\\r\\n]*\\}[^\\r\\n]*");
+        boolean primary = false;
+        int primaryCount = 0, focusCount = 0;
+        String identity = null;
+        for (String line : output.split("\\r?\\n")) {
+            Matcher heading = display.matcher(line);
+            if (heading.matches()) {
+                primary = "0".equals(heading.group(1));
+                if (primary) primaryCount++;
+            } else if (primary && line.trim().startsWith("mCurrentFocus=")) {
+                if (line.trim().equals("mCurrentFocus=null")) throw new WindowFailure(WindowCheck.NONE);
+                Matcher window = focus.matcher(line);
+                if (!window.matches()) {
+                    String record = line.trim().substring("mCurrentFocus=".length());
+                    if (!record.startsWith("Window{")) throw new WindowFailure(WindowCheck.PREFIX);
+                    String[] fields = record.substring("Window{".length()).split("\\s+", 3);
+                    if (!fields[0].matches("[0-9a-fA-F]{1,8}")) throw new WindowFailure(WindowCheck.HASH);
+                    if (fields.length < 2 || !fields[1].matches("u(0|[1-9]\\d*)")) {
+                        throw new WindowFailure(WindowCheck.OWNER);
+                    }
+                    throw new WindowFailure(WindowCheck.ENDING);
+                }
+                if (!Integer.toString(user).equals(window.group(2))) throw new WindowFailure(WindowCheck.USER);
+                focusCount++;
+                identity = window.group(1).toLowerCase(Locale.ROOT) + ":u" + window.group(2);
+            }
+        }
+        if (primaryCount != 1) throw new WindowFailure(WindowCheck.DISPLAY);
+        if (focusCount != 1) throw new WindowFailure(WindowCheck.AMBIGUOUS);
+        return identity;
     }
 
     private static void collect(AccessibilityNodeInfo node, int depth, List<AccessibilityNodeInfo> nodes) {
@@ -169,7 +257,8 @@ public final class TextMain {
         throw new IllegalStateException("Active root unavailable");
     }
 
-    private static String dump(UiAutomation automation, int rotation) {
+    private static String dump(UiAutomation automation, int rotation, WindowDiagnostics diagnostics)
+            throws ReflectiveOperationException, IOException, InterruptedException {
         AccessibilityNodeInfo root = awaitRoot(automation);
         List<AccessibilityNodeInfo> nodes = new ArrayList<>();
         AccessibilityWindowInfo window = null;
@@ -177,7 +266,14 @@ public final class TextMain {
             nodes.add(root);
             phase = "WINDOW";
             window = root.getWindow();
-            if (window == null || window.getDisplayId() != 0) throw new IllegalStateException("No primary window");
+            if (window == null) throw new WindowFailure(WindowCheck.MISSING);
+            if (window.getDisplayId() != 0) throw new WindowFailure(WindowCheck.DISPLAY);
+            if (window.getType() != AccessibilityWindowInfo.TYPE_APPLICATION) throw new WindowFailure(WindowCheck.TYPE);
+            if (!window.isActive()) throw new WindowFailure(WindowCheck.ACTIVE);
+            if (!window.isFocused()) throw new WindowFailure(WindowCheck.FOCUS);
+            int user = currentUser(), windowId = root.getWindowId();
+            if (windowId < 0) throw new WindowFailure(WindowCheck.REGISTRATION);
+            String identity = windowIdentity(diagnostics, user);
             nodes.clear();
             phase = "HIERARCHY";
             collect(root, 1, nodes);
@@ -197,7 +293,7 @@ public final class TextMain {
                 node.getBoundsInScreen(bounds);
                 xml.append("<node");
                 attribute(xml, "class", string(node.getClassName()));
-                attribute(xml, "window-id", Integer.toString(node.getWindowId()));
+                if (node.getWindowId() == windowId) attribute(xml, "window-identity", identity);
                 attribute(xml, "resource-id", string(node.getViewIdResourceName()));
                 attribute(xml, "text", text);
                 if (node.isEditable() && !node.isPassword()) attribute(xml, "text-sha256", textHash(node));
@@ -215,6 +311,11 @@ public final class TextMain {
             if (xml.toString().getBytes(StandardCharsets.UTF_8).length > 2 * 1024 * 1024) {
                 throw new IllegalStateException("Hierarchy too large");
             }
+            phase = "WINDOW";
+            if (!activeWindow(root) || root.getWindowId() != windowId || currentUser() != user ||
+                    !identity.equals(windowIdentity(diagnostics, user))) {
+                throw new WindowFailure(WindowCheck.CHANGED);
+            }
             return xml.toString();
         } finally {
             if (window != null) window.recycle();
@@ -222,7 +323,8 @@ public final class TextMain {
         }
     }
 
-    private static String append(UiAutomation automation, Request request) throws ReflectiveOperationException {
+    private static String append(UiAutomation automation, Request request, WindowDiagnostics diagnostics)
+            throws ReflectiveOperationException, IOException, InterruptedException {
         phase = "TARGET";
         if (currentUser() != request.user) return "ELEMENT_CHANGED_USER";
         AccessibilityNodeInfo root = awaitRoot(automation);
@@ -235,8 +337,11 @@ public final class TextMain {
             if (window == null) return "ELEMENT_CHANGED_WINDOW_MISSING";
             if (window.getDisplayId() != 0) return "ELEMENT_CHANGED_WINDOW_DISPLAY";
             if (window.getType() != AccessibilityWindowInfo.TYPE_APPLICATION) return "ELEMENT_CHANGED_WINDOW_TYPE";
-            if (!window.isActive()) return "ELEMENT_CHANGED_WINDOW_ACTIVE";
-            if (root.getWindowId() != request.windowId) return "ELEMENT_CHANGED_WINDOW_ID";
+            if (!window.isActive() || !window.isFocused()) return "ELEMENT_CHANGED_WINDOW_ACTIVE";
+            int windowId = root.getWindowId();
+            if (windowId < 0) return "ELEMENT_CHANGED_WINDOW_ID";
+            // Accessibility IDs can change on reconnect; WindowManager identity survives it.
+            if (!request.windowIdentity.equals(windowIdentity(diagnostics, request.user))) return "ELEMENT_CHANGED_WINDOW_ID";
             if (!request.packageName.equals(string(root.getPackageName()))) return "ELEMENT_CHANGED_ROOT_PACKAGE";
             nodes.clear();
             collect(root, 1, nodes);
@@ -244,14 +349,14 @@ public final class TextMain {
             for (AccessibilityNodeInfo node : nodes) {
                 if (node.isEditable() && node.isFocused()) {
                     if (field != null) return "ELEMENT_CHANGED_FIELD_AMBIGUOUS";
-                    String mismatch = mismatch(node, request, true);
+                    String mismatch = mismatch(node, request, windowId, true);
                     if (mismatch != null) return "ELEMENT_CHANGED_" + mismatch;
                     field = node;
                 }
             }
             if (field == null) return "ELEMENT_CHANGED_FIELD_MISSING";
             if (!field.refresh()) return "ELEMENT_CHANGED_FIELD_REFRESH";
-            String mismatch = mismatch(field, request, true);
+            String mismatch = mismatch(field, request, windowId, true);
             if (mismatch != null) return "ELEMENT_CHANGED_" + mismatch;
             String previous = string(field.getText());
             boolean hint = field.isShowingHintText();
@@ -267,7 +372,10 @@ public final class TextMain {
                 return "UNSUPPORTED";
             }
             if (currentUser() != request.user) return "ELEMENT_CHANGED_USER";
-            if (!activeWindow(field) || field.getWindowId() != request.windowId) return "ELEMENT_CHANGED_FIELD_WINDOW";
+            if (!activeWindow(field) || field.getWindowId() != windowId ||
+                    !request.windowIdentity.equals(windowIdentity(diagnostics, request.user))) {
+                return "ELEMENT_CHANGED_FIELD_WINDOW";
+            }
             Bundle arguments = new Bundle();
             arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, desired);
             // ACTION_SET_TEXT writes text, including line breaks, without sending Enter or submitting.
@@ -275,8 +383,9 @@ public final class TextMain {
             if (!field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) return "FAILED";
             phase = "VERIFY";
             // Text can resize or scroll its original node; pre-write geometry remains strict.
-            if (!field.refresh() || mismatch(field, request, false) != null ||
+            if (!field.refresh() || mismatch(field, request, windowId, false) != null ||
                     !activeWindow(field) || currentUser() != request.user || field.isShowingHintText() ||
+                    !request.windowIdentity.equals(windowIdentity(diagnostics, request.user)) ||
                     !desired.equals(string(field.getText()))) return "FAILED";
             return "OK";
         } finally {
@@ -286,6 +395,10 @@ public final class TextMain {
     }
 
     public static void main(String[] args) {
+        run(args, TextMain::readWindowDiagnostics);
+    }
+
+    static void run(String[] args, WindowDiagnostics diagnostics) {
         HandlerThread thread = new HandlerThread("mobile-use-text");
         UiAutomation automation = null;
         boolean connected = false;
@@ -313,9 +426,12 @@ public final class TextMain {
             info.flags |= AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS |
                 AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
             automation.setServiceInfo(info);
-            result = check ? "READY" : hierarchy ? dump(automation, Integer.parseInt(args[1])) : append(automation, request);
-        } catch (ReflectiveOperationException | IOException | RuntimeException failure) {
+            result = check ? "READY" : hierarchy
+                ? dump(automation, Integer.parseInt(args[1]), diagnostics) : append(automation, request, diagnostics);
+        } catch (ReflectiveOperationException | IOException | RuntimeException | InterruptedException failure) {
+            if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
             result = "ERROR_" + phase;
+            if (failure instanceof WindowFailure) result += "_" + ((WindowFailure) failure).check.name();
             System.err.println("mobile-use: text helper failed; text may have changed; do not replay");
             hierarchy = false;
         } finally {

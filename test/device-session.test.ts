@@ -796,10 +796,10 @@ test("Unicode blocks an identical focused editor in a replacement window within 
   const { adb, service } = harness(t);
   const selected = await service.selectDevice(USB);
   await service.prepareTextInput(selected.targetToken);
-  adb.xml = hierarchy(editField({ text: "same text", "window-id": "7" }));
+  adb.xml = hierarchy(editField({ text: "same text", "window-identity": "abc:u0" }));
   const screen = await service.observe(selected.targetToken, undefined, false);
-  assert.equal(screen.observation.elements[0]?.windowId, 7);
-  adb.xml = hierarchy(editField({ text: "same text", "window-id": "8" }));
+  assert.equal(screen.observation.elements[0]?.windowIdentity, "abc:u0");
+  adb.xml = hierarchy(editField({ text: "same text", "window-identity": "def:u0" }));
   await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
     kind: "type_text", text: "中文",
   }), hasCode("ELEMENT_CHANGED"));

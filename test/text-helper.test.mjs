@@ -21,13 +21,27 @@ const stubs = {
         if (Boolean.getBoolean("traceRoot")) System.err.println("ROOT_SLEEP " + duration);
       }
     }`,
-  "TextFixture.java": `
+  "dev/mobileuse/text/TextFixture.java": `
+    package dev.mobileuse.text;
     public final class TextFixture {
       public static void main(String[] args) {
         if (args.length == 1 && "--oversized".equals(args[0])) {
           args[0] = new String(new char[32769]).replace('\\0', 'A');
         }
-        dev.mobileuse.text.TextMain.main(args);
+        final int[] reads={0};
+        TextMain.run(args, () -> {
+          if (Boolean.getBoolean("forbidRead")) throw new IllegalStateException("Check must not read windows");
+          reads[0]++;
+          if (Boolean.getBoolean("windowReadFailed")) throw new java.io.IOException("Private window diagnostic");
+          if (Boolean.getBoolean("oversizedWindowDiagnostics")) return new String(new char[1024 * 1024 + 1]);
+          String provided=System.getProperty("windowDiagnostics");
+          if (provided != null) return new String(java.util.Base64.getDecoder().decode(provided), java.nio.charset.StandardCharsets.UTF_8);
+          String identity=reads[0] >= Integer.getInteger("windowChangeRead", Integer.MAX_VALUE)
+            ? System.getProperty("changedWindowIdentity", "def") : System.getProperty("windowIdentity", "abc");
+          return "WINDOW MANAGER DISPLAY CONTENTS\\n  Display: mDisplayId=0 stacks=1\\n" +
+            "  mCurrentFocus=Window{" + identity + " u0 example.poc/.MainActivity}\\n" +
+            "  Display: mDisplayId=2 stacks=1\\n  mCurrentFocus=Window{fff u10 other.app/.Activity}\\n";
+        });
       }
     }`,
   "android/os/Looper.java": `package android.os; public class Looper {}`,
@@ -114,6 +128,7 @@ const stubs = {
       public int getDisplayId() { return Integer.getInteger("display", 0); }
       public int getType() { return Integer.getInteger("windowType", 1); }
       public boolean isActive() { return !Boolean.getBoolean("inactive"); }
+      public boolean isFocused() { return !Boolean.getBoolean("windowUnfocused"); }
       public void recycle() {}
     }`,
   "android/view/accessibility/AccessibilityNodeInfo.java": `
@@ -216,11 +231,11 @@ function textHash(text, hint = false) {
   return createHash("sha256").update(Buffer.from([hint ? 1 : 0]))
     .update(Buffer.from(text, "utf16le").swap16()).digest("hex");
 }
-function payload(text, previous = "", numbers = [3, 0, 1, 4, 32, 72, 24], hint = false) {
+function payload(text, previous = "", numbers = [4, 0, 4, 32, 72, 24], hint = false, windowIdentity = "abc:u0") {
   const header = Buffer.alloc(numbers.length * 4);
   numbers.forEach((value, index) => header.writeInt32BE(value, index * 4));
   const parts = [header];
-  for (const value of ["example.poc", "android.widget.EditText", "example.poc:id/text", textHash(previous, hint), text]) {
+  for (const value of [windowIdentity, "example.poc", "android.widget.EditText", "example.poc:id/text", textHash(previous, hint), text]) {
     const bytes = Buffer.from(value, "utf8");
     const length = Buffer.alloc(4);
     length.writeInt32BE(bytes.length);
@@ -231,7 +246,7 @@ function payload(text, previous = "", numbers = [3, 0, 1, 4, 32, 72, 24], hint =
 function run(argument, properties = {}) {
   const result = spawnSync("java", [
     ...Object.entries(properties).map(([key, value]) => `-D${key}=${value}`),
-    "-cp", classes, "TextFixture", ...(Array.isArray(argument) ? argument : [argument]),
+    "-cp", classes, "dev.mobileuse.text.TextFixture", ...(Array.isArray(argument) ? argument : [argument]),
   ], { encoding: "utf8", windowsHide: true });
   assert.ifError(result.error);
   return result;
@@ -258,7 +273,8 @@ test("prepared helper observations preserve exact Unicode, whitespace, XML escap
   const result = run(["--dump", "2"], { previous: base64(text), forbidWrite: true });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^<hierarchy rotation="2">/);
-  assert.match(result.stdout, /window-id="1"/);
+  assert.match(result.stdout, /window-identity="abc:u0"/);
+  assert.doesNotMatch(result.stdout, /window-id=/);
   assert.ok(result.stdout.includes('text="  中文 👩‍💻😀 e\u0301 &amp; &quot; &lt;&#10;&#9;&#13; "'), result.stdout);
   assert.doesNotMatch(result.stderr, /WRITE /);
   assert.match(result.stderr, /DISCONNECTED/);
@@ -267,7 +283,11 @@ test("prepared helper observations preserve exact Unicode, whitespace, XML escap
   assert.doesNotMatch(password.stdout, /secret-value/);
   assert.match(password.stdout, /text="\[redacted\]"/);
   assert.doesNotMatch(password.stdout, /text-sha256=/);
-  for (const [properties, phase] of [[{ display: 1 }, "WINDOW"], [{ noRoot: true }, "ROOT"], [{ noWindow: true }, "WINDOW"]]) {
+  for (const [properties, phase] of [
+    [{ display: 1 }, "WINDOW_DISPLAY"], [{ noRoot: true }, "ROOT"], [{ noWindow: true }, "WINDOW_MISSING"],
+    [{ windowUnfocused: true }, "WINDOW_FOCUS"], [{ inactive: true }, "WINDOW_ACTIVE"],
+    [{ windowType: 2 }, "WINDOW_TYPE"], [{ windowId: -1 }, "WINDOW_REGISTRATION"],
+  ]) {
     const unavailable = run(["--dump", "0"], properties);
     expectFailure(unavailable, phase);
   }
@@ -356,11 +376,53 @@ test("a matching placeholder after filtering is never successful text input", ()
 });
 
 test("an identical editor in a replacement window is rejected before writing", () => {
-  const observed = run(["--dump", "0"], { windowId: 7, forbidWrite: true });
-  assert.match(observed.stdout, /window-id="7"/);
-  expectStatus(run(payload("中文"), { windowId: 2, forbidWrite: true }), "ELEMENT_CHANGED_WINDOW_ID");
+  const observed = run(["--dump", "0"], { windowIdentity: "abc", windowId: 7, forbidWrite: true });
+  assert.match(observed.stdout, /window-identity="abc:u0"/);
+  expectStatus(run(payload("中文"), { windowIdentity: "def", forbidWrite: true }), "ELEMENT_CHANGED_WINDOW_ID");
+  expectStatus(run(payload("中文"), { windowChangeRead: 2, forbidWrite: true }), "ELEMENT_CHANGED_FIELD_WINDOW");
   expectStatus(run(payload("中文"), { refreshedWindowId: 2, forbidWrite: true }), "ELEMENT_CHANGED_FIELD_WINDOW");
-  expectStatus(run(payload("中文", "", [3, 0, 7, 4, 32, 72, 24]), { windowId: 7 }), "OK", 1);
+});
+
+test("accessibility re-registration may change IDs across connections without replacing the authorized window", () => {
+  for (const windowId of [1, 7, 17539]) {
+    const observed = run(["--dump", "0"], { windowId, forbidWrite: true });
+    assert.match(observed.stdout, /window-identity="abc:u0"/);
+    expectStatus(run(payload("中文"), { windowId: windowId + 1 }), "OK", 1);
+  }
+});
+
+test("window identity diagnostics reject missing, ambiguous, wrong-user, secondary-display-only and failed reads", () => {
+  for (const suffix of ["", " mLastFocus=Window{def u0 other.app/.Activity}"]) {
+    const diagnostic = `Display: mDisplayId=0\n mCurrentFocus=Window{ABC  u0\tTitle {with braces}}${suffix}`;
+    expectStatus(run(payload("中文"), { windowDiagnostics: base64(diagnostic) }), "OK", 1);
+  }
+  for (const metadata of ["mode=0 ", "mode=1 rootTaskId=40 ", "mode=0 taskId=-1 "]) {
+    const diagnostic = `Display: mDisplayId=0\n mCurrentFocus=Window{abc ${metadata}u0 example.poc/.MainActivity}`;
+    expectStatus(run(payload("中文"), { windowDiagnostics: base64(diagnostic) }), "OK", 1);
+    expectFailure(run(payload("中文"), {
+      windowDiagnostics: base64(diagnostic.replace("u0 ", "u10 ")), forbidWrite: true,
+    }), "TARGET_USER");
+  }
+  for (const [diagnostic, reason] of [
+    ["", "DISPLAY"], ["mCurrentFocus=Window{abc u0 example.poc/.MainActivity}", "DISPLAY"],
+    ["Display: mDisplayId=1\n mCurrentFocus=Window{abc u0 example.poc/.MainActivity}", "DISPLAY"],
+    ["Display: mDisplayId=0\n mCurrentFocus=null", "NONE"],
+    ["Display: mDisplayId=0\n mCurrentFocus=Window{abc u10 example.poc/.MainActivity}", "USER"],
+    ["Display: mDisplayId=0\n mCurrentFocus=Other{abc u0 example.poc/.MainActivity}", "PREFIX"],
+    ["Display: mDisplayId=0\n mCurrentFocus=Window{unknown u0 example.poc/.MainActivity}", "HASH"],
+    ["Display: mDisplayId=0\n mCurrentFocus=Window{abc unknown example.poc/.MainActivity}", "OWNER"],
+    ["Display: mDisplayId=0\n mCurrentFocus=Window{abc u0 no closing delimiter", "ENDING"],
+    ["Display: mDisplayId=0\n mCurrentFocus=Window{abc u0 example.poc/.MainActivity}\n mCurrentFocus=Window{def u0 example.poc/.MainActivity}", "AMBIGUOUS"],
+    ["Display: mDisplayId=0\n mCurrentFocus=Window{abc u0 example.poc/.MainActivity}\n Display: mDisplayId=0", "DISPLAY"],
+  ]) {
+    const result = run(payload("中文"), { windowDiagnostics: base64(diagnostic), forbidWrite: true });
+    expectFailure(result, `TARGET_${reason}`);
+    assert.doesNotMatch(result.stdout, /example\.poc|mCurrentFocus|Private/);
+  }
+  for (const [properties, reason] of [[{ windowReadFailed: true }, "READ"], [{ oversizedWindowDiagnostics: true }, "LIMIT"]]) {
+    expectFailure(run(payload("中文"), { ...properties, forbidWrite: true }), `TARGET_${reason}`);
+  }
+  expectFailure(run(["--dump", "0"], { windowChangeRead: 2, forbidWrite: true }), "WINDOW_CHANGED");
 });
 
 test("successful text-setting can resize the same field without weakening pre-write geometry checks", () => {
@@ -371,7 +433,8 @@ test("successful text-setting can resize the same field without weakening pre-wr
 test("text helper rejects changed, password, disabled, ambiguous, wrong-user/app/display targets before writing", () => {
   for (const [properties, reason] of [
     [{ noWindow: true }, "WINDOW_MISSING"], [{ display: 1 }, "WINDOW_DISPLAY"],
-    [{ windowType: 2 }, "WINDOW_TYPE"], [{ inactive: true }, "WINDOW_ACTIVE"],
+    [{ windowType: 2 }, "WINDOW_TYPE"], [{ inactive: true }, "WINDOW_ACTIVE"], [{ windowUnfocused: true }, "WINDOW_ACTIVE"],
+    [{ windowId: -1 }, "WINDOW_ID"],
     [{ user: 10 }, "USER"], [{ packageName: "other.app" }, "ROOT_PACKAGE"],
     [{ className: "android.view.View" }, "FIELD_CLASS"], [{ resourceId: "other:id/text" }, "FIELD_ID"],
     [{ x: 5 }, "FIELD_BOUNDS"], [{ password: true }, "FIELD_PASSWORD"], [{ unfocused: true }, "FIELD_MISSING"],
@@ -394,7 +457,7 @@ test("rejection, filtering, or post-write identity/readback failure is not succe
   for (const properties of [
     { reject: true }, { filter: true }, { afterLostFocus: true }, { afterRefreshFailed: true },
     { afterWindowId: 2 }, { afterPackageName: "other.app" }, { afterClassName: "other.EditText" },
-    { afterResourceId: "other:id/text" },
+    { afterResourceId: "other:id/text" }, { windowChangeRead: 3 },
   ]) {
     expectStatus(run(payload("中文"), properties), "FAILED", 1);
   }
@@ -408,10 +471,11 @@ test("malformed framing, invalid UTF-8, bounds, and controls cannot reach text m
   invalidUtf8[invalidUtf8.length - 1] = 0xff;
   for (const argument of [
     "invalid", "--oversized", payload(""), payload("a".repeat(257)), payload("\u0000"),
-    payload("\u001b"), payload("\u007f"), payload("\uffff"), payload("x", "", [2, 0, 4, 32, 72, 24]),
-    payload("x", "", [3, -1, 1, 4, 32, 72, 24]), payload("x", "", [3, 0, -1, 4, 32, 72, 24]),
-    payload("x", "", [3, 0, 1, 4, 32, 0, 24]),
-    payload("x", "", [3, 0, 1, 2147483647, 32, 72, 24]), invalidUtf8.toString("base64"),
+    payload("\u001b"), payload("\u007f"), payload("\uffff"), payload("x", "", [3, 0, 1, 4, 32, 72, 24]),
+    payload("x", "", [4, -1, 4, 32, 72, 24]), payload("x", "", [4, 0, -1, 32, 72, 24]),
+    payload("x", "", [4, 0, 4, 32, 0, 24]),
+    payload("x", "", [4, 0, 2147483647, 32, 72, 24]), invalidUtf8.toString("base64"),
+    ...["", "unknown", "abc:u1", "123456789:u0"].map((identity) => payload("x", "", undefined, false, identity)),
   ]) {
     const result = run(argument, { forbidWrite: true });
     assert.equal(result.status, 0);

@@ -219,8 +219,12 @@ replace, or retry an uncertain helper. Preparation invalidates observations.
 Observe again, then use `type_text` as usual. The helper rechecks the current
 Android user, active primary-display app window and unique focused enabled
 non-password native EditText, its class/resource ID, bounds and existing text.
-The window ID must match the original authorized observation, even if a
-replacement window in the same activity exposes an otherwise identical editor.
+The stable WindowManager instance identity must match the original authorized
+observation, even if a replacement window in the same activity exposes an
+otherwise identical editor. Bounded read-only window diagnostics establish that
+identity; raw window titles are not returned. Accessibility registration IDs
+are checked within each connection, not across short-lived connections where
+Android can reassign them.
 It appends at the **end** of the actual value regardless of caret/selection,
 excluding placeholder hints. It uses Android `ACTION_SET_TEXT`, with one
 acknowledged write and exact readback, not character-to-key-event mapping.

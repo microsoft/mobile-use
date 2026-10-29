@@ -16,7 +16,7 @@ function backend(adb: FakeAdb): AndroidBackend {
 const foreground = { packageName: "example.poc", activityName: "example.poc.MainActivity", userId: 0 };
 const parsedField = parseHierarchy(hierarchy(editField({ text: "existing" }))).elements[0];
 assert.ok(parsedField);
-const field = { ...parsedField, ref: "e1", textHash: textHash("existing"), windowId: 7 };
+const field = { ...parsedField, ref: "e1", textHash: textHash("existing"), windowIdentity: "abc:u0" };
 
 test("the embedded text helper has DEX framing and matches its pinned digest", () => {
   const bytes = Buffer.from(textHelperBase64, "base64");
@@ -51,10 +51,10 @@ test("Unicode requires the observed native window identity before any command", 
   const android = backend(adb);
   await android.prepareTextInput();
   const calls = adb.calls.length;
-  const { windowId: _windowId, ...missingWindow } = field;
+  const { windowIdentity: _windowIdentity, ...missingWindow } = field;
   await assert.rejects(android.typeText("中文", undefined, missingWindow, foreground), hasCode("ELEMENT_CHANGED"));
-  for (const windowId of [-1, 0.5, 0x80000000, NaN, Infinity]) {
-    await assert.rejects(android.typeText("中文", undefined, { ...field, windowId }, foreground), hasCode("ELEMENT_CHANGED"));
+  for (const windowIdentity of ["", "abc:u10", "abc:u01", "unknown", "abcdefabc:u0"]) {
+    await assert.rejects(android.typeText("中文", undefined, { ...field, windowIdentity }, foreground), hasCode("ELEMENT_CHANGED"));
   }
   assert.equal(adb.calls.length, calls);
 });
@@ -86,16 +86,16 @@ test("all extended text is carried as length-prefixed UTF-8 data, never shell sy
     const encoded = args[7] ?? "";
     assert.match(encoded, /^[A-Za-z0-9+/]+=*$/);
     const data = Buffer.from(encoded, "base64");
-    assert.deepEqual(Array.from({ length: 7 }, (_, index) => data.readInt32BE(index * 4)), [3, 0, 7, 4, 32, 72, 24]);
-    let offset = 28;
+    assert.deepEqual(Array.from({ length: 6 }, (_, index) => data.readInt32BE(index * 4)), [4, 0, 4, 32, 72, 24]);
+    let offset = 24;
     const strings = [];
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 6; i++) {
       const length = data.readInt32BE(offset);
       offset += 4;
       strings.push(data.subarray(offset, offset + length).toString("utf8"));
       offset += length;
     }
-    assert.deepEqual(strings, [foreground.packageName, field.className, field.resourceId, field.textHash, text]);
+    assert.deepEqual(strings, [field.windowIdentity, foreground.packageName, field.className, field.resourceId, field.textHash, text]);
     assert.equal(offset, data.length);
   }
   assert.equal(adb.calls.some((call) => call.args.includes("input")), false);
@@ -110,7 +110,7 @@ test("prepared observations preserve Unicode through the pinned helper, with geo
   const start = adb.calls.length;
   const observed = (await android.hierarchy()).elements[0];
   assert.equal(observed?.text, text);
-  assert.equal(observed?.windowId, 1);
+  assert.equal(observed?.windowIdentity, "abc:u0");
   assert.equal(adb.calls.slice(start).some((call) => call.args.includes("uiautomator")), false);
   assert.ok(adb.calls.slice(start).some((call) => call.args[7] === "--dump" && !call.options.mutating));
   adb.handler = (call) => {
@@ -128,7 +128,7 @@ test("helper failures expose only allowlisted phases and never turn a failed rea
   const adb = new FakeAdb();
   const android = backend(adb);
   await android.prepareTextInput();
-  for (const phase of ["ROOT", "WINDOW", "HIERARCHY", "CONNECT", "CONFIGURE", "DISCONNECT"]) {
+  for (const phase of ["ROOT", "WINDOW", "WINDOW_FOCUS", "WINDOW_OWNER", "WINDOW_READ", "HIERARCHY", "CONNECT", "CONFIGURE", "DISCONNECT"]) {
     adb.handler = (call) => call.args[7] === "--dump"
       ? Buffer.from(`MOBILE_USE_TEXT_V1_ERROR_${phase}\n`) : undefined;
     await assert.rejects(android.hierarchy(), (error: unknown) => {
@@ -151,6 +151,7 @@ test("helper failures expose only allowlisted phases and never turn a failed rea
   for (const [phase, uncertain] of [
     ["REQUEST", false], ["CONNECT", false], ["CONFIGURE", false], ["ROOT", false],
     ["WINDOW", false], ["HIERARCHY", false], ["TARGET", false],
+    ["TARGET_OWNER", false], ["TARGET_READ", false], ["WINDOW_LIMIT", false], ["VERIFY_READ", true],
     ["WRITE", true], ["VERIFY", true], ["DISCONNECT", true], ["private-device-content", true],
   ] as const) {
     adb.handler = (call) => call.options.mutating && call.args[6] === "dev.mobileuse.text.TextMain"

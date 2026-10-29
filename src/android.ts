@@ -293,12 +293,13 @@ function screenNode(attributes: Record<string, string>): Omit<ScreenElement, "re
   if (text.length + label.length > 4096) hierarchyError();
   const textHash = attributes["text-sha256"];
   if (textHash !== undefined && !/^[0-9a-f]{64}$/.test(textHash)) hierarchyError();
-  const windowId = attributes["window-id"];
-  if (windowId !== undefined && (!/^(0|[1-9]\d*)$/.test(windowId) || Number(windowId) > 0x7fffffff)) hierarchyError();
+  const windowIdentity = attributes["window-identity"];
+  if (windowIdentity !== undefined && (!/^[0-9a-f]{1,8}:u(0|[1-9]\d*)$/.test(windowIdentity) ||
+      Number(windowIdentity.split(":u")[1]) > 0x7fffffff)) hierarchyError();
   const node = {
     bounds, className, text, label, password,
     ...(textHash !== undefined && password === false ? { textHash } : {}),
-    ...(windowId !== undefined ? { windowId: Number(windowId) } : {}),
+    ...(windowIdentity !== undefined ? { windowIdentity } : {}),
     resourceId: attributes["resource-id"] || null,
     editable: className.endsWith("EditText"),
     enabled: readFlag(attributes, "enabled"),
