@@ -8,9 +8,9 @@ controls, enter supported text, and manage apps on a device you explicitly
 select. It includes a local MCP server and a skill that guides setup and use.
 
 **Experimental:** this is a proof of concept, not a released or
-production-supported capability. USB observation, navigation, double-taps,
-waking, and app management have been verified on one Android 11 phone. Full
-paired-wireless acceptance remains **unverified**.
+production-supported capability. USB observation, navigation, waking, and app
+management have been verified on one Android 11 phone. Full paired-wireless
+acceptance remains **unverified**.
 
 ## Requirements
 
@@ -20,10 +20,9 @@ paired-wireless acceptance remains **unverified**.
 - A real Android 11+ device exposing Wireless debugging, plus either a
   data-capable USB cable or a trusted, reachable local network for wireless.
 
-Node and Platform-Tools are not bundled. Android Studio, Java, Appium, and an
-emulator are not required at runtime. Only double-tap requires explicit approval
-to prepare a bundled helper on the phone; other actions remain helper-free.
-Windows may need the phone manufacturer's USB driver.
+Node and Platform-Tools are not bundled. Android Studio, Java, Appium, an
+emulator, and a phone-side helper are not required. Windows may need the phone
+manufacturer's USB driver.
 
 ## Install the plugin
 
@@ -119,23 +118,12 @@ Name the selected device and the safe task you want performed. For example:
 > In this demo app, tap the visible search field and append `sample-01`.
 > Do not submit it.
 
-> On the selected phone, double-tap the open non-sensitive photo to test zoom,
-> using a 50 ms delay between taps.
-
 > List installed app package names on the selected phone.
 
 Copilot observes before UI input and checks the resulting state after each
 action. Screenshot-free mode uses exposed UI elements; coordinate taps and
 swipes are unavailable in that mode. Custom-drawn or protected screens may
 not expose enough information to continue.
-
-Double-tap accepts a requested delay of 0-250 ms (50 ms by default); actual
-timing and app recognition can vary. Before its first use after device selection
-or a plugin restart, Copilot asks for approval to upload and run the bundled
-helper on that phone. No APK or background service is installed, but the helper
-files remain on the device. Preparation does not grant permission to control
-other content. See the [helper contract](CONTRIBUTING.md#double-tap-helper-and-preparation)
-for implementation details.
 
 App management can launch or force-stop a named installed package, install a
 local `.apk`, or uninstall a package for the current Android user. Installation
