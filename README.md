@@ -150,6 +150,12 @@ matching placeholder.
 Each action accepts up to 256 UTF-16 code units; the helper's resulting value
 plus its exposed label/hint is limited to 4096. Prepared-helper observations
 also preserve exact Unicode and whitespace for subsequent guarded appends.
+
+**Unicode hardware status:** earlier helper revisions were exercised on one
+Android 11 phone over USB. The currently packaged DEX includes later guard
+changes and has **not** been phone-tested. See the
+[versioned evidence](CONTRIBUTING.md#unicode-artifact-evidence).
+
 Well-formed Unicode, combining marks, tabs and line breaks
 are supported; other control characters, unpaired surrogates, and U+FFFE/U+FFFF
 are rejected. Custom fields and input filters can reject text; an unverified

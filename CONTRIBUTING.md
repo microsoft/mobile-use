@@ -365,10 +365,11 @@ CONFIGURE, ROOT, WINDOW, HIERARCHY, or TARGET confirm a pre-write failure with
 unsuccessful process exits remain uncertain. A failed append attempt still
 consumes its observation; obtain a fresh observation rather than replaying it.
 
-Java stub tests and host fixtures are not real-device proof. The workspace-built
-helper passed an explicitly approved USB test in MIUI Notes on one Android 11
-Redmi, including exact fresh-observation readback and preservation of existing
-content. Other editors, devices, and paired-wireless input remain unverified.
+Java stub tests and host fixtures are not real-device proof. The currently
+packaged Unicode DEX has automated coverage only and has not been phone-tested.
+Earlier helper revisions passed approved USB tests in MIUI Notes on one Android
+11 Redmi; that evidence does not establish hardware validation of the current
+DEX. See the [versioned Unicode artifact evidence](#unicode-artifact-evidence).
 
 #### Shared observation guards
 
@@ -534,8 +535,8 @@ issue reports and [Security](SECURITY.md) for security reporting.
 | --- | --- |
 | Fixture/subprocess/MCP/package behavior | Local automated checks; no real ADB/device access. |
 | Plugin recognition | Read-only Copilot CLI 1.0.99-2 mount on Node 22.15.1. |
-| Actual Copilot App tool loading | Fifteen tools loaded. The latest reinstalled Unicode helper returned `dispatched`, `error: null`, and exact readback on one Android 11 phone. |
-| Unicode text helper / fifteenth tool | Approved workspace-MCP and reinstalled-plugin USB tests passed in MIUI Notes on one Android 11 Redmi: multilingual text, emoji, combining marks, line breaks, and exact append/readback. Returned and fresh observations preserved all prior content, including when the editor resized/scrolled. |
+| Actual Copilot App tool loading | Fifteen tools loaded in an earlier reinstalled build. This does not establish hardware validation of the currently packaged Unicode DEX. |
+| Unicode text helper / fifteenth tool | Current DEX `a848d0b...`: automated-only, not phone-tested. Historical DEX `fec6781...`: approved workspace-MCP and reinstalled-plugin USB tests passed in MIUI Notes on one Android 11 Redmi. See the [versioned artifact evidence](#unicode-artifact-evidence). |
 | USB app-management lifecycle | All six operations passed through the reinstalled plugin on one Android 11 phone, including the package-state parser fix. |
 | USB double-tap recognition | Diagnostic app recognized 50 ms and 125 ms gaps; Gallery zoomed in and back out with 50 ms requested and 51 ms reported on one Android 11 Redmi. |
 | Complete physical USB and unplugged paired Wi-Fi acceptance journeys | Unverified; hardware and control consent required. |
@@ -581,7 +582,21 @@ measured gaps of 50 ms and 125 ms. Gallery visibly zoomed in and back out with
 Android 11 Redmi over USB only; other devices, Android versions, and paired
 wireless double-taps remain unverified on hardware.
 
-The Unicode phone test exposed initially unavailable accessibility roots and
+#### Unicode artifact evidence
+
+| Artifact | DEX SHA-256 | Evidence and scope |
+| --- | --- | --- |
+| Phone-tested baseline, commit `212a88c`, request protocol 2 | `fec6781aa14300488c70bc5d6b783c62417838d349f3493af9a2eccb8e08a9ef` | Approved workspace-MCP and reinstalled Copilot App plugin runs on one USB-connected Android 11 Redmi in MIUI Notes. Exact multilingual append/readback, including editor resizing/scrolling, returned `dispatched` with no error. |
+| Currently packaged helper, introduced in `80367c6`, request protocol 3 | `a848d0b20256dd15c8fbe1ab8efe11412e009bf73507c7b5d7c326bc36f334eb` | Automated Java/host/MCP/package and CI source-to-DEX checks only. **Not phone-tested.** Adds original-observation window binding and non-hint readback checks. |
+
+Commit `82fbc9a` changes host-side pre-write failure classification, not the DEX.
+Digest and packaging checks prove artifact identity, not hardware compatibility.
+A new approved run of the currently packaged DEX is required before calling that
+revision phone-tested. Other devices, editors, and paired-wireless Unicode input
+remain unverified.
+
+The following phone results are historical and predate the current DEX.
+Earlier Unicode phone tests exposed initially unavailable accessibility roots and
 XML numeric references being returned as literal strings. The corrected helper
 waits within each connection for its root and refreshes/fingerprints field text;
 the host decodes numeric references without trimming or double-decoding.
@@ -599,19 +614,18 @@ post-write verification bug: legitimate field growth failed the old-bounds
 comparison. That guard now applies only before the write; post-write checks
 retain native node/window identity, state, and exact text. The revised helper
 passed another approved workspace-MCP phone action with `dispatched`, no error,
-and exact append in both returned and fresh observations. The latest reinstalled
-Copilot App plugin then passed the same checks: `dispatched`, `error: null`,
+and exact append in both returned and fresh observations. The reinstalled
+Copilot App plugin using the protocol-2 `fec6781...` DEX then passed the same
+checks: `dispatched`, `error: null`,
 and matching native-text fingerprints for exactly the previous content plus the
 requested multilingual line. Its editor resized/scrolled without a false failure.
 No screenshots were taken and no input was replayed. The original process
 failure did not recur; its specific cause remains unconfirmed.
 
-Subsequent review fixes pin the authorized observation's window ID and reject
-matching placeholder text as successful readback. Regression coverage includes
-same-activity replacement windows before dispatch and during helper refresh,
-plus filters that leave only the matching hint visible. These latest guard
-changes are covered by automated checks; their revised DEX has not yet been
-retested on hardware.
+The current protocol-3 helper's review regressions cover same-activity replacement
+windows before dispatch and during helper refresh, plus filters that leave only
+the matching hint visible. These are automated results only; the historical
+phone results above do not exercise these latest guards.
 
 ## Licensing and provenance
 
