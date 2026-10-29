@@ -6,7 +6,9 @@ This is an experimental Windows/real-Android POC with best-effort GitHub issue
 support, not a production-supported Microsoft product. Search
 [existing issues](https://github.com/microsoft/mobile-use/issues) before opening
 a bug, question, or feature request. Follow the [README](README.md) for supported
-scope, setup boundaries, and pending hardware qualification.
+scope and setup boundaries, and the
+[contributor guide](CONTRIBUTING.md#current-validation-evidence) for hardware
+validation status.
 
 Include the plugin version, Windows/Node/Copilot App/CLI/Platform-Tools versions,
 Android version/build, selected transport kind, stable tool error code, expected
