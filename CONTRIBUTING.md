@@ -382,9 +382,9 @@ unsuccessful process exits remain uncertain. A failed append attempt still
 consumes its observation; obtain a fresh observation rather than replaying it.
 
 Java stub tests and host fixtures are not real-device proof. The current
-packaged Unicode DEX passed an approved USB append through the rebuilt plugin's
-public MCP server, with exact returned and fresh readback. Verification through
-the Copilot App's reinstalled plugin remains pending for this build. See the
+packaged Unicode DEX passed approved USB appends through both the rebuilt public
+MCP server and the reinstalled Copilot App plugin, with exact returned and fresh
+readback. See the
 [versioned Unicode artifact evidence](#unicode-artifact-evidence).
 
 #### Shared observation guards
@@ -551,8 +551,8 @@ issue reports and [Security](SECURITY.md) for security reporting.
 | --- | --- |
 | Fixture/subprocess/MCP/package behavior | Local automated checks; no real ADB/device access. |
 | Plugin recognition | Read-only Copilot CLI 1.0.99-2 mount on Node 22.15.1. |
-| Actual Copilot App tool loading | Reinstalled plugin's doctor, startup, selection, foreground lookup, text preparation, hierarchy reads, and action rejection exercised through the App. Loading does not establish successful text input. |
-| Unicode text helper / fifteenth tool | Current DEX `1da156e...`: approved rebuilt-plugin public-MCP USB append passed with exact returned and fresh readback in MIUI Notes on one Android 11 Redmi. Reinstalled App-plugin verification remains pending for this DEX. Historical `a848d0b...` failed before writing; `fec6781...` passed workspace-MCP and reinstalled-plugin input. See the [versioned artifact evidence](#unicode-artifact-evidence). |
+| Actual Copilot App tool loading | Reinstalled plugin's doctor, startup, selection, wake, foreground lookup, text preparation, hierarchy reads, and successful guarded Unicode append exercised through the App. |
+| Unicode text helper / fifteenth tool | Current DEX `1da156e...`: approved rebuilt public-MCP and reinstalled App-plugin USB appends passed with exact returned and fresh readback in MIUI Notes on one Android 11 Redmi. Historical `a848d0b...` failed before writing; `fec6781...` also passed workspace-MCP and reinstalled-plugin input. See the [versioned artifact evidence](#unicode-artifact-evidence). |
 | USB app-management lifecycle | All six operations passed through the reinstalled plugin on one Android 11 phone, including the package-state parser fix. |
 | USB double-tap recognition | Diagnostic app recognized 50 ms and 125 ms gaps; Gallery zoomed in and back out with 50 ms requested and 51 ms reported on one Android 11 Redmi. |
 | Complete physical USB and unplugged paired Wi-Fi acceptance journeys | Unverified; hardware and control consent required. |
@@ -604,7 +604,7 @@ wireless double-taps remain unverified on hardware.
 | --- | --- | --- |
 | Phone-tested baseline, commit `212a88c`, request protocol 2 | `fec6781aa14300488c70bc5d6b783c62417838d349f3493af9a2eccb8e08a9ef` | Approved workspace-MCP and reinstalled Copilot App plugin runs on one USB-connected Android 11 Redmi in MIUI Notes. Exact multilingual append/readback, including editor resizing/scrolling, returned `dispatched` with no error. |
 | Superseded helper, introduced in `80367c6`, request protocol 3 | `a848d0b20256dd15c8fbe1ab8efe11412e009bf73507c7b5d7c326bc36f334eb` | Automated checks passed. Reinstalled-plugin USB attempt on 2026-10-29: exact digest confirmed; preparation and hierarchy reads passed, but host field revalidation rejected the append before writing. **Successful input not validated for this artifact.** |
-| Currently packaged helper, request protocol 4 | `1da156e47a5519dedd1f99ff53e3284d55f9fb3cd4c20717f88361b595395796` | Approved rebuilt-plugin public-MCP USB run on 2026-10-29, same Android 11 Redmi and MIUI Notes. One append returned `dispatched`, `error: null`; returned and fresh observations matched the exact prior value plus all 67 requested UTF-16 units. Copilot App installed-plugin verification remains pending for this artifact. |
+| Currently packaged helper, request protocol 4 | `1da156e47a5519dedd1f99ff53e3284d55f9fb3cd4c20717f88361b595395796` | Approved rebuilt public-MCP and reinstalled Copilot App plugin USB runs on 2026-10-29, same Android 11 Redmi and MIUI Notes. Each append returned `dispatched`, `error: null`; returned and fresh observations matched the exact prior value plus the respective 67-unit and 81-unit requested samples. |
 
 Commit `82fbc9a` changes host-side pre-write failure classification, not the DEX.
 Digest and packaging checks prove artifact identity, not hardware compatibility.
@@ -639,8 +639,20 @@ The original content and window identity were preserved. No screenshots were
 captured and no input was replayed. Diagnostic iterations before this success
 failed before any text action; none were successful input claims.
 
-This verifies the rebuilt bundle, not the Copilot App's still-installed older
-copy. Other devices, editors, paired-wireless Unicode input, and forced
+After reinstallation, the Copilot App's installed MCP tools then prepared the
+same exact DEX digest on the explicitly selected USB endpoint. A hierarchy-only
+observation retained the preceding 522 units and original window identity.
+Exactly one `mobile_act` appended a distinct 81-unit confirmation line, including
+its leading newline, Chinese, Japanese, Korean, Arabic, Russian, `e` plus a
+combining acute accent, and emoji/ZWJ. It returned `dispatched`, `error: null`.
+Both its returned observation and an independent fresh observation matched the
+exact 603-unit expected value, with native-text hash
+`9ae526b0fb9c861cde863baef774f470a9739c279a2e487af6b04fa21186ab9f`.
+Independent host-side UTF-16 hashing confirmed both the pre-action fingerprint
+and the exact expected append. All prior content and the stable window identity
+were preserved. No screenshots were captured, no input was replayed, and no
+workspace-server substitute was used for this installed-plugin verification.
+Other devices, editors, paired-wireless Unicode input, and forced
 replacement-window/hint-filter hardware cases remain unverified.
 
 The following phone results are historical and predate the current DEX.
