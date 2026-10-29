@@ -86,6 +86,11 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.equal(screenshotOption.type, "boolean");
     assert.equal(screenshotOption.default, true);
     const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+    const prepared = await client.callTool({
+      name: "mobile_prepare_gestures", arguments: { targetToken: selected.targetToken },
+    });
+    assert.equal(prepared.isError, undefined);
+    assert.equal(payload(prepared).status, "prepared");
     for (const invalid of ["false", null, 0]) {
       const result = await client.callTool({
         name: "mobile_observe", arguments: { targetToken: selected.targetToken, includeScreenshot: invalid },
@@ -104,7 +109,12 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.deepEqual(observation.hierarchy, { status: "ok", error: null });
     assert.ok(Array.isArray(observation.elements) && isRecord(observation.elements[0]));
     assert.equal(observation.elements[0].text, "Demo");
-    for (const action of [{ kind: "tap", target: { elementRef: "e1" } }, { kind: "key", key: "BACK" }]) {
+    for (const action of [
+      { kind: "tap", target: { elementRef: "e1" } },
+      { kind: "double_tap", target: { elementRef: "e1" } },
+      { kind: "double_tap", target: { elementRef: "e1" }, delayMs: 75 },
+      { kind: "key", key: "BACK" },
+    ]) {
       const acted = await client.callTool({
         name: "mobile_act",
         arguments: { targetToken: selected.targetToken, observationId: observation.observationId, action },
@@ -112,14 +122,30 @@ for (const mode of ["legacy", "auto"] as const) {
       assert.equal(acted.isError, undefined);
       assert.ok(Array.isArray(acted.content) && acted.content.length === 1);
       const result = payload(acted);
+      if (action.kind === "double_tap") {
+        assert.deepEqual(result.gestureTiming, {
+          requestedDelayMs: action.delayMs ?? 50, actualGapMs: action.delayMs ?? 50,
+        });
+      }
       assert.equal(result.dispatchStatus, "dispatched");
       assert.equal(result.verificationStatus, "requires-observation-review");
       assert.ok(isRecord(result.after));
       observation = result.after;
       assert.deepEqual(observation.screenshot, { status: "skipped", error: null });
     }
+    for (const delayMs of [-1, 251, 1.5, "50", "0;reboot", null]) {
+      const rejected = await client.callTool({
+        name: "mobile_act",
+        arguments: {
+          targetToken: selected.targetToken, observationId: observation.observationId,
+          action: { kind: "double_tap", target: { elementRef: "e1" }, delayMs },
+        },
+      });
+      assert.equal(rejected.isError, true);
+    }
     for (const action of [
       { kind: "tap", target: { x: 10, y: 10 } },
+      { kind: "double_tap", target: { x: 10, y: 10 } },
       { kind: "swipe", from: { x: 10, y: 100 }, to: { x: 10, y: 50 } },
     ]) {
       const fresh = payload(await client.callTool({
@@ -239,13 +265,18 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.ok(isRecord(error) && error.code === "INVALID_APP_FILE" && error.actionMayHaveRun === false);
   });
 
-  test(`thirteen MCP operations expose typed setup, wake, and observe-act results over ${mode}`, async (t) => {
+  test(`fourteen MCP operations expose typed setup, wake, and observe-act results over ${mode}`, async (t) => {
     const { client } = await fixture(t, mode);
     assert.match(client.getInstructions() ?? "", /On first use in each session, call mobile_doctor/);
     assert.match(client.getInstructions() ?? "", /call mobile_list_devices before offering phone setup/);
     assert.match(client.getInstructions() ?? "", /Never install software, enable debugging, pair devices, or accept trust automatically/);
     const tools = await client.listTools();
-    assert.equal(tools.tools.length, 13);
+    assert.equal(tools.tools.length, 14);
+    const prepare = tools.tools.find((tool) => tool.name === "mobile_prepare_gestures");
+    assert.deepEqual(prepare?.inputSchema.required, ["targetToken"]);
+    assert.equal(prepare?.annotations?.readOnlyHint, false);
+    assert.equal(prepare?.annotations?.idempotentHint, false);
+    assert.match(prepare?.description ?? "", /explicit approval/);
     const startup = tools.tools.find((tool) => tool.name === "mobile_start_adb_server");
     assert.equal(startup?.annotations?.readOnlyHint, false);
     assert.equal(startup?.annotations?.idempotentHint, false);

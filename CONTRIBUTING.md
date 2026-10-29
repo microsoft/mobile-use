@@ -30,15 +30,25 @@ The Windows CI workflow runs the same command on Node 22 and 24.
 | `npm run build:plugin` | Bundle the local plugin into `dist\mobile-use`. |
 | `npm run test:plugin` | Check the built artifact and its copied-artifact protocol behavior; build the plugin first. |
 | `npm run check` | Run all of the above in order. |
+| `npm run test:gestures` | Test the Java helper's injection and timing logic with Android stubs; requires a JDK. |
+| `npm run build:gestures` | Rebuild the embedded gesture DEX; requires JDK 21, Android SDK platform 35, and build-tools 35.0.0. |
 
 The artifact includes `plugin.json`, `mcp.json`, `skills\mobile-use\SKILL.md`,
 `server\index.mjs`, and license notices. Runtime dependencies are bundled; its
 launcher is `node`, not a download-on-launch npm/npx command.
 
+The checked-in `src\gesture-helper-data.ts` embeds the gesture DEX and its
+SHA-256, so ordinary plugin builds do not need an Android SDK or Java.
+To change `android\GestureMain.java`, use JDK 21, Android SDK platform 35 and
+build-tools 35.0.0, then run `npm run test:gestures` and
+`npm run build:gestures`. Set `ANDROID_HOME` or `ANDROID_SDK_ROOT` for a
+non-default SDK. CI tests the Java logic and checks the rebuilt DEX against
+the embedded artifact.
+
 After reviewing and explicitly approving installation, follow the
 [local installation instructions](README.md#install-the-plugin). Use an
 absolute artifact path, not the source repository root. Confirm the plugin,
-skill, and thirteen tools appear in the actual Copilot App before hardware
+skill, and fourteen tools appear in the actual Copilot App before hardware
 testing. If the App cannot load this format, record that incompatibility
 rather than substituting manual MCP registration.
 
@@ -116,6 +126,7 @@ Do not bypass local policy or change firewall settings to recover.
 | `mobile_list_devices` | Show endpoint IDs, transport IDs/kinds, all states, and next setup/selection steps. Discovery failure is not an empty list. |
 | `mobile_select_device` | Bind exactly the endpoint the user chose; qualify Android/physical-device and wireless evidence; return a session target token. |
 | `mobile_wake` | With explicit permission and a target token, wake the display and dismiss only an unsecured lock screen. No observation or screen capture; secure/unknown lock states require manual unlocking. |
+| `mobile_prepare_gestures` | After explicit approval to upload and run the bundled gesture helper on the selected device, deploy and hash-check its DEX and check API compatibility without touch input. Invalidates old observations; required only for double-tap. |
 | `mobile_observe` | Require that token; return a fresh observation ID, display geometry, hierarchy/status/warnings, and a separate PNG image block when usable. Set `includeScreenshot: false` to read only hierarchy/display state without capturing an image. |
 | `mobile_act` | Require target and latest observation IDs; dispatch one bounded action and return the next observation or an explicit unknown/unverified outcome. |
 | `mobile_list_apps` | With a target token, list all installed package names, including system packages, for the current Android user. No screen capture. |
@@ -207,10 +218,53 @@ Supported `mobile_act` action objects:
 | `kind` | Additional fields |
 | --- | --- |
 | `tap` | `target: { elementRef }` from the observation, or `target: { x, y }` from its screenshot. |
+| `double_tap` | Same `target` as `tap`; optional integer `delayMs` (0-250, default 50) requests the first-UP to second-DOWN event-time interval. Requires approved `mobile_prepare_gestures`. |
 | `swipe` | `from: { x, y }`, `to: { x, y }`, optional `durationMs` (100-2000, default 400). |
 | `type_text` | `text`: 1-256 ASCII letters, digits, spaces, periods, commas, underscores, or hyphens. |
 | `key` | `key`: `BACK`, `HOME`, or `ENTER`. |
 | `launch_app` | `packageName` of a specifically requested, already-installed app with one resolved launcher. |
+
+#### Double-tap helper and preparation
+
+`double_tap` revalidates once before the pair and returns an observation after
+both taps, without a host round trip or observation between them. The bundled
+helper injects DOWN/UP/DOWN/UP in one `app_process`, with primary-display
+touchscreen events, 10 ms holds, and all four injection acknowledgements checked.
+It schedules the second DOWN relative to the first UP's monotonic event time,
+so process startup is outside the inter-tap interval. `gestureTiming` reports
+`requestedDelayMs` and `actualGapMs`; scheduling can increase the requested gap.
+If the framework double-tap timeout is already exceeded, the helper stops before
+the second tap and reports an uncertain partial outcome. Zero is accepted for
+diagnosis, but may be below Android's minimum double-tap interval.
+
+Before the first double-tap after each selection/server restart, ask specifically
+for approval to upload and run the bundled helper on that device, then call
+`mobile_prepare_gestures`. Preparation copies the embedded DEX to a new
+mode-700 `/data/local/tmp/mobile-use-gestures-*` directory, makes the file
+read-only, verifies its SHA-256, and checks its input API compatibility.
+It installs no APK, permissions, service, network connection, or daemon.
+The directory/files remain on the device; there is no automatic deletion.
+Preparation is not permission to control other content, and requires a new
+observation before input. Every double-tap rechecks the helper hash. Missing,
+modified, or incompatible helpers fail explicitly: no automatic deployment,
+download, helper replacement, or two-process fallback is performed.
+
+The helper uses non-public Android input APIs through reflection under the
+authorized ADB shell identity. These are not a supported public SDK contract;
+availability and injection permission can vary by Android/OEM build.
+Preparation checks API availability without injecting input, so it does not
+prove that touch injection or app gesture recognition will succeed.
+
+Dispatch and reported event timestamps do not prove gesture recognition. Verify
+the returned observation and never automatically replay an uncertain or partial
+pair. Both taps target the same point even if the first changes the screen, so
+authorize the pair only when that is safe. Hierarchy-only mode supports
+`elementRef` double-taps but rejects coordinates without capturing a screenshot.
+
+For example, `{ "kind": "double_tap", "target": { "x": 360, "y": 800 }, "delayMs": 50 }`
+requests a 50 ms event-time gap at a point from a fresh screenshot.
+
+#### Shared observation guards
 
 Text appends to one unchanged, focused, enabled, non-password native EditText;
 it does not clear or submit the field. Unicode/control characters, other
@@ -373,8 +427,9 @@ issue reports and [Security](SECURITY.md) for security reporting.
 | --- | --- |
 | Fixture/subprocess/MCP/package behavior | Local automated checks; no real ADB/device access. |
 | Plugin recognition | Read-only Copilot CLI 1.0.99-2 mount on Node 22.15.1. |
-| Actual Copilot App tool loading | Verified with thirteen registered tools and the full USB app-management lifecycle on one Android 11 phone. |
+| Actual Copilot App tool loading | Verified with fourteen registered tools, including gesture preparation and double-tap dispatch, on one Android 11 phone. |
 | USB app-management lifecycle | All six operations passed through the reinstalled plugin on one Android 11 phone, including the package-state parser fix. |
+| USB double-tap recognition | Diagnostic app recognized 50 ms and 125 ms gaps; Gallery zoomed in and back out with 50 ms requested and 51 ms reported on one Android 11 Redmi. |
 | Complete physical USB and unplugged paired Wi-Fi acceptance journeys | Unverified; hardware and control consent required. |
 
 Hierarchy-only observation and element-reference tab navigation passed through
@@ -407,6 +462,16 @@ missing-file install guards also passed without app mutations. Paired-wireless
 app management remains unverified: repeat the approved lifecycle on the
 explicitly selected paired-wireless endpoint without USB, and never retry an
 uncertain mutation automatically.
+
+On one Redmi running Android 11 over USB, the former two-`input` implementation
+produced a measured UP-to-DOWN gap of 993 ms at zero added delay and 1,080 ms at
+50 ms, exceeding the phone's 300 ms framework timeout. A manual double-tap
+measured 108 ms and was recognized. After approved preparation, the single-process
+helper produced recognized double-taps in the diagnostic app at requested and
+measured gaps of 50 ms and 125 ms. Gallery visibly zoomed in and back out with
+50 ms requested and 51 ms reported for each pair. These results cover this
+Android 11 Redmi over USB only; other devices, Android versions, and paired
+wireless double-taps remain unverified on hardware.
 
 ## Licensing and provenance
 

@@ -50,6 +50,12 @@ export interface WakeResult {
   keyguardDismissed: boolean;
 }
 
+export interface PreparedGestures {
+  status: "prepared";
+  sha256: string;
+  remotePath: string;
+}
+
 export interface InstalledApps {
   userId: number;
   apps: { packageName: string }[];
@@ -95,12 +101,18 @@ export interface ActionResult {
   verificationStatus: "requires-observation-review" | "unverified";
   after: ObservedScreen | null;
   error: ErrorInfo | null;
+  gestureTiming?: { requestedDelayMs: number; actualGapMs: number };
 }
 
 const pointSchema = z.strictObject({
   x: z.number().int().nonnegative(),
   y: z.number().int().nonnegative(),
 });
+
+const tapTargetSchema = z.union([
+  z.strictObject({ elementRef: z.string().regex(/^e[1-9]\d*$/) }),
+  pointSchema,
+]);
 
 export const packageNameSchema = z.string().max(255).regex(
   /^(?:android|[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+)(?![\s\S])/,
@@ -109,10 +121,12 @@ export const packageNameSchema = z.string().max(255).regex(
 export const actionSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("tap"),
-    target: z.union([
-      z.strictObject({ elementRef: z.string().regex(/^e[1-9]\d*$/) }),
-      pointSchema,
-    ]),
+    target: tapTargetSchema,
+  }),
+  z.strictObject({
+    kind: z.literal("double_tap"),
+    target: tapTargetSchema,
+    delayMs: z.number().int().min(0).max(250).default(50),
   }),
   z.strictObject({
     kind: z.literal("swipe"),

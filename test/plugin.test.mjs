@@ -44,6 +44,7 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.match(skill, /Doctor and inventory never invoke startup/);
   assert.match(skill, /includeScreenshot: false/);
   assert.match(skill, /Hierarchy-only actions never\s+capture screenshots/);
+  assert.match(skill, /kind: "double_tap"/);
   assert.match(skill, /coordinate gestures also revalidate decoded screenshot pixels/);
   assert.match(skill, /not evidence that the app blocked/);
   const notices = await readFile(path.join(artifact, "THIRD_PARTY_NOTICES"), "utf8");
@@ -107,6 +108,7 @@ for (const mode of ["legacy", "auto"]) {
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       "mobile_act", "mobile_doctor", "mobile_get_foreground_app", "mobile_install_app",
       "mobile_launch_app", "mobile_list_apps", "mobile_list_devices", "mobile_observe",
+      "mobile_prepare_gestures",
       "mobile_select_device", "mobile_start_adb_server", "mobile_terminate_app", "mobile_uninstall_app", "mobile_wake",
     ]);
     const observe = tools.tools.find((tool) => tool.name === "mobile_observe");
@@ -114,6 +116,15 @@ for (const mode of ["legacy", "auto"]) {
     assert.equal(observe?.inputSchema.properties?.includeScreenshot?.type, "boolean");
     assert.equal(observe?.inputSchema.properties?.includeScreenshot?.default, true);
     const act = tools.tools.find((tool) => tool.name === "mobile_act");
+    const actions = act?.inputSchema.properties?.action?.oneOf;
+    assert.ok(Array.isArray(actions));
+    const doubleTap = actions.find((action) => action.properties?.kind?.const === "double_tap");
+    assert.ok(doubleTap, "the bundled action schema must expose double_tap");
+    assert.deepEqual(doubleTap.required, ["kind", "target"]);
+    assert.equal(doubleTap.properties.delayMs.type, "integer");
+    assert.equal(doubleTap.properties.delayMs.minimum, 0);
+    assert.equal(doubleTap.properties.delayMs.maximum, 250);
+    assert.equal(doubleTap.properties.delayMs.default, 50);
     assert.match(act?.description ?? "", /unchanged full-width interaction band/);
     assert.match(act?.description ?? "", /not proof of an app security block/);
     const doctor = await client.callTool({ name: "mobile_doctor", arguments: {} });

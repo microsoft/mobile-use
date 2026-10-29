@@ -81,8 +81,14 @@ export function createMobileUseServer(service: MobileUseService): McpServer {
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, (input, ctx) => safely(async () => result(await service.wake(input.targetToken, ctx.mcpReq.signal))));
 
+  server.registerTool("mobile_prepare_gestures", {
+    description: "Only after explicit approval to upload and run the bundled gesture helper on this selected device: deploy its embedded DEX to a new private /data/local/tmp/mobile-use-gestures-* directory, make the DEX read-only, verify SHA-256, and check its input API compatibility without injecting any input. No APK, permissions, service, network connection, or daemon is installed. Files remain on the device; no automatic deletion is performed. Requires a target token, invalidates old observations, and must be repeated with fresh approval after reselection/server restart. Never automatically retry uncertain preparation. Required before double_tap, not other actions.",
+    inputSchema: z.strictObject({ targetToken }),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  }, (input, ctx) => safely(async () => result(await service.prepareGestures(input.targetToken, ctx.mcpReq.signal))));
+
   server.registerTool("mobile_act", {
-    description: "Perform ONE explicitly authorized bounded action on the selected transport using the latest observation (consumed on attempt, expires after 30 seconds). Coordinate taps/swipes require an unchanged full-width interaction band around the target or swipe path; bounded pixel changes elsewhere are allowed only with matching app/activity/user and hierarchy context. Large screen changes, changed target pixels/controls, and geometry changes reject input. A stale-observation error is a local revalidation failure, not proof of an app security block or an ad. Preserve the observation's screenshot setting; hierarchy-only mode never captures screenshots and rejects coordinate taps/swipes. Then verify the requested state. Text appends to a focused non-password native EditText; supports only letters, digits, spaces, periods, commas, underscores, and hyphens. No blind batches, shell, helper installation, or endpoint fallback. Never replay uncertain input. Generic taps/keys can have consequences: installation/debugging trust is not user consent.",
+    description: "Perform ONE explicitly authorized bounded action on the selected transport using the latest observation (consumed on attempt, expires after 30 seconds). Coordinate taps/swipes require an unchanged full-width interaction band around the target or swipe path; bounded pixel changes elsewhere are allowed only with matching app/activity/user and hierarchy context. Large screen changes, changed target pixels/controls, and geometry changes reject input. A stale-observation error is a local revalidation failure, not proof of an app security block or an ad. double_tap requires prior approved mobile_prepare_gestures; it verifies the helper hash and injects both taps in ONE Android process, checking all four injection acknowledgements. Optional integer delayMs (0-250, default 50) requests the first-UP to second-DOWN event-time interval. Scheduling can increase it; gestureTiming reports the actual injected event-time gap, not proof of recognition. No automatic helper deployment or two-process fallback. Preserve the observation's screenshot setting during revalidation and the returned observation; hierarchy-only mode never captures screenshots and rejects coordinate taps/swipes. Then verify the requested state. Text appends to a focused non-password native EditText; supports only letters, digits, spaces, periods, commas, underscores, and hyphens. No blind batches, arbitrary shell, or endpoint fallback. Never replay uncertain input. Generic taps/keys can have consequences: installation/debugging trust is not user consent.",
     inputSchema: z.strictObject({ targetToken, observationId: z.string().uuid(), action: actionSchema }),
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
   }, (input, ctx) => safely(async () => {
@@ -92,6 +98,7 @@ export function createMobileUseServer(service: MobileUseService): McpServer {
       verificationStatus: action.verificationStatus,
       after: action.after?.observation ?? null,
       error: action.error,
+      ...(action.gestureTiming ? { gestureTiming: action.gestureTiming } : {}),
     }, action.after?.image ?? null, action.verificationStatus === "unverified");
   }));
 
