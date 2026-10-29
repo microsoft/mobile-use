@@ -6,9 +6,10 @@ import type { Hierarchy, Screenshot } from "./android.js";
 import { checkCancelled, MobileUseError, publicError } from "./errors.js";
 import { compareScreens, interactionBand, MAX_CHANGED_SCREEN_FRACTION } from "./screen-guard.js";
 import { actionSchema } from "./types.js";
+import { isAdbText } from "./text-input.js";
 import type {
   ActionResult, AdbServerResult, AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, MobileAction, Observation,
-  ObservedScreen, PreparedGestures, ReadStatus, ScreenElement, SelectedTarget, WakeResult,
+  ObservedScreen, PreparedGestures, PreparedTextInput, ReadStatus, ScreenElement, SelectedTarget, WakeResult,
 } from "./types.js";
 
 const OBSERVATION_MAX_AGE_MS = 30_000;
@@ -233,7 +234,7 @@ export class MobileUseService {
       includeScreenshot ? state.backend.screenshot(signal) : Promise.resolve(null),
       state.backend.hierarchy(signal),
       state.backend.displayState(signal),
-      includeScreenshot ? state.backend.getForegroundApp(signal) : Promise.resolve(null),
+      state.backend.getForegroundApp(signal),
     ]);
     const [imageResult, hierarchyResult, displayResult, foregroundResult] = results;
     const screenshotStatus: Observation["screenshot"] = !includeScreenshot
@@ -258,7 +259,7 @@ export class MobileUseService {
         includeScreenshot
           ? `Neither image nor UI hierarchy is usable (${screenshotStatus.error?.code}, ${hierarchyStatus.error?.code}).`
           : `Screenshot capture was skipped and no UI hierarchy is usable (${hierarchyStatus.error?.code}).`,
-        "Stop input. The user should expose an unlocked, observable safe screen; do not bypass protection.",
+        `Stop input. ${hierarchyStatus.error?.message ?? "The user should expose an unlocked, observable safe screen; do not bypass protection."}`,
       );
     }
     if (verifiedDisplay && ((screenshot &&
@@ -269,8 +270,8 @@ export class MobileUseService {
     const dimensions = screenshot ? { width: screenshot.width, height: screenshot.height } : verifiedDisplay;
     const display = dimensions ? { width: dimensions.width, height: dimensions.height, rotation: verifiedDisplay?.rotation ?? null } : null;
     const warnings: string[] = [];
-    if (includeScreenshot && !foregroundApp) {
-      warnings.push(`Foreground activity is unavailable (${foregroundStatus.error?.code ?? "no resumed activity"}); coordinate input requires identical visible pixels.`);
+    if (!foregroundApp) {
+      warnings.push(`Foreground activity is unavailable (${foregroundStatus.error?.code ?? "no resumed activity"}); Unicode input is blocked and coordinate input requires identical visible pixels.`);
     }
     if (!includeScreenshot) warnings.push("Screenshot capture skipped by request; no screenshot-coordinate actions are permitted.");
     else if (!screenshot) warnings.push("Image unavailable; no screenshot-coordinate actions are permitted.");
@@ -398,6 +399,10 @@ export class MobileUseService {
     return this.appOperation(targetToken, true, (backend) => backend.prepareGestures(signal), signal);
   }
 
+  prepareTextInput(targetToken: string, signal?: AbortSignal): Promise<PreparedTextInput> {
+    return this.appOperation(targetToken, true, (backend) => backend.prepareTextInput(signal), signal);
+  }
+
   private async dispatch(state: TargetState, action: MobileAction, previous: Snapshot, live: Snapshot, signal?: AbortSignal): Promise<number | undefined> {
     const old = previous.screen.observation;
     const current = live.screen.observation;
@@ -488,7 +493,16 @@ export class MobileUseService {
         if (!field || !old.elements.some((element) => elementSignature(element) === elementSignature(field))) {
           throw new MobileUseError("ELEMENT_CHANGED", "A unique unchanged focused non-password native text field is required.", "Observe, focus an approved non-sensitive EditText, and observe again.");
         }
-        await state.backend.typeText(action.text, signal);
+        let foreground: ForegroundApp | undefined;
+        if (!isAdbText(action.text)) {
+          foreground = await state.backend.getForegroundApp(signal) ?? undefined;
+          const currentApp = foreground;
+          if (!currentApp || [previous.foregroundApp, live.foregroundApp].some((app) => !app ||
+            app.packageName !== currentApp.packageName || app.activityName !== currentApp.activityName || app.userId !== currentApp.userId)) {
+            throw new MobileUseError("ELEMENT_CHANGED", "The foreground app or Android user could not be matched before Unicode input.", "Observe the approved text field again.");
+          }
+        }
+        await state.backend.typeText(action.text, signal, field, foreground);
         break;
       }
       case "key":

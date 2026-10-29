@@ -21,9 +21,12 @@ export const onboardingInstructions =
   "No screen observation or control until an explicit target and safe task are authorized. " +
   "Double-tap additionally requires explicit approval to upload and run the bundled gesture helper on that device, " +
   "then mobile_prepare_gestures and a fresh observation. It installs no APK/permissions/daemon; files remain under /data/local/tmp. " +
+  "Unicode and text outside the original ASCII subset additionally require explicit approval to upload and run the bundled text helper, " +
+  "then mobile_prepare_text_input and a fresh observation. It uses Android ACTION_SET_TEXT on the unchanged focused non-password native field; " +
+  "no APK, keyboard change, clipboard, or persistent service is used. It appends at the end and never sends Enter. " +
   "Never automatically deploy a helper, retry uncertain preparation, or fall back to separate input processes. " +
   "When the user requests no screenshots, call mobile_observe with includeScreenshot: false. " +
-  "This reads only the UI hierarchy and display state; mobile_act preserves that mode without screen capture. " +
+  "This reads UI hierarchy, display state and foreground-app metadata without images; mobile_act preserves that mode without screen capture. " +
   "Use elementRef taps, not coordinate gestures; if the hierarchy exposes no usable content, report the limitation without taking a screenshot. " +
   "App-management tools require the selected target token but no screen observation. " +
   "List/foreground reads may expose sensitive app metadata. Launch only the requested installed package. " +

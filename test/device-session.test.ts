@@ -710,11 +710,123 @@ test("typing appends supported text only to one unchanged focused native non-pas
   assert.equal(adb.inputs.length, 1);
 });
 
+test("Unicode preparation invalidates observations and preserves hierarchy-only input without screenshots", async (t) => {
+  const { adb, service } = harness(t);
+  adb.xml = hierarchy(editField());
+  const { selected, screen } = await ready(service);
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "type_text", text: "中文",
+  }), hasCode("TEXT_HELPER_NOT_PREPARED"));
+  assert.equal(adb.calls.some((call) => call.args[2] === "push"), false);
+  const before = await service.observe(selected.targetToken);
+  await service.prepareTextInput(selected.targetToken);
+  await assert.rejects(service.act(selected.targetToken, before.observation.observationId, {
+    kind: "type_text", text: "中文",
+  }), hasCode("STALE_OBSERVATION"));
+  const noImage = await service.observe(selected.targetToken, undefined, false);
+  const start = adb.calls.length;
+  const result = await service.act(selected.targetToken, noImage.observation.observationId, { kind: "type_text", text: "中文😀" });
+  assert.equal(result.dispatchStatus, "dispatched");
+  assert.equal(result.after?.observation.screenshot.status, "skipped");
+  assert.equal(adb.calls.slice(start).some((call) => call.args.includes("screencap")), false);
+  const reselected = await service.selectDevice(USB);
+  const fresh = await service.observe(reselected.targetToken);
+  await assert.rejects(service.act(reselected.targetToken, fresh.observation.observationId, {
+    kind: "type_text", text: "中文",
+  }), hasCode("TEXT_HELPER_NOT_PREPARED"));
+});
+
+test("Unicode append observations retain exact multilingual values when the original field grows", async (t) => {
+  const { adb, service } = harness(t);
+  const previous = "  existing\r\n中文😀\t&#10;  ";
+  const text = "\n日本語 | 한국어 | العربية | Русский | e\u0301 | 👩‍💻";
+  adb.xml = hierarchy(editField({ text: previous }));
+  const selected = await service.selectDevice(USB);
+  await service.prepareTextInput(selected.targetToken);
+  const screen = await service.observe(selected.targetToken, undefined, false);
+  assert.equal(screen.observation.elements[0]?.text, previous);
+  adb.handler = (call) => {
+    if (call.options.mutating && call.args[6] === "dev.mobileuse.text.TextMain") {
+      adb.xml = hierarchy(editField({ text: previous + text, bounds: "[4,32][76,100]" }));
+    }
+    return undefined;
+  };
+  const result = await service.act(selected.targetToken, screen.observation.observationId, { kind: "type_text", text });
+  assert.equal(result.dispatchStatus, "dispatched");
+  assert.equal(result.error, null);
+  assert.equal(result.verificationStatus, "requires-observation-review");
+  assert.equal(result.after?.observation.elements[0]?.text, previous + text);
+  assert.equal(result.after?.observation.elements[0]?.bounds.height, 68);
+  const persisted = await service.observe(selected.targetToken, undefined, false);
+  assert.equal(persisted.observation.elements[0]?.text, previous + text);
+  assert.equal(adb.inputs.length, 1);
+  assert.equal(adb.calls.some((call) => call.args.includes("screencap")), false);
+});
+
+test("Unicode blocks app changes, preserves focused-field guards, and reports uncertain writes without replay", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  await service.prepareTextInput(selected.targetToken);
+  for (const fields of [editField({ password: "true" }), editField({ enabled: "false" }), editField() + editField()]) {
+    adb.xml = hierarchy(fields);
+    const screen = await service.observe(selected.targetToken);
+    await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+      kind: "type_text", text: "中文",
+    }), hasCode("ELEMENT_CHANGED"));
+  }
+  adb.xml = hierarchy(editField());
+  const oldApp = await service.observe(selected.targetToken);
+  adb.foreground = "other.app/.MainActivity";
+  await assert.rejects(service.act(selected.targetToken, oldApp.observation.observationId, {
+    kind: "type_text", text: "中文",
+  }), hasCode("ELEMENT_CHANGED"));
+  assert.equal(adb.inputs.length, 0);
+  adb.foreground = "example.poc/.MainActivity";
+  const screen = await service.observe(selected.targetToken);
+  adb.handler = (call) => call.options.mutating && call.args[6] === "dev.mobileuse.text.TextMain"
+    ? Buffer.from("MOBILE_USE_TEXT_V1_FAILED\n") : undefined;
+  const result = await service.act(selected.targetToken, screen.observation.observationId, { kind: "type_text", text: "中文" });
+  assert.equal(result.dispatchStatus, "outcome-unknown");
+  assert.equal(result.error?.code, "TEXT_INPUT_FAILED");
+  assert.equal(result.error?.actionMayHaveRun, true);
+  assert.equal(adb.inputs.length, 1);
+});
+
+test("cold-root failures during Unicode preflight remain pre-input errors with sanitized diagnostic stages", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  await service.prepareTextInput(selected.targetToken);
+  adb.xml = hierarchy(editField());
+  const screen = await service.observe(selected.targetToken, undefined, false);
+  adb.handler = (call) => call.args[7] === "--dump"
+    ? Buffer.from("MOBILE_USE_TEXT_V1_ERROR_ROOT\n") : undefined;
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "type_text", text: "中文",
+  }), (error: unknown) => {
+    assert.ok(error instanceof MobileUseError);
+    assert.equal(error.code, "OBSERVATION_UNAVAILABLE");
+    assert.equal(error.actionMayHaveRun, false);
+    assert.match(error.remediation, /Unicode hierarchy helper failed during ROOT/);
+    return true;
+  });
+  assert.equal(adb.inputs.length, 0);
+  adb.handler = undefined;
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "type_text", text: "中文",
+  }), hasCode("STALE_OBSERVATION"));
+  const recovered = await service.observe(selected.targetToken, undefined, false);
+  const result = await service.act(selected.targetToken, recovered.observation.observationId, {
+    kind: "type_text", text: "中文",
+  });
+  assert.equal(result.dispatchStatus, "dispatched");
+  assert.equal(adb.inputs.length, 1);
+});
+
 test("unsupported text and raw/invalid actions fail before device I/O", async (t) => {
   const { adb, service } = harness(t);
   const { selected, screen } = await ready(service);
   const calls = adb.calls.length;
-  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "type_text", text: "你好" }), hasCode("UNSUPPORTED_TEXT"));
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "type_text", text: "\ud800" }), hasCode("UNSUPPORTED_TEXT"));
   await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "shell", command: "reboot" }), hasCode("INVALID_INPUT"));
   await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
     kind: "double_tap", target: { x: "10;reboot", y: 10 },

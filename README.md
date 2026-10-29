@@ -134,8 +134,24 @@ automatically launch the app.
 
 You can explicitly ask to wake the selected phone. Copilot can dismiss only
 an unsecured lock screen; you must handle secure authentication yourself.
-Text entry only appends to a focused, non-password native field and supports
-up to 256 ASCII letters, digits, spaces, periods, commas, underscores, or hyphens.
+Text entry requires one unchanged, focused, enabled, non-password native field.
+ASCII letters, digits, spaces, periods, commas, underscores, and hyphens use
+the existing ADB path without a helper. For Chinese and other Unicode text,
+emoji, or additional punctuation, Copilot first asks for explicit approval to
+upload and run the bundled text helper, then calls `mobile_prepare_text_input`.
+It installs no APK, changes no keyboard, and uses no clipboard or daemon;
+the read-only helper files remain under `/data/local/tmp/mobile-use-text-*`.
+Preparation is required again after device reselection/server restart.
+
+The Unicode path appends at the **end** of the actual value, excluding placeholder
+hints, using Android's `ACTION_SET_TEXT`. It never sends Enter or submits the field.
+Each action accepts up to 256 UTF-16 code units; the helper's resulting value
+plus its exposed label/hint is limited to 4096. Prepared-helper observations
+also preserve exact Unicode and whitespace for subsequent guarded appends.
+Well-formed Unicode, combining marks, tabs and line breaks
+are supported; other control characters, unpaired surrogates, and U+FFFE/U+FFFF
+are rejected. Custom fields and input filters can reject text; an unverified
+write is reported as uncertain and is never automatically retried.
 
 ## Safety and privacy
 

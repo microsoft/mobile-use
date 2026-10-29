@@ -142,6 +142,7 @@ unless the user approves that specific evidence and destination.
    hierarchy and `displayState` statuses, warnings, display, and element
    references. When the user requests no screenshots, set `includeScreenshot: false`.
    This never captures an image and returns `screenshot.status: skipped`;
+   foreground-app metadata is also read to guard Unicode input against app/user changes.
    inspect the exposed UI text, labels, resource IDs, and element references.
    The default is true, retaining image-plus-hierarchy observation.
    Hierarchy and image capture are not atomic. Display rotation is
@@ -174,7 +175,7 @@ enabling screenshots. UI text can still contain sensitive information and is
 subject to the same consent and no-saving rules as images.
 
 UI actions are limited to explicit waking/unsecured-keyguard dismissal, safe
-navigation, single taps, double-taps, one bounded swipe, supported ASCII entry,
+navigation, single taps, double-taps, one bounded swipe, guarded text entry,
 Back/Home/Enter, and launching a specifically requested installed app.
 Before double-tap, obtain specific approval to upload and run the bundled
 gesture helper on the selected device, then call `mobile_prepare_gestures`.
@@ -201,9 +202,42 @@ alone is not proof. Both taps use the same point even if the first changes the
 screen, so authorize the pair only when safe. Never automatically replay an
 uncertain or partial pair. Separate app-management tools are described below. Text input
 appends to the currently focused field; it does not clear or submit it. The
-supported subset is letters, digits, spaces, periods, commas, underscores, and
-hyphens, up to 256 characters. No Unicode input, clipboard fallback, keyboard
-change, or DeviceKit installation is provided.
+original helper-free subset is ASCII letters, digits, spaces, periods, commas,
+underscores, and hyphens, retaining ADB's key-event/caret behavior.
+
+For Unicode (including Chinese, other scripts, combining marks and emoji) or
+other punctuation, obtain specific approval to upload and run the bundled
+text helper on the selected device, then call `mobile_prepare_text_input`.
+It deploys a pinned read-only DEX under a new private
+`/data/local/tmp/mobile-use-text-*` directory and checks UiAutomation compatibility
+without reading screen content or entering text. It installs no APK, changes no
+IME, uses no clipboard/network service/daemon, and does not suppress existing
+accessibility services. Files remain on the device; fresh approval/preparation
+is required after reselection/server restart. Never automatically prepare,
+replace, or retry an uncertain helper. Preparation invalidates observations.
+
+Observe again, then use `type_text` as usual. The helper rechecks the current
+Android user, active primary-display app window and unique focused enabled
+non-password native EditText, its class/resource ID, bounds and existing text.
+It appends at the **end** of the actual value regardless of caret/selection,
+excluding placeholder hints. It uses Android `ACTION_SET_TEXT`, with one
+acknowledged write and exact readback, not character-to-key-event mapping.
+Pre-input bounds remain strict; post-write readback permits the same native
+node to resize or scroll while verifying its window, identity, state and text.
+Payloads are Base64-encoded data, so punctuation is not shell syntax.
+It never sends Enter, clears the existing value, or submits the field.
+Each action accepts 1-256 UTF-16 code units; helper result maximum is 4096.
+The result budget includes the exposed label/hint. Once prepared, observations
+also read the hierarchy through the pinned helper, preserving emoji and exact
+whitespace and redacting passwords. Geometry is checked around that read.
+There is no lossy stock-dump fallback; screenshot settings remain unchanged.
+Tabs and line breaks are supported as text; other C0/C1/DEL controls, unpaired
+surrogates and U+FFFE/U+FFFF are unsupported. Custom fields or input filters can
+reject text. Missing/changed helpers fail explicitly; there is no clipboard,
+keyboard-change or input-method fallback. If text may have changed, inspect a
+fresh observation before continuing and never automatically replay the input.
+An unsuccessful helper-process exit remains uncertain even if it printed a
+success marker. Report only its sanitized diagnostics, not raw device logs.
 
 Generic tap/key/text actions can have consequences. Do not submit messages,
 forms, purchases, credentials, account changes, permission changes, or other

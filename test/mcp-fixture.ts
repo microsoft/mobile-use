@@ -2,7 +2,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { MobileUseService } from "../src/device-session.js";
 import { MobileUseError } from "../src/errors.js";
 import { createMobileUseServer } from "../src/tools.js";
-import { chunk, FakeAdb, FakeMonitors, hierarchy, node, pixelPng } from "./helpers.js";
+import { chunk, editField, FakeAdb, FakeMonitors, hierarchy, node, pixelPng } from "./helpers.js";
 
 const adb = new FakeAdb();
 const monitors = new FakeMonitors(adb);
@@ -37,7 +37,8 @@ if (setupScenario === "server-reused") adb.startupAttempted = false;
 if (setupScenario === "server-start-empty") adb.inventory = "List of devices attached\n";
 if (setupScenario === "hierarchy-unavailable") adb.xml = "ERROR: null root node";
 if (setupScenario === "display-unavailable") adb.display = "Unrecognized display diagnostics";
-if (setupScenario === "no-screenshots") {
+if (setupScenario === "unicode-text") adb.xml = hierarchy(editField());
+if (setupScenario === "no-screenshots" || setupScenario === "unicode-text") {
   adb.handler = (call) => {
     if (call.args.includes("screencap")) throw new Error("Screen capture is forbidden in this fixture.");
     return undefined;

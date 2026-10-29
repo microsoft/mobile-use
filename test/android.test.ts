@@ -5,7 +5,7 @@ import { parseDeviceList } from "../src/adb.js";
 import { AndroidBackend, decodePng, parseDisplayState, parseHierarchy, parseKeyguardState, validatePng, validateText } from "../src/android.js";
 import { MobileUseError } from "../src/errors.js";
 import { actionSchema } from "../src/types.js";
-import { chunk, FakeAdb, displayDiagnostics, editField, hasCode, hierarchy, keyguardPolicy, node, pixelPng, png, USB, WIFI } from "./helpers.js";
+import { chunk, FakeAdb, displayDiagnostics, editField, hasCode, hierarchy, keyguardPolicy, node, pixelPng, png, textHash, USB, WIFI } from "./helpers.js";
 
 test("PNG validation preserves binary data and handles rotated dimensions", () => {
   assert.deepEqual(validatePng(png()), { width: 80, height: 160 });
@@ -63,6 +63,30 @@ test("password text is redacted and empty/custom hierarchies stay honest", () =>
   assert.deepEqual(parseHierarchy(hierarchy("")).elements, []);
 });
 
+test("hierarchy field text and labels preserve exact whitespace for Unicode append guards", () => {
+  for (const text of ["  abc  ", " \t ", "\r\n中文\t😀\n", "e\u0301", "中文 😀", "literal &#10; &copy; &quot;"]) {
+    const field = parseHierarchy(hierarchy(editField({ text, "content-desc": "  label  " }))).elements[0];
+    assert.equal(field?.text, text);
+    assert.equal(field?.label, "  label  ");
+  }
+});
+
+test("XML numeric references roundtrip line breaks, combining marks, and supplementary characters exactly once", () => {
+  const xml = hierarchy(editField()).replace('text=""',
+    'text="&#10;中文&#x9;日本語&#13;&#10;한국어 | العربية | Русский | e&#x301; | &#x1F600; &#128105;‍&#x1F4BB; | &amp;#10;"');
+  assert.equal(parseHierarchy(xml).elements[0]?.text,
+    "\n中文\t日本語\r\n한국어 | العربية | Русский | e\u0301 | 😀 👩‍💻 | &#10;");
+});
+
+test("prepared hierarchies expose validated non-password raw-text fingerprints", () => {
+  const hash = textHash("中文😀");
+  assert.equal(parseHierarchy(hierarchy(editField({ text: "中文😀", "text-sha256": hash }))).elements[0]?.textHash, hash);
+  assert.equal(parseHierarchy(hierarchy(editField({ password: "true", "text-sha256": hash }))).elements[0]?.textHash, undefined);
+  for (const invalid of ["", "a".repeat(63), "A".repeat(64), "a".repeat(65), "private-content"]) {
+    assert.throws(() => parseHierarchy(hierarchy(editField({ "text-sha256": invalid }))), hasCode("HIERARCHY_UNAVAILABLE"));
+  }
+});
+
 test("malformed, external-entity, excessive, and invalid-attribute XML is rejected", () => {
   const bad = [
     "", "ERROR: null root node", '<hierarchy rotation="0"><node></hierarchy>',
@@ -81,18 +105,23 @@ test("malformed, external-entity, excessive, and invalid-attribute XML is reject
   assert.throws(() => parseHierarchy(" ".repeat(2 * 1024 * 1024 + 1)), hasCode("HIERARCHY_UNAVAILABLE"));
 });
 
-test("the explicit text alphabet and action union reject unsupported input", () => {
+test("Unicode text validation preserves multilingual data and rejects malformed or unsafe controls", () => {
   validateText("ABC xyz 0123.,_-");
   validateText("a".repeat(256));
-  for (const value of ["", "a".repeat(257), "é", "中文", "line\nbreak", "tab\t", "quote'", "$HOME", "%s", "&", ";", "\\", "😀"]) {
+  for (const value of ["é", "中文", "line\nbreak", "tab\t", "quote'", "$HOME", "%s", "&", ";", "\\", "😀", "日本語", "한국어", "العربية", "русский", "e\u0301", "👩‍💻"]) validateText(value);
+  for (const value of ["", "a".repeat(257), "\u0000", "\u001b", "\u007f", "\u0085", "\ud800", "\udc00", "\ufffe", "\uffff"]) {
     assert.throws(() => validateText(value), hasCode("UNSUPPORTED_TEXT"));
   }
-  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,_-";
   for (let code = 0; code < 128; code++) {
     const character = String.fromCharCode(code);
-    if (alphabet.includes(character)) validateText(character);
+    if (code >= 32 && code !== 127 || [9, 10, 13].includes(code)) validateText(character);
     else assert.throws(() => validateText(character), hasCode("UNSUPPORTED_TEXT"));
   }
+  validateText("😀".repeat(128));
+  assert.throws(() => validateText("😀".repeat(129)), hasCode("UNSUPPORTED_TEXT"));
+});
+
+test("the bounded action union rejects unsupported operations and target shapes", () => {
   assert.equal(actionSchema.parse({ kind: "swipe", from: { x: 0, y: 0 }, to: { x: 1, y: 1 } }).kind, "swipe");
   for (const target of [{ elementRef: "e1" }, { x: 0, y: 20 }]) {
     assert.deepEqual(actionSchema.parse({ kind: "double_tap", target }), { kind: "double_tap", target, delayMs: 50 });
@@ -470,7 +499,7 @@ test("input commands preserve supported spaces without a host shell or Unicode h
   const adb = new FakeAdb();
   await backend(adb).typeText("POC sample-01,._");
   assert.deepEqual(adb.inputs[0]?.args, ["-t", "7", "shell", "input", "text", "POC%ssample-01,._"]);
-  await assert.rejects(backend(adb).typeText("你好"), hasCode("UNSUPPORTED_TEXT"));
+  await assert.rejects(backend(adb).typeText("\ud800"), hasCode("UNSUPPORTED_TEXT"));
   assert.equal(adb.inputs.length, 1);
   await backend(adb).typeText("  A  B ");
   assert.equal(adb.inputs[1]?.args.at(-1), "%s%sA%s%sB%s");

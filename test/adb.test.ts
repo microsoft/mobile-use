@@ -195,6 +195,26 @@ test("app rejection diagnostics preserve operation-specific errors without leaki
   }
 });
 
+test("failed text-helper processes report only allowlisted diagnostics and never accept a success marker on nonzero exit", async () => {
+  for (const [output, diagnostic, marker, exception] of [
+    ["MOBILE_USE_TEXT_V1_OK\n", "java.lang.IllegalStateException: private UI content", "OK", "IllegalStateException"],
+    ["MOBILE_USE_TEXT_V1_ERROR_VERIFY\n", "java.lang.NoSuchMethodError: private method details", "ERROR_VERIFY", "NoSuchMethodError"],
+    ["MOBILE_USE_TEXT_V1_private-output\n", "private UI content", "missing", "unavailable"],
+  ]) {
+    await assert.rejects(executeCommand(process.execPath, [
+      "-e", `process.stdout.write(${JSON.stringify(output)});process.stderr.write(${JSON.stringify(diagnostic)});process.exit(1)`,
+      "--", "dev.mobileuse.text.TextMain",
+    ], { env: { ...process.env }, mutating: true }), (error: unknown) => {
+      hasCode("ADB_FAILED")(error);
+      assert.ok(error instanceof MobileUseError);
+      assert.equal(error.message, `The text helper process failed (exit 1; result ${marker}; exception ${exception}).`);
+      assert.ok(error.actionMayHaveRun && !error.retryable);
+      assert.doesNotMatch(JSON.stringify(error), /private|UI content|method details/);
+      return true;
+    });
+  }
+});
+
 test("actual offline and unauthorized device diagnostics retain their transport error codes", async () => {
   for (const [diagnostic, code] of [
     ["error: device offline", "DEVICE_OFFLINE"],

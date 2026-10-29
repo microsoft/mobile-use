@@ -108,7 +108,7 @@ for (const mode of ["legacy", "auto"]) {
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       "mobile_act", "mobile_doctor", "mobile_get_foreground_app", "mobile_install_app",
       "mobile_launch_app", "mobile_list_apps", "mobile_list_devices", "mobile_observe",
-      "mobile_prepare_gestures",
+      "mobile_prepare_gestures", "mobile_prepare_text_input",
       "mobile_select_device", "mobile_start_adb_server", "mobile_terminate_app", "mobile_uninstall_app", "mobile_wake",
     ]);
     const observe = tools.tools.find((tool) => tool.name === "mobile_observe");

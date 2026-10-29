@@ -14,8 +14,10 @@
     "test": "npm run build:tests && node --test .test-build\\test\\*.test.js",
     "build:plugin": "node scripts\\build-plugin.mjs",
     "build:gestures": "node scripts\\build-gestures.mjs",
+    "build:text": "node scripts\\build-text.mjs",
     "test:plugin": "node --test test\\plugin.test.mjs",
     "test:gestures": "node --test test\\gesture-helper.test.mjs",
+    "test:text": "node --test test\\text-helper.test.mjs",
     "check": "npm run typecheck && npm test && npm run build:plugin && npm run test:plugin"
   },
   "dependencies": {

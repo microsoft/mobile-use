@@ -157,6 +157,12 @@ export const executeCommand: CommandRunner = (executable, args, options) => new 
       message = "The selected ADB transport is unavailable.";
       remediation = "Restore the connection, rediscover, and explicitly reselect. No fallback was attempted.";
     }
+    if (code === "ADB_FAILED" && args.includes("dev.mobileuse.text.TextMain")) {
+      const exit = typeof error.code === "number" ? error.code : "unknown";
+      const marker = /^MOBILE_USE_TEXT_V1_(OK|READY|FAILED|UNSUPPORTED|ERROR_(?:REQUEST|CONNECT|CONFIGURE|ROOT|WINDOW|HIERARCHY|TARGET|WRITE|VERIFY|DISCONNECT))\r?$/m.exec(stdout.toString("utf8"))?.[1] ?? "missing";
+      const exception = /\bjava\.lang\.(IllegalStateException|IllegalArgumentException|SecurityException|NullPointerException|NoSuchMethodError|NoClassDefFoundError|RuntimeException)\b/.exec(stderr.toString("utf8"))?.[1] ?? "unavailable";
+      message = `The text helper process failed (exit ${exit}; result ${marker}; exception ${exception}).`;
+    }
     reject(new MobileUseError(code, message, remediation, !mayHaveRun, mayHaveRun));
   });
   child.once("spawn", () => { spawned = true; });
