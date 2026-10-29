@@ -338,8 +338,8 @@ and titles are not returned.
 
 The root must be a focused, active, primary-display application window. Stable
 identity is checked before and after hierarchy serialization, on append entry,
-immediately before writing, and during readback. Host revalidation still rejects
-an identical editor in a replacement window. Request protocol 4 carries the
+before the final pre-write field refresh, and during readback. Host revalidation
+still rejects an identical editor in a replacement window. Request protocol 4 carries the
 original stable identity; numeric accessibility IDs remain checked against the
 root within each single connection, including after field refresh and writing.
 
@@ -356,6 +356,14 @@ and existing text. It appends to the **end** of the actual value, irrespective
 of selection/caret position, excluding a reported placeholder hint. ASCII
 input retains its existing key-event/caret behavior. Tabs and line breaks are
 text, not key events; the helper does not clear or submit the field.
+Blocking window diagnostics run before the final field refresh on both the
+write and readback paths. After that read, the helper revalidates user, field
+state/identity, strict pre-write bounds, and the raw text/hint fingerprint before
+constructing the appended value. An edit during diagnostics must be preserved
+and rejected before writing, not overwritten with cached text. A post-write
+diagnostic-time edit must fail fresh readback, not pass using a cached value.
+These checks do not make Android's separate read/write operations an atomic
+compare-and-set; do not edit the field concurrently with automation.
 Pre-write bounds must match exactly. Post-write verification refreshes the
 same native node and requires the same connection-local window ID, active
 primary app window, original stable window identity, user, field identity/state,
@@ -382,9 +390,10 @@ unsuccessful process exits remain uncertain. A failed append attempt still
 consumes its observation; obtain a fresh observation rather than replaying it.
 
 Java stub tests and host fixtures are not real-device proof. The current
-packaged Unicode DEX passed approved USB appends through both the rebuilt public
-MCP server and the reinstalled Copilot App plugin, with exact returned and fresh
-readback. See the
+packaged Unicode DEX passed an approved USB append through the rebuilt public
+MCP server, with exact returned and fresh readback. The prior DEX also passed
+through the reinstalled Copilot App plugin; that integration check remains
+pending for the diagnostic-order repair. See the
 [versioned Unicode artifact evidence](#unicode-artifact-evidence).
 
 #### Shared observation guards
@@ -552,7 +561,7 @@ issue reports and [Security](SECURITY.md) for security reporting.
 | Fixture/subprocess/MCP/package behavior | Local automated checks; no real ADB/device access. |
 | Plugin recognition | Read-only Copilot CLI 1.0.99-2 mount on Node 22.15.1. |
 | Actual Copilot App tool loading | Reinstalled plugin's doctor, startup, selection, wake, foreground lookup, text preparation, hierarchy reads, and successful guarded Unicode append exercised through the App. |
-| Unicode text helper / fifteenth tool | Current DEX `1da156e...`: approved rebuilt public-MCP and reinstalled App-plugin USB appends passed with exact returned and fresh readback in MIUI Notes on one Android 11 Redmi. Historical `a848d0b...` failed before writing; `fec6781...` also passed workspace-MCP and reinstalled-plugin input. See the [versioned artifact evidence](#unicode-artifact-evidence). |
+| Unicode text helper / fifteenth tool | Current DEX `09a94c6...`: approved rebuilt public-MCP USB append passed with exact returned and fresh readback in MIUI Notes on one Android 11 Redmi; reinstalled App-plugin verification remains pending for this diagnostic-order repair. Previous DEX `1da156e...` passed both integrations. See the [versioned artifact evidence](#unicode-artifact-evidence). |
 | USB app-management lifecycle | All six operations passed through the reinstalled plugin on one Android 11 phone, including the package-state parser fix. |
 | USB double-tap recognition | Diagnostic app recognized 50 ms and 125 ms gaps; Gallery zoomed in and back out with 50 ms requested and 51 ms reported on one Android 11 Redmi. |
 | Complete physical USB and unplugged paired Wi-Fi acceptance journeys | Unverified; hardware and control consent required. |
@@ -604,7 +613,8 @@ wireless double-taps remain unverified on hardware.
 | --- | --- | --- |
 | Phone-tested baseline, commit `212a88c`, request protocol 2 | `fec6781aa14300488c70bc5d6b783c62417838d349f3493af9a2eccb8e08a9ef` | Approved workspace-MCP and reinstalled Copilot App plugin runs on one USB-connected Android 11 Redmi in MIUI Notes. Exact multilingual append/readback, including editor resizing/scrolling, returned `dispatched` with no error. |
 | Superseded helper, introduced in `80367c6`, request protocol 3 | `a848d0b20256dd15c8fbe1ab8efe11412e009bf73507c7b5d7c326bc36f334eb` | Automated checks passed. Reinstalled-plugin USB attempt on 2026-10-29: exact digest confirmed; preparation and hierarchy reads passed, but host field revalidation rejected the append before writing. **Successful input not validated for this artifact.** |
-| Currently packaged helper, request protocol 4 | `1da156e47a5519dedd1f99ff53e3284d55f9fb3cd4c20717f88361b595395796` | Approved rebuilt public-MCP and reinstalled Copilot App plugin USB runs on 2026-10-29, same Android 11 Redmi and MIUI Notes. Each append returned `dispatched`, `error: null`; returned and fresh observations matched the exact prior value plus the respective 67-unit and 81-unit requested samples. |
+| Window-identity repair, commit `ff2784d`, request protocol 4 | `1da156e47a5519dedd1f99ff53e3284d55f9fb3cd4c20717f88361b595395796` | Approved rebuilt public-MCP and reinstalled Copilot App plugin USB runs on 2026-10-29, same Android 11 Redmi and MIUI Notes. Each append returned `dispatched`, `error: null`; returned and fresh observations matched the exact prior value plus the respective 67-unit and 81-unit requested samples. |
+| Currently packaged diagnostic-order repair, request protocol 4 | `09a94c6599279b9ba877ed7b9aa65f426c2a4e69e528dcaa21f13df5046b7166` | Approved rebuilt public-MCP USB run on 2026-10-29, same device/app. One 81-unit append returned `dispatched`, `error: null`; returned and fresh observations matched the exact 684-unit expected value, preserving all prior text. Reinstalled App-plugin verification remains pending for this DEX. |
 
 Commit `82fbc9a` changes host-side pre-write failure classification, not the DEX.
 Digest and packaging checks prove artifact identity, not hardware compatibility.
@@ -626,7 +636,7 @@ across connections while retaining connection-local accessibility-ID checks.
 Phone testing also exposed numeric OEM metadata before the diagnostic user
 marker; the bounded parser now handles that without discarding the user check.
 
-The rebuilt current plugin was then launched as a public MCP server, selected
+The rebuilt window-identity repair was then launched as a public MCP server, selected
 the approved USB endpoint, woke the phone, and prepared the exact `1da156e...`
 DEX after approval. Two screenshot-free observations retained one window
 identity and the existing 455 UTF-16 units. Exactly one text action appended the
@@ -651,7 +661,26 @@ exact 603-unit expected value, with native-text hash
 Independent host-side UTF-16 hashing confirmed both the pre-action fingerprint
 and the exact expected append. All prior content and the stable window identity
 were preserved. No screenshots were captured, no input was replayed, and no
-workspace-server substitute was used for this installed-plugin verification.
+workspace-server substitute was used for this installed-plugin verification
+of `1da156e...`.
+
+A subsequent review found that the final blocking window diagnostic followed
+the field refresh and construction of the appended value. An intervening edit
+could therefore be overwritten; readback had the same stale-snapshot ordering.
+The diagnostic-order repair moves each blocking read before its final field
+refresh. Deterministic regressions reproduce the old overwrite attempt and false
+success, then verify changed text/hint, state, identity, bounds, and limits block
+the write, while diagnostic-time readback edits remain uncertain without replay.
+
+The current `09a94c6...` DEX was prepared under the user's session-wide approval
+and exercised through the rebuilt plugin's public MCP server. One distinct
+81-unit multilingual confirmation appended to the preceding 603 units. The
+action returned `dispatched`, `error: null`; both returned and fresh observations
+matched all 684 expected units with native-text hash
+`591feb857fc360fafeaaa644e501347340b17758eea38b34be6a46a3abc3545f`.
+All prior content and the original window identity were preserved, without
+screenshots or input replay. This normal append verifies the new bundle, not
+its still-pending reinstalled App integration or concurrent-edit hardware cases.
 Other devices, editors, paired-wireless Unicode input, and forced
 replacement-window/hint-filter hardware cases remain unverified.
 

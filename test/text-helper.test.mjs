@@ -32,6 +32,13 @@ const stubs = {
         TextMain.run(args, () -> {
           if (Boolean.getBoolean("forbidRead")) throw new IllegalStateException("Check must not read windows");
           reads[0]++;
+          if (reads[0] == Integer.getInteger("changeWindowRead", 2)) {
+            for (String key : System.getProperties().stringPropertyNames()) {
+              if (key.startsWith("duringWindowRead.")) {
+                System.setProperty(key.substring("duringWindowRead.".length()), System.getProperty(key));
+              }
+            }
+          }
           if (Boolean.getBoolean("windowReadFailed")) throw new java.io.IOException("Private window diagnostic");
           if (Boolean.getBoolean("oversizedWindowDiagnostics")) return new String(new char[1024 * 1024 + 1]);
           String provided=System.getProperty("windowDiagnostics");
@@ -42,6 +49,7 @@ const stubs = {
             "  mCurrentFocus=Window{" + identity + " u0 example.poc/.MainActivity}\\n" +
             "  Display: mDisplayId=2 stacks=1\\n  mCurrentFocus=Window{fff u10 other.app/.Activity}\\n";
         });
+        if (Boolean.getBoolean("traceFinalText")) System.err.println("FINAL_TEXT " + System.getProperty("previous", ""));
       }
     }`,
   "android/os/Looper.java": `package android.os; public class Looper {}`,
@@ -160,7 +168,7 @@ const stubs = {
       public CharSequence getHintText() { return System.getProperty("hintValue", Boolean.getBoolean("hint") ? "Search" : ""); }
       public CharSequence getContentDescription() { return System.getProperty("label", ""); }
       public boolean isShowingHintText() {
-        return written ? Boolean.getBoolean("filterToHint") : Boolean.getBoolean("hint");
+        return Boolean.getBoolean("hint");
       }
       public CharSequence getPackageName() {
         return System.getProperty(written ? "afterPackageName" : "packageName", "example.poc");
@@ -194,7 +202,7 @@ const stubs = {
       }
       public boolean refresh() {
         refreshed=true;
-        if (!written) value=new String(Base64.getDecoder().decode(System.getProperty("previous", "")), StandardCharsets.UTF_8);
+        value=new String(Base64.getDecoder().decode(System.getProperty("previous", "")), StandardCharsets.UTF_8);
         return !Boolean.getBoolean("refreshFailed") && !(written && Boolean.getBoolean("afterRefreshFailed"));
       }
       public List<AccessibilityAction> getActionList() {
@@ -207,6 +215,8 @@ const stubs = {
         System.err.println("WRITE " + Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8)));
         if (Boolean.getBoolean("filter")) value="filtered";
         if (Boolean.getBoolean("filterToHint")) value=getHintText().toString();
+        System.setProperty("previous", Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8)));
+        System.setProperty("hint", Boolean.toString(Boolean.getBoolean("filterToHint")));
         if (Boolean.getBoolean("throwAfterWrite")) throw new IllegalStateException("Fixture failure");
         return !Boolean.getBoolean("reject");
       }
@@ -381,6 +391,55 @@ test("an identical editor in a replacement window is rejected before writing", (
   expectStatus(run(payload("中文"), { windowIdentity: "def", forbidWrite: true }), "ELEMENT_CHANGED_WINDOW_ID");
   expectStatus(run(payload("中文"), { windowChangeRead: 2, forbidWrite: true }), "ELEMENT_CHANGED_FIELD_WINDOW");
   expectStatus(run(payload("中文"), { refreshedWindowId: 2, forbidWrite: true }), "ELEMENT_CHANGED_FIELD_WINDOW");
+});
+
+test("edits during the final pre-write window diagnostic are preserved without writing", () => {
+  const previous = "Existing: 中文 e\u0301 👩‍💻";
+  const edited = previous + " user edit";
+  const result = run(payload("追加", previous), {
+    previous: base64(previous), "duringWindowRead.previous": base64(edited),
+    traceFinalText: true, forbidWrite: true,
+  });
+  expectStatus(result, "ELEMENT_CHANGED_FIELD_TEXT");
+  assert.ok(result.stderr.includes(`FINAL_TEXT ${base64(edited)}`));
+  expectStatus(run(payload("追加", previous), {
+    previous: base64(previous), "duringWindowRead.hint": true, forbidWrite: true,
+  }), "ELEMENT_CHANGED_FIELD_TEXT");
+});
+
+test("the final field refresh revalidates state, identity, bounds, and limits after window diagnostics", () => {
+  for (const [changes, status] of [
+    [{ disabled: true }, "ELEMENT_CHANGED_FIELD_ENABLED"],
+    [{ unfocused: true }, "ELEMENT_CHANGED_FIELD_FOCUS"],
+    [{ password: true }, "ELEMENT_CHANGED_FIELD_PASSWORD"],
+    [{ notEditable: true }, "ELEMENT_CHANGED_FIELD_EDITABLE"],
+    [{ invisible: true }, "ELEMENT_CHANGED_FIELD_VISIBLE"],
+    [{ x: 5 }, "ELEMENT_CHANGED_FIELD_BOUNDS"],
+    [{ resourceId: "other:id/text" }, "ELEMENT_CHANGED_FIELD_ID"],
+    [{ className: "other.EditText" }, "ELEMENT_CHANGED_FIELD_CLASS"],
+    [{ packageName: "other.app" }, "ELEMENT_CHANGED_FIELD_PACKAGE"],
+    [{ user: 10 }, "ELEMENT_CHANGED_USER"],
+    [{ windowUnfocused: true }, "ELEMENT_CHANGED_FIELD_WINDOW"],
+    [{ windowId: 2 }, "ELEMENT_CHANGED_FIELD_WINDOW"],
+    [{ refreshFailed: true }, "ELEMENT_CHANGED_FIELD_REFRESH"],
+    [{ unsupported: true }, "UNSUPPORTED"],
+    [{ label: "a".repeat(4096) }, "UNSUPPORTED"],
+  ]) {
+    const properties = Object.fromEntries(Object.entries(changes).map(([key, value]) => [`duringWindowRead.${key}`, value]));
+    expectStatus(run(payload("中文"), { ...properties, forbidWrite: true }), status);
+  }
+});
+
+test("readback refreshes after the blocking window diagnostic and never accepts its stale cached text", () => {
+  const edited = "Later user edit 中文";
+  const result = run(payload("中文"), {
+    changeWindowRead: 3, "duringWindowRead.previous": base64(edited), traceFinalText: true,
+  });
+  expectStatus(result, "FAILED", 1);
+  assert.ok(result.stderr.includes(`FINAL_TEXT ${base64(edited)}`));
+  expectStatus(run(payload("中文"), {
+    changeWindowRead: 3, "duringWindowRead.hint": true,
+  }), "FAILED", 1);
 });
 
 test("accessibility re-registration may change IDs across connections without replacing the authorized window", () => {

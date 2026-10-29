@@ -152,11 +152,12 @@ plus its exposed label/hint is limited to 4096. Prepared-helper observations
 also preserve exact Unicode and whitespace for subsequent guarded appends.
 
 **Unicode hardware status:** the current packaged DEX passed an approved
-multilingual append on one Android 11 phone over USB in MIUI Notes, through both
-the rebuilt public MCP server and the reinstalled Copilot App plugin. Returned
-and fresh observations matched the exact previous value plus the requested
-text. The accessibility-window-ID reconnection failure is fixed without
-removing original-window checks. See the
+multilingual append on one Android 11 phone over USB in MIUI Notes through the
+rebuilt public MCP server. Returned and fresh observations matched the exact
+previous value plus the requested text. The prior DEX also passed through the
+reinstalled Copilot App plugin; the latest diagnostic-order repair needs
+reinstallation for that integration check. Original-window checks are retained,
+and blocking diagnostics precede the final text refresh. See the
 [versioned evidence](CONTRIBUTING.md#unicode-artifact-evidence).
 
 Well-formed Unicode, combining marks, tabs and line breaks

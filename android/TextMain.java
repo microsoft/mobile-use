@@ -355,9 +355,15 @@ public final class TextMain {
                 }
             }
             if (field == null) return "ELEMENT_CHANGED_FIELD_MISSING";
+            // Blocking diagnostics must precede the final field snapshot.
+            if (!request.windowIdentity.equals(windowIdentity(diagnostics, request.user))) {
+                return "ELEMENT_CHANGED_FIELD_WINDOW";
+            }
+            if (currentUser() != request.user) return "ELEMENT_CHANGED_USER";
             if (!field.refresh()) return "ELEMENT_CHANGED_FIELD_REFRESH";
             String mismatch = mismatch(field, request, windowId, true);
             if (mismatch != null) return "ELEMENT_CHANGED_" + mismatch;
+            if (!activeWindow(field)) return "ELEMENT_CHANGED_FIELD_WINDOW";
             String previous = string(field.getText());
             boolean hint = field.isShowingHintText();
             if (!request.textHash.equals(textHash(field))) {
@@ -371,11 +377,6 @@ public final class TextMain {
                     !field.getActionList().contains(AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_TEXT)) {
                 return "UNSUPPORTED";
             }
-            if (currentUser() != request.user) return "ELEMENT_CHANGED_USER";
-            if (!activeWindow(field) || field.getWindowId() != windowId ||
-                    !request.windowIdentity.equals(windowIdentity(diagnostics, request.user))) {
-                return "ELEMENT_CHANGED_FIELD_WINDOW";
-            }
             Bundle arguments = new Bundle();
             arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, desired);
             // ACTION_SET_TEXT writes text, including line breaks, without sending Enter or submitting.
@@ -383,9 +384,9 @@ public final class TextMain {
             if (!field.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)) return "FAILED";
             phase = "VERIFY";
             // Text can resize or scroll its original node; pre-write geometry remains strict.
-            if (!field.refresh() || mismatch(field, request, windowId, false) != null ||
+            if (!request.windowIdentity.equals(windowIdentity(diagnostics, request.user)) ||
+                    !field.refresh() || mismatch(field, request, windowId, false) != null ||
                     !activeWindow(field) || currentUser() != request.user || field.isShowingHintText() ||
-                    !request.windowIdentity.equals(windowIdentity(diagnostics, request.user)) ||
                     !desired.equals(string(field.getText()))) return "FAILED";
             return "OK";
         } finally {
