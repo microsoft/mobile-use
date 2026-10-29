@@ -837,6 +837,40 @@ test("cold-root failures during Unicode preflight remain pre-input errors with s
   assert.equal(adb.inputs.length, 1);
 });
 
+test("root loss during Unicode append remains a confirmed pre-write failure without replay", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  await service.prepareTextInput(selected.targetToken);
+  adb.xml = hierarchy(editField());
+  const screen = await service.observe(selected.targetToken, undefined, false);
+  adb.handler = (call) => call.options.mutating && call.args[6] === "dev.mobileuse.text.TextMain"
+    ? Buffer.from("MOBILE_USE_TEXT_V1_ERROR_ROOT\n") : undefined;
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "type_text", text: "中文",
+  }), (error: unknown) => {
+    assert.ok(error instanceof MobileUseError);
+    assert.equal(error.code, "TEXT_INPUT_FAILED");
+    assert.equal(error.message, "The Unicode text helper failed during ROOT.");
+    assert.equal(error.actionMayHaveRun, false);
+    assert.equal(error.retryable, false);
+    assert.match(error.remediation, /No text was written/);
+    return true;
+  });
+  assert.equal(adb.inputs.length, 1);
+  assert.equal(adb.calls.some((call) => call.args.includes("screencap")), false);
+  adb.handler = undefined;
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "type_text", text: "中文",
+  }), hasCode("STALE_OBSERVATION"));
+  assert.equal(adb.inputs.length, 1);
+  const recovered = await service.observe(selected.targetToken, undefined, false);
+  const result = await service.act(selected.targetToken, recovered.observation.observationId, {
+    kind: "type_text", text: "中文",
+  });
+  assert.equal(result.dispatchStatus, "dispatched");
+  assert.equal(adb.inputs.length, 2);
+});
+
 test("unsupported text and raw/invalid actions fail before device I/O", async (t) => {
   const { adb, service } = harness(t);
   const { selected, screen } = await ready(service);

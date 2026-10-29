@@ -148,17 +148,28 @@ test("helper failures expose only allowlisted phases and never turn a failed rea
     assert.doesNotMatch(error.message, /private-device-content/);
     return true;
   });
-  adb.handler = (call) => call.options.mutating && call.args[6] === "dev.mobileuse.text.TextMain"
-    ? Buffer.from("MOBILE_USE_TEXT_V1_ERROR_WRITE\n") : undefined;
-  await assert.rejects(android.typeText("中文", undefined, field, foreground), (error: unknown) => {
-    assert.ok(error instanceof MobileUseError);
-    assert.equal(error.code, "TEXT_INPUT_FAILED");
-    assert.equal(error.message, "The Unicode text helper failed during WRITE.");
-    assert.equal(error.actionMayHaveRun, true);
-    assert.equal(error.retryable, false);
-    return true;
-  });
-  assert.equal(adb.inputs.length, 1);
+  for (const [phase, uncertain] of [
+    ["REQUEST", false], ["CONNECT", false], ["CONFIGURE", false], ["ROOT", false],
+    ["WINDOW", false], ["HIERARCHY", false], ["TARGET", false],
+    ["WRITE", true], ["VERIFY", true], ["DISCONNECT", true], ["private-device-content", true],
+  ] as const) {
+    adb.handler = (call) => call.options.mutating && call.args[6] === "dev.mobileuse.text.TextMain"
+      ? Buffer.from(`MOBILE_USE_TEXT_V1_ERROR_${phase}\n`) : undefined;
+    const before: number = adb.inputs.length;
+    await assert.rejects(android.typeText("中文", undefined, field, foreground), (error: unknown) => {
+      assert.ok(error instanceof MobileUseError);
+      assert.equal(error.code, "TEXT_INPUT_FAILED");
+      assert.equal(error.message, phase === "private-device-content"
+        ? "Android did not confirm the requested text in the original focused field."
+        : `The Unicode text helper failed during ${phase}.`);
+      assert.equal(error.actionMayHaveRun, uncertain);
+      assert.equal(error.retryable, false);
+      assert.match(error.remediation, uncertain ? /Text may have changed/ : /No text was written/);
+      assert.doesNotMatch(JSON.stringify(error), /private-device-content/);
+      return true;
+    });
+    assert.equal(adb.inputs.length, before + 1);
+  }
 });
 
 test("modified helpers block input and rejected writes never fall back or replay", async () => {

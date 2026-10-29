@@ -359,6 +359,12 @@ matching the requested value is not proof of entered text. A rejected, filtered,
 interrupted, or unverifiable write is uncertain and must not be replayed
 automatically; inspect a fresh observation.
 
+On successful process completion, recognized helper errors in REQUEST, CONNECT,
+CONFIGURE, ROOT, WINDOW, HIERARCHY, or TARGET confirm a pre-write failure with
+`actionMayHaveRun: false`. WRITE, VERIFY, DISCONNECT, unknown responses, and
+unsuccessful process exits remain uncertain. A failed append attempt still
+consumes its observation; obtain a fresh observation rather than replaying it.
+
 Java stub tests and host fixtures are not real-device proof. The workspace-built
 helper passed an explicitly approved USB test in MIUI Notes on one Android 11
 Redmi, including exact fresh-observation readback and preservation of existing

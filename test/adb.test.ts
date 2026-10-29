@@ -198,6 +198,7 @@ test("app rejection diagnostics preserve operation-specific errors without leaki
 test("failed text-helper processes report only allowlisted diagnostics and never accept a success marker on nonzero exit", async () => {
   for (const [output, diagnostic, marker, exception] of [
     ["MOBILE_USE_TEXT_V1_OK\n", "java.lang.IllegalStateException: private UI content", "OK", "IllegalStateException"],
+    ["MOBILE_USE_TEXT_V1_ERROR_ROOT\n", "java.lang.IllegalStateException: private root details", "ERROR_ROOT", "IllegalStateException"],
     ["MOBILE_USE_TEXT_V1_ERROR_VERIFY\n", "java.lang.NoSuchMethodError: private method details", "ERROR_VERIFY", "NoSuchMethodError"],
     ["MOBILE_USE_TEXT_V1_private-output\n", "private UI content", "missing", "unavailable"],
   ]) {

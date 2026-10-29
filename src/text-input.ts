@@ -109,11 +109,14 @@ export async function appendUnicodeText(
     throw new MobileUseError("TEXT_INPUT_UNSUPPORTED", "The field does not support bounded text-setting, or its resulting text plus exposed label/hint exceeds 4096 UTF-16 code units.", "Use an editable native field that exposes ACTION_SET_TEXT. No clipboard or keyboard fallback was attempted.");
   }
   const phase = helperFailurePhase(response);
+  const actionMayHaveRun = !["REQUEST", "CONNECT", "CONFIGURE", "ROOT", "WINDOW", "HIERARCHY", "TARGET"].includes(phase ?? "");
   throw new MobileUseError(
     "TEXT_INPUT_FAILED", phase
       ? `The Unicode text helper failed during ${phase}.`
       : "Android did not confirm the requested text in the original focused field.",
-    "Observe the field before continuing. Text may have changed; never automatically retry or fall back to another input method.",
-    false, true,
+    actionMayHaveRun
+      ? "Observe the field before continuing. Text may have changed; never automatically retry or fall back to another input method."
+      : "Observe the approved field again. No text was written; never automatically retry or fall back to another input method.",
+    false, actionMayHaveRun,
   );
 }
