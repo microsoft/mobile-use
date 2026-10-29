@@ -32,6 +32,8 @@ The Windows CI workflow runs the same command on Node 22 and 24.
 | `npm run check` | Run all of the above in order. |
 | `npm run test:gestures` | Test the Java helper's injection and timing logic with Android stubs; requires a JDK. |
 | `npm run build:gestures` | Rebuild the embedded gesture DEX; requires JDK 21, Android SDK platform 35, and build-tools 35.0.0. |
+| `npm run test:text` | Test the Java Unicode helper, field guards, append/readback and cleanup using Android stubs; requires a JDK. |
+| `npm run build:text` | Rebuild the embedded text DEX, including nested classes; uses the same SDK/JDK prerequisites as the gesture helper. |
 
 The artifact includes `plugin.json`, `mcp.json`, `skills\mobile-use\SKILL.md`,
 `server\index.mjs`, and license notices. Runtime dependencies are bundled; its
@@ -45,10 +47,14 @@ build-tools 35.0.0, then run `npm run test:gestures` and
 non-default SDK. CI tests the Java logic and checks the rebuilt DEX against
 the embedded artifact.
 
+`src\text-helper-data.ts` similarly embeds `android\TextMain.java`.
+After changing that helper, run `npm run test:text` and `npm run build:text`.
+The helper CI job checks both Java helpers and their rebuilt embedded artifacts.
+
 After reviewing and explicitly approving installation, follow the
 [local installation instructions](README.md#install-the-plugin). Use an
 absolute artifact path, not the source repository root. Confirm the plugin,
-skill, and fourteen tools appear in the actual Copilot App before hardware
+skill, and fifteen tools appear in the actual Copilot App before hardware
 testing. If the App cannot load this format, record that incompatibility
 rather than substituting manual MCP registration.
 
@@ -127,6 +133,7 @@ Do not bypass local policy or change firewall settings to recover.
 | `mobile_select_device` | Bind exactly the endpoint the user chose; qualify Android/physical-device and wireless evidence; return a session target token. |
 | `mobile_wake` | With explicit permission and a target token, wake the display and dismiss only an unsecured lock screen. No observation or screen capture; secure/unknown lock states require manual unlocking. |
 | `mobile_prepare_gestures` | After explicit approval to upload and run the bundled gesture helper on the selected device, deploy and hash-check its DEX and check API compatibility without touch input. Invalidates old observations; required only for double-tap. |
+| `mobile_prepare_text_input` | After explicit approval, upload and run the pinned text DEX, verify its hash and UiAutomation compatibility without reading screen content or entering text. Invalidates observations; required for Unicode and text outside the original ASCII subset. |
 | `mobile_observe` | Require that token; return a fresh observation ID, display geometry, hierarchy/status/warnings, and a separate PNG image block when usable. Set `includeScreenshot: false` to read only hierarchy/display state without capturing an image. |
 | `mobile_act` | Require target and latest observation IDs; dispatch one bounded action and return the next observation or an explicit unknown/unverified outcome. |
 | `mobile_list_apps` | With a target token, list all installed package names, including system packages, for the current Android user. No screen capture. |
@@ -220,7 +227,7 @@ Supported `mobile_act` action objects:
 | `tap` | `target: { elementRef }` from the observation, or `target: { x, y }` from its screenshot. |
 | `double_tap` | Same `target` as `tap`; optional integer `delayMs` (0-250, default 50) requests the first-UP to second-DOWN event-time interval. Requires approved `mobile_prepare_gestures`. |
 | `swipe` | `from: { x, y }`, `to: { x, y }`, optional `durationMs` (100-2000, default 400). |
-| `type_text` | `text`: 1-256 ASCII letters, digits, spaces, periods, commas, underscores, or hyphens. |
+| `type_text` | `text`: 1-256 UTF-16 code units of well-formed Unicode text. The original ASCII subset uses ADB; all other supported text requires approved `mobile_prepare_text_input`. |
 | `key` | `key`: `BACK`, `HOME`, or `ENTER`. |
 | `launch_app` | `packageName` of a specifically requested, already-installed app with one resolved launcher. |
 
@@ -264,11 +271,130 @@ authorize the pair only when that is safe. Hierarchy-only mode supports
 For example, `{ "kind": "double_tap", "target": { "x": 360, "y": 800 }, "delayMs": 50 }`
 requests a 50 ms event-time gap at a point from a fresh screenshot.
 
+#### Unicode text helper and preparation
+
+The text helper adopts the text-setting approach illustrated in
+[this AndroidViewClient example](https://stackoverflow.com/a/71367206), without
+adding its Python/server stack or extending Android's character-to-key-event map.
+It invokes `AccessibilityNodeInfo.ACTION_SET_TEXT` through a short-lived
+`UiAutomation` connection under the approved ADB shell identity. The connection
+uses `FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`; it disconnects and stops its
+handler thread even on failure. Reflection is needed for shell-only connection
+APIs, so availability still depends on the Android/OEM build.
+
+Before using text outside ASCII letters/digits/space/period/comma/underscore/
+hyphen, obtain explicit approval to upload and run the bundled text helper on
+the selected device, call `mobile_prepare_text_input`, and observe again.
+Preparation uses the same private mode-700, read-only, SHA-256-checked DEX
+deployment as the gesture helper, under `/data/local/tmp/mobile-use-text-*`.
+It checks compatibility without reading UI or entering text. Files remain on
+the device; reselection/server restart requires fresh approval and preparation.
+There is no APK installation, IME replacement, clipboard, network service,
+automatic helper deployment, or fallback input attempt.
+
+After preparation, hierarchy observations also use the pinned helper's
+Unicode-safe XML serializer rather than the stock `uiautomator dump`.
+It preserves supplementary characters and leading/trailing whitespace,
+redacts password values before returning data, and retains the hierarchy
+size/depth/node limits. Primary-display geometry is checked before and after
+the helper read. There is no fallback to a potentially lossy stock dump if the
+prepared helper becomes unavailable. Screenshot settings remain unchanged.
+
+New `UiAutomation` connections can initially expose no active root, including
+during pre-action revalidation. Both hierarchy reads and pre-write text checks poll
+only that read for up to 2 seconds (100 ms intervals, at most 21 attempts);
+the outer ADB deadline still bounds a blocked Android call. No write is retried.
+Missing roots fail closed with the fixed `ROOT` diagnostic stage. Helper errors
+return only allowlisted phase names, never exception messages, field values,
+or device logs. Preflight failures preserve their no-input status and consume
+the observation; recovery requires a fresh observation.
+If the text-helper process exits unsuccessfully before its result can be
+interpreted, `ADB_FAILED` includes only the numeric exit code, an allowlisted
+result marker, and an allowlisted Java exception class (or unavailable/missing).
+Raw stdout/stderr, exception messages, and UI content are never returned.
+A nonzero exit remains uncertain even if stdout contains an `OK` marker.
+
+Focused editable nodes are refreshed before serialization. Each non-password
+editable node also exposes a validated SHA-256 `textHash` over its exact UTF-16
+text and hint-state bit. Text actions compare this fingerprint after refreshing
+the field, instead of comparing XML-normalized display text with raw Android
+text. This preserves stale-text protection when XML escaping, invalid-XML
+replacement, whitespace, or cached node data differ between a read and refresh.
+Password fields never expose a text fingerprint.
+
+Accessibility window IDs identify registrations, not durable windows. Android
+can unregister and re-register the same window as short-lived UiAutomation
+connections disconnect and reconnect, so those IDs must not be compared across
+connections.
+
+Prepared hierarchy elements instead carry a validated `windowIdentity`,
+`<hex-instance-id>:u<Android-user>`, from the primary display's focused
+WindowManager `WindowState` instance. This is a diagnostic instance identity,
+not a Binder token. A fixed read-only `dumpsys -t 2 window displays` subprocess
+has a two-second diagnostic timeout and a 1 MiB output limit. The parser accepts
+numeric OEM metadata before the user marker, ignores opaque window titles, and
+rejects missing, malformed, ambiguous, or wrong-user records. Raw diagnostics
+and titles are not returned.
+
+The root must be a focused, active, primary-display application window. Stable
+identity is checked before and after hierarchy serialization, on append entry,
+before the final pre-write field refresh, and during readback. Host revalidation
+still rejects an identical editor in a replacement window. Request protocol 4
+carries the original stable identity; numeric accessibility IDs remain checked
+against the root within each connection, including after refresh and writing.
+
+Hierarchy parsing must decode XML numeric character references as well as named
+escapes, without trimming or double-decoding their values. The serializer uses
+numeric references for tabs and line breaks; leaving `&#10;` as literal text
+breaks exact observation/readback even when Android accepted the requested text.
+Fixtures encode these whitespace characters just like the device helper.
+
+Each Unicode action transmits length-prefixed UTF-8 data encoded as Base64, never
+shell syntax. The helper rechecks the Android user, primary-display active app
+window, unique focused editable non-password field, class/resource ID, bounds,
+and existing text. It appends to the **end** of the actual value, irrespective
+of selection/caret position, excluding a reported placeholder hint. ASCII
+input retains its existing key-event/caret behavior. Tabs and line breaks are
+text, not key events; the helper does not clear or submit the field.
+Blocking window diagnostics run before the final field refresh on both the
+write and readback paths. After that read, the helper revalidates user, field
+state/identity, strict pre-write bounds, and the raw text/hint fingerprint before
+constructing the appended value. An edit during diagnostics must be preserved
+and rejected before writing, not overwritten with cached text. A post-write
+diagnostic-time edit must fail fresh readback, not pass using a cached value.
+These checks do not make Android's separate read/write operations an atomic
+compare-and-set; do not edit the field concurrently with automation.
+Pre-write bounds must match exactly. Post-write verification refreshes the
+same native node and requires the same connection-local window ID, active
+primary app window, original stable window identity, user, field identity/state,
+and exact desired text. It permits that node's bounds to change: multiline text
+can legitimately resize or scroll its editor.
+Checking its old bounds after writing would falsely report an uncertain result.
+
+Combining marks, supplementary-plane characters, emoji and ZWJ sequences are
+preserved without normalization. Limits are 256 UTF-16 code units per action
+and 4096 for the resulting value plus its exposed label/hint. Unpaired surrogates, C0 controls other than
+tab/LF/CR, C1/DEL controls, and U+FFFE/U+FFFF are rejected before device I/O.
+Native fields must expose `ACTION_SET_TEXT`; custom editors, app input filters,
+and OEM restrictions may prevent input. Successful acknowledgement is followed
+by exact text readback with `isShowingHintText()` false. A visible placeholder
+matching the requested value is not proof of entered text. A rejected, filtered,
+interrupted, or unverifiable write is uncertain and must not be replayed
+automatically; inspect a fresh observation.
+
+On successful process completion, recognized helper errors in REQUEST, CONNECT,
+CONFIGURE, ROOT, WINDOW, HIERARCHY, or TARGET confirm a pre-write failure with
+`actionMayHaveRun: false`, including allowlisted window-check subcodes. WRITE,
+VERIFY, DISCONNECT, unknown responses, and
+unsuccessful process exits remain uncertain. A failed append attempt still
+consumes its observation; obtain a fresh observation rather than replaying it.
+
 #### Shared observation guards
 
 Text appends to one unchanged, focused, enabled, non-password native EditText;
-it does not clear or submit the field. Unicode/control characters, other
-punctuation, clipboard/helper fallback, and arbitrary shell are rejected.
+it does not clear or submit the field. Extended text requires the explicitly
+prepared Unicode helper described above. Clipboard fallback and arbitrary
+shell are rejected.
 
 Observations expire after 30 seconds and are consumed on an action attempt.
 Elements are revalidated before dispatch; coordinate gestures additionally
@@ -381,12 +507,10 @@ the phone's debugging trust.
 
 ## Real-hardware acceptance runbook
 
-These are pending manual checks, not results of the automated suite. The
-complete runbook remains pending even where individual USB operations have
-been verified. Before control, record the actual phone/model/build,
-host/App/Node/ADB/plugin versions, network, and an agreed non-sensitive offline
-app/package. Agree exact screen-state assertions for this device; do not
-invent an OEM UI path.
+Automated tests do not replace real-hardware validation. Before control, record
+the actual phone/model/build, host/App/Node/ADB/plugin versions, network, and an
+agreed non-sensitive offline app/package. Agree exact screen-state assertions
+for this device; do not invent an OEM UI path.
 
 1. Approve a reversible, non-submitting journey: launch the agreed app, inspect
    and tap a visible control, scroll, focus a native non-password search field,
@@ -421,58 +545,6 @@ Full POC acceptance requires App loading and the physical runs/no-fallback
 check. Fixture success is not a substitute. See [Support](SUPPORT.md) for safe
 issue reports and [Security](SECURITY.md) for security reporting.
 
-### Current validation evidence
-
-| Acceptance layer | Current evidence |
-| --- | --- |
-| Fixture/subprocess/MCP/package behavior | Local automated checks; no real ADB/device access. |
-| Plugin recognition | Read-only Copilot CLI 1.0.99-2 mount on Node 22.15.1. |
-| Actual Copilot App tool loading | Verified with fourteen registered tools, including gesture preparation and double-tap dispatch, on one Android 11 phone. |
-| USB app-management lifecycle | All six operations passed through the reinstalled plugin on one Android 11 phone, including the package-state parser fix. |
-| USB double-tap recognition | Diagnostic app recognized 50 ms and 125 ms gaps; Gallery zoomed in and back out with 50 ms requested and 51 ms reported on one Android 11 Redmi. |
-| Complete physical USB and unplugged paired Wi-Fi acceptance journeys | Unverified; hardware and control consent required. |
-
-Hierarchy-only observation and element-reference tab navigation passed through
-the reinstalled Copilot App plugin over USB on that phone. Screenshot-coordinate
-navigation through menu, product, checkout, and coupon screens also passed in
-one non-submitting journey. A changed interaction region correctly rejected
-input, and a fresh observation allowed navigation to continue without manual
-taps. Paired-wireless acceptance remains unverified.
-
-Wake and unsecured-keyguard dismissal passed on the USB-connected Android 11
-phone without changing its security settings or capturing its lock screen.
-Secure-lock and unknown-OEM hardware cases remain pending. On an existing
-secure lock, verify only waking occurs and manual authentication is required,
-without capturing the lock screen. Unknown OEM diagnostics must stop dismissal;
-do not remove or change a real device's security settings for testing.
-
-All six app-management operations passed on one USB-connected Android 11 phone
-using the explicitly approved Field Notes Demo APK (`dev.mobileuse.demo`):
-inventory, installation, launch, foreground lookup, force-stop, and
-uninstallation with current-user data deletion. The demo was absent before
-installation and verified absent after removal. Termination passed through the
-rebuilt MCP server after fixing unrelated user headings in package diagnostics.
-The complete lifecycle then passed again through the reinstalled plugin,
-including termination verification.
-
-MIUI first-run permissions and an installation prompt required user handling.
-An initially rejected installation was retried only after the user explicitly
-requested another attempt. Missing-package launch/terminate/uninstall and
-missing-file install guards also passed without app mutations. Paired-wireless
-app management remains unverified: repeat the approved lifecycle on the
-explicitly selected paired-wireless endpoint without USB, and never retry an
-uncertain mutation automatically.
-
-On one Redmi running Android 11 over USB, the former two-`input` implementation
-produced a measured UP-to-DOWN gap of 993 ms at zero added delay and 1,080 ms at
-50 ms, exceeding the phone's 300 ms framework timeout. A manual double-tap
-measured 108 ms and was recognized. After approved preparation, the single-process
-helper produced recognized double-taps in the diagnostic app at requested and
-measured gaps of 50 ms and 125 ms. Gallery visibly zoomed in and back out with
-50 ms requested and 51 ms reported for each pair. These results cover this
-Android 11 Redmi over USB only; other devices, Android versions, and paired
-wireless double-taps remain unverified on hardware.
-
 ## Licensing and provenance
 
 Project-authored code is [MIT-licensed](LICENSE). Third-party dependencies keep
@@ -486,8 +558,9 @@ declarations have been replaced. The current adapter uses Android's
 [ADB interface](https://developer.android.com/tools/adb) and
 [documented command contracts](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/docs/user/adb.1.md);
 Android/AOSP implementation source is not copied or redistributed.
-The text path validates a small alphabet instead of using a generic shell
-escaper; hierarchy processing uses an ordered XML tree and a bounded iterative
+The helper-free text path validates a small alphabet instead of using a generic
+shell escaper; extended text uses a framed Base64 payload. Hierarchy processing
+uses an ordered XML tree and a bounded iterative
 walk. This replacement is not a legal clean-room certification: the prior
 implementation and upstream source were previously examined.
 

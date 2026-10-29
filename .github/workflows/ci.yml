@@ -31,7 +31,7 @@ jobs:
       - name: Typecheck, fixtures, bundle, and copied-artifact protocol checks
         run: npm run check
   gesture-helper:
-    name: Gesture helper source and embedded DEX
+    name: Android helper sources and embedded DEX
     runs-on: windows-latest
     timeout-minutes: 10
     steps:
@@ -50,8 +50,12 @@ jobs:
           packages: "platforms;android-35 build-tools;35.0.0"
       - name: Test Java injection and timing logic
         run: npm run test:gestures
+      - name: Test Java Unicode text-setting and field guards
+        run: npm run test:text
       - name: Check embedded DEX matches the source
         run: |
           npm run build:gestures
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git diff --exit-code -- src/gesture-helper-data.ts
+          npm run build:text
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code -- src\gesture-helper-data.ts src\text-helper-data.ts

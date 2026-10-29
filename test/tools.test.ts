@@ -265,13 +265,45 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.ok(isRecord(error) && error.code === "INVALID_APP_FILE" && error.actionMayHaveRun === false);
   });
 
-  test(`fourteen MCP operations expose typed setup, wake, and observe-act results over ${mode}`, async (t) => {
+  test(`approved Unicode text preparation and entry work over ${mode} without screenshots`, async (t) => {
+    const { client } = await fixture(t, mode, "unicode-text");
+    const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+    const targetToken = selected.targetToken;
+    const prepared = await client.callTool({ name: "mobile_prepare_text_input", arguments: { targetToken } });
+    assert.equal(prepared.isError, undefined);
+    assert.equal(payload(prepared).status, "prepared");
+    assert.equal(prepared.content.length, 1);
+    const observed = payload(await client.callTool({
+      name: "mobile_observe", arguments: { targetToken, includeScreenshot: false },
+    })).observation;
+    assert.ok(isRecord(observed));
+    const entered = await client.callTool({
+      name: "mobile_act", arguments: {
+        targetToken, observationId: observed.observationId,
+        action: { kind: "type_text", text: "你好世界 😄 e\u0301 한국어 العربية" },
+      },
+    });
+    assert.equal(entered.isError, undefined);
+    const result = payload(entered);
+    assert.equal(result.dispatchStatus, "dispatched");
+    assert.ok(isRecord(result.after));
+    assert.deepEqual(result.after.screenshot, { status: "skipped", error: null });
+    assert.equal(entered.content.length, 1);
+  });
+
+  test(`fifteen MCP operations expose typed setup, wake, and observe-act results over ${mode}`, async (t) => {
     const { client } = await fixture(t, mode);
     assert.match(client.getInstructions() ?? "", /On first use in each session, call mobile_doctor/);
     assert.match(client.getInstructions() ?? "", /call mobile_list_devices before offering phone setup/);
     assert.match(client.getInstructions() ?? "", /Never install software, enable debugging, pair devices, or accept trust automatically/);
     const tools = await client.listTools();
-    assert.equal(tools.tools.length, 14);
+    assert.equal(tools.tools.length, 15);
+    const textPrepare = tools.tools.find((tool) => tool.name === "mobile_prepare_text_input");
+    assert.deepEqual(textPrepare?.inputSchema.required, ["targetToken"]);
+    assert.equal(textPrepare?.annotations?.readOnlyHint, false);
+    assert.equal(textPrepare?.annotations?.idempotentHint, false);
+    assert.match(textPrepare?.description ?? "", /explicit approval/);
+    assert.match(client.getInstructions() ?? "", /mobile_prepare_text_input/);
     const prepare = tools.tools.find((tool) => tool.name === "mobile_prepare_gestures");
     assert.deepEqual(prepare?.inputSchema.required, ["targetToken"]);
     assert.equal(prepare?.annotations?.readOnlyHint, false);

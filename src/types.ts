@@ -9,6 +9,8 @@ export type ScreenElement = {
   className: string;
   label: string;
   text: string;
+  textHash?: string;
+  windowIdentity?: string;
   resourceId: string | null;
   editable: boolean;
 } & Record<"enabled" | "clickable" | "focused" | "password", boolean | null>;
@@ -51,6 +53,12 @@ export interface WakeResult {
 }
 
 export interface PreparedGestures {
+  status: "prepared";
+  sha256: string;
+  remotePath: string;
+}
+
+export interface PreparedTextInput {
   status: "prepared";
   sha256: string;
   remotePath: string;

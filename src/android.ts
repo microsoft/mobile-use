@@ -5,7 +5,9 @@ import type { AdbConnection, RunOptions } from "./adb.js";
 import { localApkFile, parseAndroidUser, parseForegroundApp, parseInstalledApps, parsePackageStopped, validatePackageName } from "./apps.js";
 import { checkCancelled, isRecord, MobileUseError, publicError } from "./errors.js";
 import { doubleTap, prepareGestures } from "./gestures.js";
-import type { AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, PreparedGestures, Rect, ScreenElement, WakeResult } from "./types.js";
+import { appendUnicodeText, isAdbText, prepareTextInput, unicodeHierarchy, validateText } from "./text-input.js";
+export { validateText } from "./text-input.js";
+import type { AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, PreparedGestures, PreparedTextInput, Rect, ScreenElement, WakeResult } from "./types.js";
 
 export interface Hierarchy {
   rotation: number;
@@ -130,21 +132,6 @@ export function parseKeyguardState(output: string): KeyguardState {
   const screen = delegate.get("screenState");
   if (!["SCREEN_STATE_OFF", "SCREEN_STATE_TURNING_ON", "SCREEN_STATE_ON", "SCREEN_STATE_TURNING_OFF"].includes(screen ?? "")) unavailable();
   return { showing, secure: secure || simSecure, inputRestricted, screenOn: screen === "SCREEN_STATE_ON", userId: Number(user) };
-}
-
-export function validateText(text: string): void {
-  const supported = text.length >= 1 && text.length <= 256 && [...text].every((character) => {
-    const code = character.charCodeAt(0);
-    return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) ||
-      (code >= 97 && code <= 122) || " .,_-".includes(character);
-  });
-  if (!supported) {
-    throw new MobileUseError(
-      "UNSUPPORTED_TEXT",
-      "Text must contain 1-256 supported ASCII characters: letters, digits, spaces, periods, commas, underscores, or hyphens.",
-      "Use a disposable non-sensitive value in that subset. Unicode, control characters, and helper/clipboard fallback are unsupported.",
-    );
-  }
 }
 
 function invalidImage(): never {
@@ -304,8 +291,15 @@ function screenNode(attributes: Record<string, string>): Omit<ScreenElement, "re
   const text = password === true ? "[redacted]" : attributes.text ?? "";
   const label = attributes["content-desc"] || attributes.hint || "";
   if (text.length + label.length > 4096) hierarchyError();
+  const textHash = attributes["text-sha256"];
+  if (textHash !== undefined && !/^[0-9a-f]{64}$/.test(textHash)) hierarchyError();
+  const windowIdentity = attributes["window-identity"];
+  if (windowIdentity !== undefined && (!/^[0-9a-f]{1,8}:u(0|[1-9]\d*)$/.test(windowIdentity) ||
+      Number(windowIdentity.split(":u")[1]) > 0x7fffffff)) hierarchyError();
   const node = {
     bounds, className, text, label, password,
+    ...(textHash !== undefined && password === false ? { textHash } : {}),
+    ...(windowIdentity !== undefined ? { windowIdentity } : {}),
     resourceId: attributes["resource-id"] || null,
     editable: className.endsWith("EditText"),
     enabled: readFlag(attributes, "enabled"),
@@ -331,7 +325,9 @@ export function parseHierarchy(output: string): Hierarchy {
     attributeNamePrefix: "",
     parseAttributeValue: false,
     parseTagValue: false,
-    htmlEntities: false,
+    trimValues: false,
+    // fast-xml-parser also gates XML numeric character references behind this option.
+    htmlEntities: true,
   }).parse(document);
   if (!Array.isArray(tree) || tree.length !== 1) hierarchyError();
   const root: unknown = tree[0];
@@ -366,6 +362,7 @@ export function parseHierarchy(output: string): Hierarchy {
 
 export class AndroidBackend {
   private gestureHelperPath: string | undefined;
+  private textHelperPath: string | undefined;
 
   constructor(
     private readonly adb: AdbConnection,
@@ -439,6 +436,15 @@ export class AndroidBackend {
   }
 
   async hierarchy(signal?: AbortSignal): Promise<Hierarchy> {
+    if (this.textHelperPath) {
+      const before = await this.displayState(signal);
+      const output = await unicodeHierarchy((args, options) => this.command(args, options), this.textHelperPath, before.rotation, signal);
+      const after = await this.displayState(signal);
+      if (before.rotation !== after.rotation || before.width !== after.width || before.height !== after.height) {
+        throw new MobileUseError("STALE_OBSERVATION", "Display state changed during Unicode hierarchy capture.", "Observe again on the primary display.");
+      }
+      return parseHierarchy(output.toString("utf8"));
+    }
     // UI Automator opens /dev/tty as a file; raw exec-out has no controlling terminal.
     const output = await this.command(["shell", "-tt", "uiautomator", "dump", "/dev/tty"], signal ? { signal } : {});
     return parseHierarchy(output.toString("utf8"));
@@ -487,8 +493,22 @@ export class AndroidBackend {
     await this.input("swipe", [from.x, from.y, to.x, to.y, durationMs], signal);
   }
 
-  async typeText(text: string, signal?: AbortSignal): Promise<void> {
+  async prepareTextInput(signal?: AbortSignal): Promise<PreparedTextInput> {
+    this.textHelperPath = undefined;
+    const prepared = await prepareTextInput((args, options) => this.command(args, options), signal);
+    this.textHelperPath = prepared.remotePath;
+    return prepared;
+  }
+
+  async typeText(text: string, signal?: AbortSignal, field?: ScreenElement, foreground?: ForegroundApp): Promise<void> {
     validateText(text);
+    if (!isAdbText(text)) {
+      if (!field || !foreground) {
+        throw new MobileUseError("ELEMENT_CHANGED", "Unicode input requires a verified native field and foreground app.", "Observe and focus an approved non-password EditText again.");
+      }
+      await appendUnicodeText((args, options) => this.command(args, options), this.textHelperPath, text, field, foreground, signal);
+      return;
+    }
     // The allowlist excludes shell syntax and literal %, so only Android's space encoding is needed.
     await this.input("text", [text.split(" ").join("%s")], signal);
   }

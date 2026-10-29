@@ -88,6 +88,7 @@ function run(classes, args, properties = []) {
   return result;
 }
 
+const variants = [];
 for (const modern of [false, true]) {
   const classes = path.join(directory, modern ? "modern" : "legacy");
   await mkdir(classes);
@@ -103,7 +104,10 @@ for (const modern of [false, true]) {
   }
   compile(classes, sources);
   const label = modern ? "InputManagerGlobal" : "Android 11 InputManager";
+  variants.push({ classes, label });
+}
 
+for (const { classes, label } of variants) {
   test(`helper compatibility check injects no input (${label})`, () => {
     const result = run(classes, ["--check"]);
     assert.equal(result.status, 0, result.stderr);

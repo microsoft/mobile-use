@@ -64,7 +64,8 @@ export function pixelPng(
 }
 
 function xmlAttribute(value: string): string {
-  return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;");
+  return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;")
+    .replaceAll("\t", "&#9;").replaceAll("\n", "&#10;").replaceAll("\r", "&#13;");
 }
 
 export function node(overrides: Record<string, string> = {}, children = ""): string {
@@ -96,6 +97,11 @@ export function editField(overrides: Record<string, string> = {}): string {
     class: "android.widget.EditText", text: "", "resource-id": "example.poc:id/text",
     bounds: "[4,32][76,56]", focused: "true", clickable: "true", ...overrides,
   });
+}
+
+export function textHash(text: string, showingHint = false): string {
+  return createHash("sha256").update(Buffer.from([showingHint ? 1 : 0]))
+    .update(Buffer.from(text, "utf16le").swap16()).digest("hex");
 }
 
 export function hasCode(code: ErrorCode): (error: unknown) => boolean {
@@ -182,14 +188,29 @@ export class FakeAdb implements AdbConnection {
       return Buffer.from("1 file pushed\n");
     }
     if (command.startsWith("shell mkdir -m 700 /data/local/tmp/mobile-use-gestures-") ||
-      command.startsWith("shell chmod 400 /data/local/tmp/mobile-use-gestures-")) return Buffer.alloc(0);
-    if (command.startsWith("shell sha256sum /data/local/tmp/mobile-use-gestures-")) {
+      command.startsWith("shell chmod 400 /data/local/tmp/mobile-use-gestures-") ||
+      command.startsWith("shell mkdir -m 700 /data/local/tmp/mobile-use-text-") ||
+      command.startsWith("shell chmod 400 /data/local/tmp/mobile-use-text-")) return Buffer.alloc(0);
+    if (command.startsWith("shell sha256sum /data/local/tmp/mobile-use-gestures-") ||
+      command.startsWith("shell sha256sum /data/local/tmp/mobile-use-text-")) {
       const file = args[4] ?? "";
       const bytes = this.gestureFiles.get(file);
       if (!bytes) throw new MobileUseError("ADB_FAILED", "Fixture helper missing.", "Prepare again.");
       return Buffer.from(`${createHash("sha256").update(bytes).digest("hex")}  ${file}\n`);
     }
     if (args[3]?.startsWith("CLASSPATH=") && args[4] === "app_process") {
+      if (args[6] === "dev.mobileuse.text.TextMain") {
+        if (args[7] === "--dump") return Buffer.from(this.xml.replace(/<node ([^>]+)>/g, (node: string, attributes: string) => {
+          if (!attributes.includes('class="android.widget.EditText"')) return node;
+          if (!attributes.includes('window-identity="')) node = node.replace(">", ` window-identity="abc:u${this.userId}">`);
+          if (attributes.includes('password="true"') || attributes.includes('text-sha256="')) return node;
+          const value = /text="([^"]*)"/.exec(attributes)?.[1] ?? "";
+          const decoded = value.replaceAll("&#9;", "\t").replaceAll("&#10;", "\n").replaceAll("&#13;", "\r")
+            .replaceAll("&quot;", '"').replaceAll("&lt;", "<").replaceAll("&amp;", "&");
+          return node.replace(">", ` text-sha256="${textHash(decoded)}">`);
+        }));
+        return Buffer.from(args.at(-1) === "--check" ? "MOBILE_USE_TEXT_V1_READY\n" : "MOBILE_USE_TEXT_V1_OK\n");
+      }
       if (args.at(-1) === "--check") return Buffer.from("MOBILE_USE_GESTURES_V1_READY\n");
       return Buffer.from(`MOBILE_USE_DOUBLE_TAP_V1 ${args.at(-1)}\n`);
     }
