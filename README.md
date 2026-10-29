@@ -151,9 +151,10 @@ Each action accepts up to 256 UTF-16 code units; the helper's resulting value
 plus its exposed label/hint is limited to 4096. Prepared-helper observations
 also preserve exact Unicode and whitespace for subsequent guarded appends.
 
-**Unicode hardware status:** earlier helper revisions were exercised on one
-Android 11 phone over USB. The currently packaged DEX includes later guard
-changes and has **not** been phone-tested. See the
+**Unicode hardware status:** earlier helper revisions passed on one Android 11
+phone over USB. The currently packaged DEX prepared and read the hierarchy, but
+its input check **failed before writing** as observed window IDs changed for an
+otherwise unchanged editor. Successful input remains unverified. See the
 [versioned evidence](CONTRIBUTING.md#unicode-artifact-evidence).
 
 Well-formed Unicode, combining marks, tabs and line breaks

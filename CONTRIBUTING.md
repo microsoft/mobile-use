@@ -366,10 +366,12 @@ unsuccessful process exits remain uncertain. A failed append attempt still
 consumes its observation; obtain a fresh observation rather than replaying it.
 
 Java stub tests and host fixtures are not real-device proof. The currently
-packaged Unicode DEX has automated coverage only and has not been phone-tested.
-Earlier helper revisions passed approved USB tests in MIUI Notes on one Android
-11 Redmi; that evidence does not establish hardware validation of the current
-DEX. See the [versioned Unicode artifact evidence](#unicode-artifact-evidence).
+packaged Unicode DEX passed preparation and hierarchy reads on the phone, but
+its approved append attempt failed host revalidation before writing. Successive
+reads reported different window IDs for an otherwise unchanged editor. Earlier
+helper revisions passed approved USB input tests; that evidence does not
+establish successful input with the current DEX. See the
+[versioned Unicode artifact evidence](#unicode-artifact-evidence).
 
 #### Shared observation guards
 
@@ -535,8 +537,8 @@ issue reports and [Security](SECURITY.md) for security reporting.
 | --- | --- |
 | Fixture/subprocess/MCP/package behavior | Local automated checks; no real ADB/device access. |
 | Plugin recognition | Read-only Copilot CLI 1.0.99-2 mount on Node 22.15.1. |
-| Actual Copilot App tool loading | Fifteen tools loaded in an earlier reinstalled build. This does not establish hardware validation of the currently packaged Unicode DEX. |
-| Unicode text helper / fifteenth tool | Current DEX `a848d0b...`: automated-only, not phone-tested. Historical DEX `fec6781...`: approved workspace-MCP and reinstalled-plugin USB tests passed in MIUI Notes on one Android 11 Redmi. See the [versioned artifact evidence](#unicode-artifact-evidence). |
+| Actual Copilot App tool loading | Reinstalled plugin's doctor, startup, selection, foreground lookup, text preparation, hierarchy reads, and action rejection exercised through the App. Loading does not establish successful text input. |
+| Unicode text helper / fifteenth tool | Current DEX `a848d0b...`: preparation/read passed; append rejected before writing with `ELEMENT_CHANGED`. Historical DEX `fec6781...`: approved workspace-MCP and reinstalled-plugin USB input tests passed in MIUI Notes on one Android 11 Redmi. See the [versioned artifact evidence](#unicode-artifact-evidence). |
 | USB app-management lifecycle | All six operations passed through the reinstalled plugin on one Android 11 phone, including the package-state parser fix. |
 | USB double-tap recognition | Diagnostic app recognized 50 ms and 125 ms gaps; Gallery zoomed in and back out with 50 ms requested and 51 ms reported on one Android 11 Redmi. |
 | Complete physical USB and unplugged paired Wi-Fi acceptance journeys | Unverified; hardware and control consent required. |
@@ -587,13 +589,25 @@ wireless double-taps remain unverified on hardware.
 | Artifact | DEX SHA-256 | Evidence and scope |
 | --- | --- | --- |
 | Phone-tested baseline, commit `212a88c`, request protocol 2 | `fec6781aa14300488c70bc5d6b783c62417838d349f3493af9a2eccb8e08a9ef` | Approved workspace-MCP and reinstalled Copilot App plugin runs on one USB-connected Android 11 Redmi in MIUI Notes. Exact multilingual append/readback, including editor resizing/scrolling, returned `dispatched` with no error. |
-| Currently packaged helper, introduced in `80367c6`, request protocol 3 | `a848d0b20256dd15c8fbe1ab8efe11412e009bf73507c7b5d7c326bc36f334eb` | Automated Java/host/MCP/package and CI source-to-DEX checks only. **Not phone-tested.** Adds original-observation window binding and non-hint readback checks. |
+| Currently packaged helper, introduced in `80367c6`, request protocol 3 | `a848d0b20256dd15c8fbe1ab8efe11412e009bf73507c7b5d7c326bc36f334eb` | Automated checks passed. Reinstalled-plugin USB attempt on 2026-10-29: exact digest confirmed; preparation and hierarchy reads passed, but host field revalidation rejected the append before writing. **Successful input not validated.** |
 
 Commit `82fbc9a` changes host-side pre-write failure classification, not the DEX.
 Digest and packaging checks prove artifact identity, not hardware compatibility.
-A new approved run of the currently packaged DEX is required before calling that
-revision phone-tested. Other devices, editors, and paired-wireless Unicode input
-remain unverified.
+The installed protocol-3 helper was explicitly approved and prepared on the same
+USB-connected Android 11 Redmi in MIUI Notes. Its returned SHA-256 matched the
+current packaged digest. Hierarchy-only observations exposed the expected
+focused, enabled, non-password editor and raw-text fingerprint. The approved
+one-line append returned `ELEMENT_CHANGED` with `actionMayHaveRun: false` during
+host revalidation, before the helper's write path. Subsequent read-only
+observations retained the exact pre-action text/fingerprint, app, field bounds,
+and state, but reported changing window IDs. No test text was added, no
+screenshots were captured, and the input was not replayed.
+
+The cause of the window-ID changes across short-lived helper connections is
+not yet established. The guard was not bypassed. Successful current-revision
+input, including its non-hint readback check, remains unverified; this failed
+hardware check is a compatibility blocker, not a validation pass. Other devices,
+editors, and paired-wireless Unicode input remain unverified.
 
 The following phone results are historical and predate the current DEX.
 Earlier Unicode phone tests exposed initially unavailable accessibility roots and
