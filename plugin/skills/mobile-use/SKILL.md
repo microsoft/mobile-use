@@ -219,9 +219,13 @@ replace, or retry an uncertain helper. Preparation invalidates observations.
 Observe again, then use `type_text` as usual. The helper rechecks the current
 Android user, active primary-display app window and unique focused enabled
 non-password native EditText, its class/resource ID, bounds and existing text.
+The window ID must match the original authorized observation, even if a
+replacement window in the same activity exposes an otherwise identical editor.
 It appends at the **end** of the actual value regardless of caret/selection,
 excluding placeholder hints. It uses Android `ACTION_SET_TEXT`, with one
 acknowledged write and exact readback, not character-to-key-event mapping.
+Readback must not be showing a placeholder hint, even if it matches the requested
+value.
 Pre-input bounds remain strict; post-write readback permits the same native
 node to resize or scroll while verifying its window, identity, state and text.
 Payloads are Base64-encoded data, so punctuation is not shell syntax.

@@ -322,6 +322,13 @@ text. This preserves stale-text protection when XML escaping, invalid-XML
 replacement, whitespace, or cached node data differ between a read and refresh.
 Password fields never expose a text fingerprint.
 
+Prepared hierarchy elements also carry their native `windowId`. Unicode input
+requires this validated nonnegative Android window ID from the authorized
+observation. Host element revalidation rejects a changed ID even if the app,
+activity, text, resource ID, and bounds are identical. Request protocol 3 carries
+the original window ID to the helper, which checks the root and refreshed field
+against it before `ACTION_SET_TEXT` and retains it through readback.
+
 Hierarchy parsing must decode XML numeric character references as well as named
 escapes, without trimming or double-decoding their values. The serializer uses
 numeric references for tabs and line breaks; leaving `&#10;` as literal text
@@ -347,8 +354,10 @@ and 4096 for the resulting value plus its exposed label/hint. Unpaired surrogate
 tab/LF/CR, C1/DEL controls, and U+FFFE/U+FFFF are rejected before device I/O.
 Native fields must expose `ACTION_SET_TEXT`; custom editors, app input filters,
 and OEM restrictions may prevent input. Successful acknowledgement is followed
-by exact text readback. A rejected, filtered, interrupted, or unverifiable write
-is uncertain and must not be replayed automatically; inspect a fresh observation.
+by exact text readback with `isShowingHintText()` false. A visible placeholder
+matching the requested value is not proof of entered text. A rejected, filtered,
+interrupted, or unverifiable write is uncertain and must not be replayed
+automatically; inspect a fresh observation.
 
 Java stub tests and host fixtures are not real-device proof. The workspace-built
 helper passed an explicitly approved USB test in MIUI Notes on one Android 11
@@ -590,6 +599,13 @@ and matching native-text fingerprints for exactly the previous content plus the
 requested multilingual line. Its editor resized/scrolled without a false failure.
 No screenshots were taken and no input was replayed. The original process
 failure did not recur; its specific cause remains unconfirmed.
+
+Subsequent review fixes pin the authorized observation's window ID and reject
+matching placeholder text as successful readback. Regression coverage includes
+same-activity replacement windows before dispatch and during helper refresh,
+plus filters that leave only the matching hint visible. These latest guard
+changes are covered by automated checks; their revised DEX has not yet been
+retested on hardware.
 
 ## Licensing and provenance
 

@@ -87,6 +87,16 @@ test("prepared hierarchies expose validated non-password raw-text fingerprints",
   }
 });
 
+test("prepared hierarchies preserve canonical native window IDs and reject unknown or invalid identities", () => {
+  for (const windowId of [0, 1, 7, 0x7fffffff]) {
+    assert.equal(parseHierarchy(hierarchy(editField({ "window-id": String(windowId) }))).elements[0]?.windowId, windowId);
+  }
+  assert.equal(parseHierarchy(hierarchy(editField())).elements[0]?.windowId, undefined);
+  for (const invalid of ["", "-1", "01", "1.5", "2147483648", "NaN", "unknown"]) {
+    assert.throws(() => parseHierarchy(hierarchy(editField({ "window-id": invalid }))), hasCode("HIERARCHY_UNAVAILABLE"));
+  }
+});
+
 test("malformed, external-entity, excessive, and invalid-attribute XML is rejected", () => {
   const bad = [
     "", "ERROR: null root node", '<hierarchy rotation="0"><node></hierarchy>',

@@ -201,8 +201,9 @@ export class FakeAdb implements AdbConnection {
     if (args[3]?.startsWith("CLASSPATH=") && args[4] === "app_process") {
       if (args[6] === "dev.mobileuse.text.TextMain") {
         if (args[7] === "--dump") return Buffer.from(this.xml.replace(/<node ([^>]+)>/g, (node: string, attributes: string) => {
-          if (!attributes.includes('class="android.widget.EditText"') ||
-            attributes.includes('password="true"') || attributes.includes('text-sha256="')) return node;
+          if (!attributes.includes('class="android.widget.EditText"')) return node;
+          if (!attributes.includes('window-id="')) node = node.replace(">", ' window-id="1">');
+          if (attributes.includes('password="true"') || attributes.includes('text-sha256="')) return node;
           const value = /text="([^"]*)"/.exec(attributes)?.[1] ?? "";
           const decoded = value.replaceAll("&#9;", "\t").replaceAll("&#10;", "\n").replaceAll("&#13;", "\r")
             .replaceAll("&quot;", '"').replaceAll("&lt;", "<").replaceAll("&amp;", "&");

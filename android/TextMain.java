@@ -26,7 +26,7 @@ public final class TextMain {
     private static String phase = "REQUEST";
 
     private static final class Request {
-        final int user;
+        final int user, windowId;
         final Rect bounds;
         final String packageName, className, resourceId, textHash, text;
 
@@ -34,11 +34,12 @@ public final class TextMain {
             if (encoded.length() > 32768) throw new IllegalArgumentException("Payload too large");
             DataInputStream input = new DataInputStream(
                 new ByteArrayInputStream(Base64.decode(encoded, Base64.NO_WRAP)));
-            if (input.readInt() != 2) throw new IllegalArgumentException("Unknown protocol");
+            if (input.readInt() != 3) throw new IllegalArgumentException("Unknown protocol");
             user = input.readInt();
+            windowId = input.readInt();
             int x = input.readInt(), y = input.readInt();
             int width = input.readInt(), height = input.readInt();
-            if (user < 0 || x < 0 || y < 0 || width <= 0 || height <= 0 ||
+            if (user < 0 || windowId < 0 || x < 0 || y < 0 || width <= 0 || height <= 0 ||
                     (long) x + width > Integer.MAX_VALUE || (long) y + height > Integer.MAX_VALUE) {
                 throw new IllegalArgumentException("Invalid target");
             }
@@ -85,6 +86,7 @@ public final class TextMain {
         if (!node.isFocused()) return "FIELD_FOCUS";
         if (!node.isEnabled()) return "FIELD_ENABLED";
         if (node.isPassword()) return "FIELD_PASSWORD";
+        if (node.getWindowId() != request.windowId) return "FIELD_WINDOW";
         if (!request.packageName.equals(string(node.getPackageName()))) return "FIELD_PACKAGE";
         if (!request.className.equals(string(node.getClassName())) || !request.className.endsWith("EditText")) return "FIELD_CLASS";
         if (!request.resourceId.equals(string(node.getViewIdResourceName()))) return "FIELD_ID";
@@ -195,6 +197,7 @@ public final class TextMain {
                 node.getBoundsInScreen(bounds);
                 xml.append("<node");
                 attribute(xml, "class", string(node.getClassName()));
+                attribute(xml, "window-id", Integer.toString(node.getWindowId()));
                 attribute(xml, "resource-id", string(node.getViewIdResourceName()));
                 attribute(xml, "text", text);
                 if (node.isEditable() && !node.isPassword()) attribute(xml, "text-sha256", textHash(node));
@@ -233,6 +236,7 @@ public final class TextMain {
             if (window.getDisplayId() != 0) return "ELEMENT_CHANGED_WINDOW_DISPLAY";
             if (window.getType() != AccessibilityWindowInfo.TYPE_APPLICATION) return "ELEMENT_CHANGED_WINDOW_TYPE";
             if (!window.isActive()) return "ELEMENT_CHANGED_WINDOW_ACTIVE";
+            if (root.getWindowId() != request.windowId) return "ELEMENT_CHANGED_WINDOW_ID";
             if (!request.packageName.equals(string(root.getPackageName()))) return "ELEMENT_CHANGED_ROOT_PACKAGE";
             nodes.clear();
             collect(root, 1, nodes);
@@ -263,8 +267,7 @@ public final class TextMain {
                 return "UNSUPPORTED";
             }
             if (currentUser() != request.user) return "ELEMENT_CHANGED_USER";
-            if (!activeWindow(field)) return "ELEMENT_CHANGED_FIELD_WINDOW";
-            int windowId = field.getWindowId();
+            if (!activeWindow(field) || field.getWindowId() != request.windowId) return "ELEMENT_CHANGED_FIELD_WINDOW";
             Bundle arguments = new Bundle();
             arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, desired);
             // ACTION_SET_TEXT writes text, including line breaks, without sending Enter or submitting.
@@ -273,7 +276,7 @@ public final class TextMain {
             phase = "VERIFY";
             // Text can resize or scroll its original node; pre-write geometry remains strict.
             if (!field.refresh() || mismatch(field, request, false) != null ||
-                    field.getWindowId() != windowId || !activeWindow(field) || currentUser() != request.user ||
+                    !activeWindow(field) || currentUser() != request.user || field.isShowingHintText() ||
                     !desired.equals(string(field.getText()))) return "FAILED";
             return "OK";
         } finally {

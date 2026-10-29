@@ -16,7 +16,7 @@ function backend(adb: FakeAdb): AndroidBackend {
 const foreground = { packageName: "example.poc", activityName: "example.poc.MainActivity", userId: 0 };
 const parsedField = parseHierarchy(hierarchy(editField({ text: "existing" }))).elements[0];
 assert.ok(parsedField);
-const field = { ...parsedField, ref: "e1", textHash: textHash("existing") };
+const field = { ...parsedField, ref: "e1", textHash: textHash("existing"), windowId: 7 };
 
 test("the embedded text helper has DEX framing and matches its pinned digest", () => {
   const bytes = Buffer.from(textHelperBase64, "base64");
@@ -42,6 +42,19 @@ test("Unicode requires a raw-text fingerprint from the prepared helper before an
   const calls = adb.calls.length;
   for (const invalidField of [{ ...parsedField, ref: "e1" }, { ...field, textHash: "invalid" }]) {
     await assert.rejects(android.typeText("中文", undefined, invalidField, foreground), hasCode("ELEMENT_CHANGED"));
+  }
+  assert.equal(adb.calls.length, calls);
+});
+
+test("Unicode requires the observed native window identity before any command", async () => {
+  const adb = new FakeAdb();
+  const android = backend(adb);
+  await android.prepareTextInput();
+  const calls = adb.calls.length;
+  const { windowId: _windowId, ...missingWindow } = field;
+  await assert.rejects(android.typeText("中文", undefined, missingWindow, foreground), hasCode("ELEMENT_CHANGED"));
+  for (const windowId of [-1, 0.5, 0x80000000, NaN, Infinity]) {
+    await assert.rejects(android.typeText("中文", undefined, { ...field, windowId }, foreground), hasCode("ELEMENT_CHANGED"));
   }
   assert.equal(adb.calls.length, calls);
 });
@@ -73,8 +86,8 @@ test("all extended text is carried as length-prefixed UTF-8 data, never shell sy
     const encoded = args[7] ?? "";
     assert.match(encoded, /^[A-Za-z0-9+/]+=*$/);
     const data = Buffer.from(encoded, "base64");
-    assert.deepEqual(Array.from({ length: 6 }, (_, index) => data.readInt32BE(index * 4)), [2, 0, 4, 32, 72, 24]);
-    let offset = 24;
+    assert.deepEqual(Array.from({ length: 7 }, (_, index) => data.readInt32BE(index * 4)), [3, 0, 7, 4, 32, 72, 24]);
+    let offset = 28;
     const strings = [];
     for (let i = 0; i < 5; i++) {
       const length = data.readInt32BE(offset);
@@ -95,7 +108,9 @@ test("prepared observations preserve Unicode through the pinned helper, with geo
   const text = "  中文 👩‍💻😀 e\u0301\r\n\t&#10;  ";
   adb.xml = hierarchy(editField({ text }));
   const start = adb.calls.length;
-  assert.equal((await android.hierarchy()).elements[0]?.text, text);
+  const observed = (await android.hierarchy()).elements[0];
+  assert.equal(observed?.text, text);
+  assert.equal(observed?.windowId, 1);
   assert.equal(adb.calls.slice(start).some((call) => call.args.includes("uiautomator")), false);
   assert.ok(adb.calls.slice(start).some((call) => call.args[7] === "--dump" && !call.options.mutating));
   adb.handler = (call) => {
@@ -156,6 +171,7 @@ test("modified helpers block input and rejected writes never fall back or replay
   adb.gestureFiles.set(prepared.remotePath, Buffer.from(textHelperBase64, "base64"));
   for (const [status, code, uncertain] of [
     ["ELEMENT_CHANGED", "ELEMENT_CHANGED", false], ["ELEMENT_CHANGED_FIELD_TEXT", "ELEMENT_CHANGED", false],
+    ["ELEMENT_CHANGED_WINDOW_ID", "ELEMENT_CHANGED", false], ["ELEMENT_CHANGED_FIELD_WINDOW", "ELEMENT_CHANGED", false],
     ["UNSUPPORTED", "TEXT_INPUT_UNSUPPORTED", false],
     ["FAILED", "TEXT_INPUT_FAILED", true], ["UNKNOWN", "TEXT_INPUT_FAILED", true],
   ] as const) {

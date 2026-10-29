@@ -75,7 +75,10 @@ export async function appendUnicodeText(
   if (!field.textHash || !/^[0-9a-f]{64}$/.test(field.textHash)) {
     throw new MobileUseError("ELEMENT_CHANGED", "Unicode input requires the exact text fingerprint from a prepared-helper observation.", "Observe the approved text field again. No input was sent.");
   }
-  const numbers = [2, foreground.userId, field.bounds.x, field.bounds.y, field.bounds.width, field.bounds.height];
+  if (field.windowId === undefined || !Number.isInteger(field.windowId) || field.windowId < 0 || field.windowId > 0x7fffffff) {
+    throw new MobileUseError("ELEMENT_CHANGED", "Unicode input requires the original observed window identity.", "Observe the approved text field again. No input was sent.");
+  }
+  const numbers = [3, foreground.userId, field.windowId, field.bounds.x, field.bounds.y, field.bounds.width, field.bounds.height];
   if (!numbers.every((number) => Number.isInteger(number) && number >= 0 && number <= 0x7fffffff)) {
     throw new MobileUseError("INVALID_INPUT", "The text target has invalid user or bounds metadata.", "Observe a native text field on the primary display again.");
   }
@@ -96,7 +99,7 @@ export async function appendUnicodeText(
     "shell", `CLASSPATH=${remotePath}`, "app_process", "/", helper.mainClass, payload,
   ], { mutating: true, ...(signal ? { signal } : {}) })).toString("utf8").trim();
   if (response === "MOBILE_USE_TEXT_V1_OK") return;
-  const changed = /^MOBILE_USE_TEXT_V1_ELEMENT_CHANGED(?:_(USER|WINDOW_MISSING|WINDOW_DISPLAY|WINDOW_TYPE|WINDOW_ACTIVE|ROOT_PACKAGE|FIELD_VISIBLE|FIELD_EDITABLE|FIELD_FOCUS|FIELD_ENABLED|FIELD_PASSWORD|FIELD_PACKAGE|FIELD_CLASS|FIELD_ID|FIELD_BOUNDS|FIELD_AMBIGUOUS|FIELD_MISSING|FIELD_REFRESH|FIELD_TEXT|FIELD_WINDOW))?$/.exec(response);
+  const changed = /^MOBILE_USE_TEXT_V1_ELEMENT_CHANGED(?:_(USER|WINDOW_MISSING|WINDOW_DISPLAY|WINDOW_TYPE|WINDOW_ACTIVE|WINDOW_ID|ROOT_PACKAGE|FIELD_VISIBLE|FIELD_EDITABLE|FIELD_FOCUS|FIELD_ENABLED|FIELD_PASSWORD|FIELD_PACKAGE|FIELD_CLASS|FIELD_ID|FIELD_BOUNDS|FIELD_AMBIGUOUS|FIELD_MISSING|FIELD_REFRESH|FIELD_TEXT|FIELD_WINDOW))?$/.exec(response);
   if (changed) {
     throw new MobileUseError("ELEMENT_CHANGED", changed[1]
       ? `The Unicode text target failed its ${changed[1]} check before input.`

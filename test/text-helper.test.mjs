@@ -131,6 +131,7 @@ const stubs = {
       final boolean field;
       final int depth;
       boolean written=false;
+      boolean refreshed=false;
       String value;
       public AccessibilityNodeInfo(boolean field) {
         this(field, 1);
@@ -143,7 +144,9 @@ const stubs = {
       public CharSequence getText() { return value; }
       public CharSequence getHintText() { return System.getProperty("hintValue", Boolean.getBoolean("hint") ? "Search" : ""); }
       public CharSequence getContentDescription() { return System.getProperty("label", ""); }
-      public boolean isShowingHintText() { return !written && Boolean.getBoolean("hint"); }
+      public boolean isShowingHintText() {
+        return written ? Boolean.getBoolean("filterToHint") : Boolean.getBoolean("hint");
+      }
       public CharSequence getPackageName() {
         return System.getProperty(written ? "afterPackageName" : "packageName", "example.poc");
       }
@@ -169,8 +172,13 @@ const stubs = {
       }
       public AccessibilityNodeInfo getChild(int index) { return new AccessibilityNodeInfo(true, depth+1); }
       public AccessibilityWindowInfo getWindow() { return Boolean.getBoolean("noWindow") ? null : new AccessibilityWindowInfo(); }
-      public int getWindowId() { return written ? Integer.getInteger("afterWindowId", 1) : 1; }
+      public int getWindowId() {
+        int id=Integer.getInteger("windowId", 1);
+        if (written) return Integer.getInteger("afterWindowId", id);
+        return field && refreshed ? Integer.getInteger("refreshedWindowId", id) : id;
+      }
       public boolean refresh() {
+        refreshed=true;
         if (!written) value=new String(Base64.getDecoder().decode(System.getProperty("previous", "")), StandardCharsets.UTF_8);
         return !Boolean.getBoolean("refreshFailed") && !(written && Boolean.getBoolean("afterRefreshFailed"));
       }
@@ -183,6 +191,7 @@ const stubs = {
         value=args.text.toString();
         System.err.println("WRITE " + Base64.getEncoder().encodeToString(value.getBytes(StandardCharsets.UTF_8)));
         if (Boolean.getBoolean("filter")) value="filtered";
+        if (Boolean.getBoolean("filterToHint")) value=getHintText().toString();
         if (Boolean.getBoolean("throwAfterWrite")) throw new IllegalStateException("Fixture failure");
         return !Boolean.getBoolean("reject");
       }
@@ -207,7 +216,7 @@ function textHash(text, hint = false) {
   return createHash("sha256").update(Buffer.from([hint ? 1 : 0]))
     .update(Buffer.from(text, "utf16le").swap16()).digest("hex");
 }
-function payload(text, previous = "", numbers = [2, 0, 4, 32, 72, 24], hint = false) {
+function payload(text, previous = "", numbers = [3, 0, 1, 4, 32, 72, 24], hint = false) {
   const header = Buffer.alloc(numbers.length * 4);
   numbers.forEach((value, index) => header.writeInt32BE(value, index * 4));
   const parts = [header];
@@ -249,6 +258,7 @@ test("prepared helper observations preserve exact Unicode, whitespace, XML escap
   const result = run(["--dump", "2"], { previous: base64(text), forbidWrite: true });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^<hierarchy rotation="2">/);
+  assert.match(result.stdout, /window-id="1"/);
   assert.ok(result.stdout.includes('text="  中文 👩‍💻😀 e\u0301 &amp; &quot; &lt;&#10;&#9;&#13; "'), result.stdout);
   assert.doesNotMatch(result.stderr, /WRITE /);
   assert.match(result.stderr, /DISCONNECTED/);
@@ -337,6 +347,22 @@ test("text helper never appends placeholder hints as existing text", () => {
   }
 });
 
+test("a matching placeholder after filtering is never successful text input", () => {
+  for (const reported of ["", "中文"]) {
+    expectStatus(run(payload("中文", reported, undefined, true), {
+      previous: base64(reported), hint: true, hintValue: "中文", filterToHint: true,
+    }), "FAILED", 1);
+  }
+});
+
+test("an identical editor in a replacement window is rejected before writing", () => {
+  const observed = run(["--dump", "0"], { windowId: 7, forbidWrite: true });
+  assert.match(observed.stdout, /window-id="7"/);
+  expectStatus(run(payload("中文"), { windowId: 2, forbidWrite: true }), "ELEMENT_CHANGED_WINDOW_ID");
+  expectStatus(run(payload("中文"), { refreshedWindowId: 2, forbidWrite: true }), "ELEMENT_CHANGED_FIELD_WINDOW");
+  expectStatus(run(payload("中文", "", [3, 0, 7, 4, 32, 72, 24]), { windowId: 7 }), "OK", 1);
+});
+
 test("successful text-setting can resize the same field without weakening pre-write geometry checks", () => {
   for (const afterBottom of [50, 100]) expectStatus(run(payload("\n中文😀"), { afterBottom }), "OK", 1);
   expectStatus(run(payload("\n中文😀"), { x: 5, afterBottom: 100, forbidWrite: true }), "ELEMENT_CHANGED_FIELD_BOUNDS");
@@ -382,9 +408,10 @@ test("malformed framing, invalid UTF-8, bounds, and controls cannot reach text m
   invalidUtf8[invalidUtf8.length - 1] = 0xff;
   for (const argument of [
     "invalid", "--oversized", payload(""), payload("a".repeat(257)), payload("\u0000"),
-    payload("\u001b"), payload("\u007f"), payload("\uffff"), payload("x", "", [1, 0, 4, 32, 72, 24]),
-    payload("x", "", [2, -1, 4, 32, 72, 24]), payload("x", "", [2, 0, 4, 32, 0, 24]),
-    payload("x", "", [2, 0, 2147483647, 32, 72, 24]), invalidUtf8.toString("base64"),
+    payload("\u001b"), payload("\u007f"), payload("\uffff"), payload("x", "", [2, 0, 4, 32, 72, 24]),
+    payload("x", "", [3, -1, 1, 4, 32, 72, 24]), payload("x", "", [3, 0, -1, 4, 32, 72, 24]),
+    payload("x", "", [3, 0, 1, 4, 32, 0, 24]),
+    payload("x", "", [3, 0, 1, 2147483647, 32, 72, 24]), invalidUtf8.toString("base64"),
   ]) {
     const result = run(argument, { forbidWrite: true });
     assert.equal(result.status, 0);

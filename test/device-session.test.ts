@@ -792,6 +792,21 @@ test("Unicode blocks app changes, preserves focused-field guards, and reports un
   assert.equal(adb.inputs.length, 1);
 });
 
+test("Unicode blocks an identical focused editor in a replacement window within the same activity", async (t) => {
+  const { adb, service } = harness(t);
+  const selected = await service.selectDevice(USB);
+  await service.prepareTextInput(selected.targetToken);
+  adb.xml = hierarchy(editField({ text: "same text", "window-id": "7" }));
+  const screen = await service.observe(selected.targetToken, undefined, false);
+  assert.equal(screen.observation.elements[0]?.windowId, 7);
+  adb.xml = hierarchy(editField({ text: "same text", "window-id": "8" }));
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "type_text", text: "中文",
+  }), hasCode("ELEMENT_CHANGED"));
+  assert.equal(adb.inputs.length, 0);
+  assert.equal(adb.calls.some((call) => call.args.includes("screencap")), false);
+});
+
 test("cold-root failures during Unicode preflight remain pre-input errors with sanitized diagnostic stages", async (t) => {
   const { adb, service } = harness(t);
   const selected = await service.selectDevice(USB);

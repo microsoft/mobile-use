@@ -145,6 +145,8 @@ Preparation is required again after device reselection/server restart.
 
 The Unicode path appends at the **end** of the actual value, excluding placeholder
 hints, using Android's `ACTION_SET_TEXT`. It never sends Enter or submits the field.
+It requires the original observed window and verifies entered text, not a
+matching placeholder.
 Each action accepts up to 256 UTF-16 code units; the helper's resulting value
 plus its exposed label/hint is limited to 4096. Prepared-helper observations
 also preserve exact Unicode and whitespace for subsequent guarded appends.
