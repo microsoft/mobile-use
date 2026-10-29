@@ -7,8 +7,8 @@ support, not a production-supported Microsoft product. Search
 [existing issues](https://github.com/microsoft/mobile-use/issues) before opening
 a bug, question, or feature request. Follow the [README](README.md) for supported
 scope and setup boundaries, and the
-[contributor guide](CONTRIBUTING.md#current-validation-evidence) for hardware
-validation status.
+[contributor guide](CONTRIBUTING.md#real-hardware-acceptance-runbook) for hardware
+validation instructions.
 
 Include the plugin version, Windows/Node/Copilot App/CLI/Platform-Tools versions,
 Android version/build, selected transport kind, stable tool error code, expected
