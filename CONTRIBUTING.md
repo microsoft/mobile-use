@@ -390,10 +390,9 @@ unsuccessful process exits remain uncertain. A failed append attempt still
 consumes its observation; obtain a fresh observation rather than replaying it.
 
 Java stub tests and host fixtures are not real-device proof. The current
-packaged Unicode DEX passed an approved USB append through the rebuilt public
-MCP server, with exact returned and fresh readback. The prior DEX also passed
-through the reinstalled Copilot App plugin; that integration check remains
-pending for the diagnostic-order repair. See the
+packaged Unicode DEX passed approved USB appends through both the rebuilt public
+MCP server and the reinstalled Copilot App plugin, with exact returned and fresh
+readback, including the diagnostic-order repair. See the
 [versioned Unicode artifact evidence](#unicode-artifact-evidence).
 
 #### Shared observation guards
@@ -561,7 +560,7 @@ issue reports and [Security](SECURITY.md) for security reporting.
 | Fixture/subprocess/MCP/package behavior | Local automated checks; no real ADB/device access. |
 | Plugin recognition | Read-only Copilot CLI 1.0.99-2 mount on Node 22.15.1. |
 | Actual Copilot App tool loading | Reinstalled plugin's doctor, startup, selection, wake, foreground lookup, text preparation, hierarchy reads, and successful guarded Unicode append exercised through the App. |
-| Unicode text helper / fifteenth tool | Current DEX `09a94c6...`: approved rebuilt public-MCP USB append passed with exact returned and fresh readback in MIUI Notes on one Android 11 Redmi; reinstalled App-plugin verification remains pending for this diagnostic-order repair. Previous DEX `1da156e...` passed both integrations. See the [versioned artifact evidence](#unicode-artifact-evidence). |
+| Unicode text helper / fifteenth tool | Current DEX `09a94c6...`: approved rebuilt public-MCP and reinstalled App-plugin USB appends passed with exact returned and fresh readback in MIUI Notes on one Android 11 Redmi, including the diagnostic-order repair. See the [versioned artifact evidence](#unicode-artifact-evidence). |
 | USB app-management lifecycle | All six operations passed through the reinstalled plugin on one Android 11 phone, including the package-state parser fix. |
 | USB double-tap recognition | Diagnostic app recognized 50 ms and 125 ms gaps; Gallery zoomed in and back out with 50 ms requested and 51 ms reported on one Android 11 Redmi. |
 | Complete physical USB and unplugged paired Wi-Fi acceptance journeys | Unverified; hardware and control consent required. |
@@ -614,7 +613,7 @@ wireless double-taps remain unverified on hardware.
 | Phone-tested baseline, commit `212a88c`, request protocol 2 | `fec6781aa14300488c70bc5d6b783c62417838d349f3493af9a2eccb8e08a9ef` | Approved workspace-MCP and reinstalled Copilot App plugin runs on one USB-connected Android 11 Redmi in MIUI Notes. Exact multilingual append/readback, including editor resizing/scrolling, returned `dispatched` with no error. |
 | Superseded helper, introduced in `80367c6`, request protocol 3 | `a848d0b20256dd15c8fbe1ab8efe11412e009bf73507c7b5d7c326bc36f334eb` | Automated checks passed. Reinstalled-plugin USB attempt on 2026-10-29: exact digest confirmed; preparation and hierarchy reads passed, but host field revalidation rejected the append before writing. **Successful input not validated for this artifact.** |
 | Window-identity repair, commit `ff2784d`, request protocol 4 | `1da156e47a5519dedd1f99ff53e3284d55f9fb3cd4c20717f88361b595395796` | Approved rebuilt public-MCP and reinstalled Copilot App plugin USB runs on 2026-10-29, same Android 11 Redmi and MIUI Notes. Each append returned `dispatched`, `error: null`; returned and fresh observations matched the exact prior value plus the respective 67-unit and 81-unit requested samples. |
-| Currently packaged diagnostic-order repair, request protocol 4 | `09a94c6599279b9ba877ed7b9aa65f426c2a4e69e528dcaa21f13df5046b7166` | Approved rebuilt public-MCP USB run on 2026-10-29, same device/app. One 81-unit append returned `dispatched`, `error: null`; returned and fresh observations matched the exact 684-unit expected value, preserving all prior text. Reinstalled App-plugin verification remains pending for this DEX. |
+| Currently packaged diagnostic-order repair, request protocol 4 | `09a94c6599279b9ba877ed7b9aa65f426c2a4e69e528dcaa21f13df5046b7166` | Approved rebuilt public-MCP and reinstalled Copilot App plugin USB runs on 2026-10-29, same device/app. Each append returned `dispatched`, `error: null`; returned and fresh observations matched the respective 684-unit and 771-unit expected values, preserving all prior text. |
 
 Commit `82fbc9a` changes host-side pre-write failure classification, not the DEX.
 Digest and packaging checks prove artifact identity, not hardware compatibility.
@@ -679,8 +678,21 @@ action returned `dispatched`, `error: null`; both returned and fresh observation
 matched all 684 expected units with native-text hash
 `591feb857fc360fafeaaa644e501347340b17758eea38b34be6a46a3abc3545f`.
 All prior content and the original window identity were preserved, without
-screenshots or input replay. This normal append verifies the new bundle, not
-its still-pending reinstalled App integration or concurrent-edit hardware cases.
+screenshots or input replay.
+
+After reinstallation, the Copilot App's installed MCP tools prepared the same
+exact `09a94c6...` digest on the explicitly selected USB endpoint. One distinct
+87-unit confirmation line, including its leading newline, appended to the
+preceding 684 units. It preserved Chinese, Japanese, Korean, Arabic, Russian,
+`e` plus a combining acute accent, and emoji/ZWJ. The action returned
+`dispatched`, `error: null`; its returned observation and an independent fresh
+observation both matched the exact 771-unit expected value, with native-text hash
+`d4341633040c7473d8eb38ac017dfe27dcc4ffb4a07d2f9e540a6f54b600bd1a`.
+Independent host-side UTF-16 hashing confirmed both the pre-action fingerprint
+and exact expected append. All prior content and the original window identity
+were preserved. No screenshots were captured, no input was replayed, and no
+workspace-server substitute was used. This verifies normal input through the
+reinstalled diagnostic-order repair, not concurrent-edit hardware cases.
 Other devices, editors, paired-wireless Unicode input, and forced
 replacement-window/hint-filter hardware cases remain unverified.
 
