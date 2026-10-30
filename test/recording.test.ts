@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, open, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -198,11 +198,12 @@ for (const seconds of [600, MAX_RECORDING_TIME_SECONDS]) {
 
 test("start/status/stop allow intervening UI input and export only the owned finalized MP4", async (t) => {
   const { directory, filePath, adb, service, targetToken, start } = await fixture(t);
+  const destination = path.join(await realpath(directory), path.basename(filePath));
   assert.deepEqual(await service.screenRecording(targetToken, { kind: "status" }), { status: "idle" });
   const before = await service.observe(targetToken, undefined, false);
   const started = recording(await start());
   assert.equal(started.status, "recording");
-  assert.equal(started.filePath, filePath);
+  assert.equal(started.filePath, destination);
   assert.equal(started.userId, 0);
   assert.equal(started.timeLimitSeconds, 180);
   assert.deepEqual(await readdir(directory), [], "start must not export or reserve an empty evidence file");
@@ -214,6 +215,7 @@ test("start/status/stop allow intervening UI input and export only the owned fin
   await assert.rejects(start(), hasCode("RECORDING_ACTIVE"));
   const stopped = recording(await service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId }));
   assert.equal(stopped.status, "saved");
+  assert.equal(stopped.filePath, destination);
   assert.equal(stopped.sizeBytes, mp4().length);
   assert.deepEqual(await readFile(filePath), mp4());
   assert.deepEqual(await readdir(directory), ["approved video.mp4"]);
@@ -226,6 +228,23 @@ test("start/status/stop allow intervening UI input and export only the owned fin
   assert.match(running.args.join(" "), /--bit-rate 4000000 --time-limit 180/);
   assert.ok(adb.calls.every((call) => call.args[0] !== "-t" || call.args[1] === "7"));
   assert.equal(adb.calls.some((call) => call.args.includes("screencap") || call.args.includes("push")), false);
+});
+
+test("recording resolves a parent directory alias and preserves the canonical destination through export", async (t) => {
+  const { directory, service, targetToken } = await fixture(t);
+  const parent = path.join(directory, "destination");
+  const alias = path.join(directory, "alias");
+  await mkdir(parent);
+  await symlink(parent, alias, "junction");
+  const filePath = path.join(alias, "approved video.mp4");
+  const destination = path.join(await realpath(parent), path.basename(filePath));
+  assert.notEqual(filePath, destination);
+  const started = recording(await service.screenRecording(targetToken, { kind: "start", filePath, timeLimitSeconds: 60 }));
+  assert.equal(started.filePath, destination);
+  const stopped = recording(await service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId }));
+  assert.equal(stopped.status, "saved");
+  assert.equal(stopped.filePath, destination);
+  assert.deepEqual(await readFile(filePath), mp4());
 });
 
 test("natural deadline completion remains unsaved until stop, without signaling an exited PID", async (t) => {
