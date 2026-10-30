@@ -337,11 +337,13 @@ export class MobileUseService {
     mutating: boolean,
     operation: (backend: AndroidBackend) => Promise<T>,
     signal?: AbortSignal,
+    requireIdentity = true,
   ): Promise<T> {
     return this.serialize(async () => {
       const state = this.target(targetToken);
       if (mutating) this.snapshot = undefined;
-      await this.ensureIdentity(state, signal);
+      if (requireIdentity) await this.ensureIdentity(state, signal);
+      else await this.ensureEndpoint(state, signal);
       let completed = false;
       try {
         const value = await operation(state.backend);
@@ -400,7 +402,9 @@ export class MobileUseService {
     if (!parsed.success) {
       return Promise.reject(new MobileUseError("INVALID_INPUT", "The screen recording action is invalid.", "Use capabilities to inspect native limits, start with a local .mp4 path and an optional positive integer timeLimitSeconds (omit for unlimited where supported), status, or stop with the recording ID."));
     }
-    return this.appOperation(targetToken, action.kind === "start" || action.kind === "stop", (backend) => backend.screenRecording(parsed.data, signal), signal);
+    const recovery = parsed.data.kind === "stop" || parsed.data.kind === "status";
+    return this.appOperation(targetToken, action.kind === "start" || action.kind === "stop",
+      (backend) => backend.screenRecording(parsed.data, signal, () => this.ensureIdentity(this.target(targetToken), signal)), signal, !recovery);
   }
 
   prepareGestures(targetToken: string, signal?: AbortSignal): Promise<PreparedGestures> {

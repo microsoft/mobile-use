@@ -207,19 +207,33 @@ Finalization is bounded to ten seconds. A failed attached host command is not
 proof that the native recorder exited: an explicit stop on a still-current
 target can verify and stop its owned PID, but the failed clip cannot be exported.
 The error remediation includes its recording ID.
+Once an explicit stop confirms native exit, both the stop error and subsequent
+status errors say capture is stopped rather than asking to stop it again.
+Successful attached-command completion also takes precedence over a racing
+process lookup that fails or sees an already-exiting process.
 
-Stop finalizes capture before reading the active Android user, so a failed user
-lookup cannot prevent the stop signal. Export checks the user after finalization
+Stop and status require the pinned transport, not fresh build/TLS metadata.
+Stop finalizes capture before revalidating full device identity or reading the
+active Android user, so those lookups cannot prevent the stop signal.
+Export checks identity and user after finalization
 and again before the final copy. A detected mismatch or failed lookup permanently
 blocks this clip's export, even after switching back. An already saved clip can
 still have its temporary files cleaned without checking the active user.
+
+Recording is supervised and restricted to the same approved Android user
+throughout capture. Native screenrecord captures the shared primary display,
+not an isolated user session. User checks are snapshots, not continuous
+monitoring: a switch away and back between checks cannot be detected. Do not
+switch Android users or use this tool for workflows that require user switching
+or guaranteed cross-user isolation.
 
 Export checks that device size is a positive, safely representable integer,
 pulls without a fixed total deadline, but aborts after 30 seconds without local
 file-size progress so a stalled pull releases the serialized operation queue.
 Request cancellation and selection-lifetime abort still apply. Validation checks
 movie and video-track headers, nested box boundaries, local data references,
-codec metadata, sample-table counts and media ranges using bounded reads;
+AVC/HEVC configuration records and MPEG-4 descriptor lengths, sample-table
+counts, optional sync-sample references, and media ranges using bounded reads;
 it is structural validation, not a decoder or proof of playback. The exclusive
 streaming copy from the private local temporary directory is also abortable.
 Cancellation removes only the partial destination created by that copy.
@@ -235,6 +249,11 @@ overwriting another writer. Failed exports retain the device capture; local
 temporary files are cleaned. Cleanup errors after saving are explicit;
 status still exposes the saved path, and another explicit stop retries only
 cleanup, not capture or export.
+Cleanup treats an already-absent owned directory as success, including after
+a lost response, but still reports other removal failures.
+Failed or permanently export-blocked recordings retain their device files and
+occupy the recording slot. There is no discard/delete operation: confirm capture
+stopped before explicitly reselecting; reselection does not remove those files.
 
 Reselection, transport loss, server restart and shutdown cancel the attached
 ADB command and invalidate recording handles. If Android continues capture

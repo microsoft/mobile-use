@@ -62,6 +62,8 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.match(skill, /RECORDING_CAPABILITIES_UNAVAILABLE/);
   assert.match(skill, /android-14\.0\.0_r1/);
   assert.match(skill, /Use live `capabilities` results, not just Android version/);
+  assert.match(skill, /snapshots, not continuous monitoring/);
+  assert.match(skill, /Do not use this tool for workflows that\s+switch Android users/);
   const notices = await readFile(path.join(artifact, "THIRD_PARTY_NOTICES"), "utf8");
   assert.match(notices, /@modelcontextprotocol\/server@2\.3\.1/);
   assert.match(notices, /zod@4\.6\.7/);
@@ -165,8 +167,10 @@ for (const mode of ["legacy", "auto"]) {
     assert.equal(recordingStart.properties.timeLimitSeconds.maximum, 0xffff_ffff);
     assert.equal(recordingStart.properties.timeLimitSeconds.default, undefined);
     assert.match(recording.description, /Omit timeLimitSeconds for unlimited recording until stopped/);
+    assert.match(recording.description, /snapshots, not continuous monitoring/);
     assert.match(recording?.description ?? "", /never video bytes/);
     assert.match(client.getInstructions() ?? "", /mobile_screen_recording/);
+    assert.match(client.getInstructions() ?? "", /snapshots, not continuous monitoring/);
     assert.match(client.getInstructions() ?? "", /explicit consent/);
     assert.match(client.getInstructions() ?? "", /omit it for unlimited recording until stopped/);
     assert.match(client.getInstructions() ?? "", /AOSP Android 11-13 \(API 30-33\) enforce 1-180 seconds/);

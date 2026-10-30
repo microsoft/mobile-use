@@ -343,6 +343,11 @@ screen content, duration or unlimited capture, and local destination.
 Screenshot-free observation permission never authorizes recording. Require an
 already awake/unlocked phone; never wake implicitly, record authentication,
 navigate to sensitive content during capture, or bypass protected capture.
+Recording is supervised: keep the same approved Android user throughout.
+Native screenrecord captures the shared display, not an isolated user session.
+The user checks are snapshots, not continuous monitoring; switching away and
+back between checks can go undetected. Do not use this tool for workflows that
+switch Android users or require guaranteed cross-user isolation.
 
 All operations require `targetToken`, not `observationId`:
 
@@ -424,9 +429,16 @@ another explicit stop retries cleanup only.
 Host-command failure does not prove native capture stopped. Its error includes
 the recording ID: on a still-current target, obtain an explicit stop request to
 verify and signal only the owned process. Failed clips cannot be exported.
-Stop occurs before user validation. A detected user mismatch or failed user
+Once native exit is confirmed, the failure/status error explicitly says capture
+is stopped; do not keep requesting stop to end a confirmed-stopped recorder.
+Stop and status do not require fresh build/TLS metadata. Full identity and user
+validation gate export only after capture stops. A detected user mismatch or failed user
 lookup permanently blocks that unsaved clip's export, even after switching back;
 cleanup of an already saved clip remains possible.
+Saved cleanup also succeeds when the owned directory is already absent.
+Failed or permanently export-blocked clips retain their device files and block
+another start. There is no discard/delete operation; confirm capture stopped
+before explicitly reselecting, which does not clean those retained files.
 An export with no local file-size progress for 30 seconds fails explicitly;
 healthy progressing transfers have no fixed total deadline. Cancellation during
 the final copy removes its partial local destination. Never automatically retry

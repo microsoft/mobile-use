@@ -128,6 +128,98 @@ export async function validateRecordingFile(filePath: string, signal?: AbortSign
       if (box.end - box.data < minimum) return invalid();
       return read(box.data, minimum);
     };
+    const configuration = async (box: Box, inBand: boolean): Promise<void> => {
+      let cursor = box.data;
+      const take = async (length: number): Promise<Buffer> => {
+        if (cursor + length > box.end) return invalid();
+        const bytes = await read(cursor, length);
+        cursor += length;
+        return bytes;
+      };
+      const skip = (length: number): void => {
+        if (cursor + length > box.end) return invalid();
+        cursor += length;
+      };
+      const nal = async (kind: number, hevc = false): Promise<void> => {
+        if (++count > 4096) return invalid();
+        const length = (await take(2)).readUInt16BE(0);
+        const headerSize = hevc ? 2 : 1;
+        if (length < headerSize) return invalid();
+        const header = await take(headerSize);
+        const first = header.readUInt8(0);
+        if ((first & 0x80) || (hevc ? (first >> 1) & 0x3f : first & 0x1f) !== kind ||
+          (hevc && !(header.readUInt8(1) & 7))) return invalid();
+        skip(length - headerSize);
+      };
+      if (box.kind === "avcC") {
+        const header = await take(6);
+        if (header[0] !== 1 || (header.readUInt8(4) & 0xfc) !== 0xfc || (header.readUInt8(4) & 3) === 2 ||
+          (header.readUInt8(5) & 0xe0) !== 0xe0) return invalid();
+        const sequences = header.readUInt8(5) & 0x1f;
+        if (!inBand && !sequences) return invalid();
+        for (let index = 0; index < sequences; index++) await nal(7);
+        const pictures = (await take(1)).readUInt8(0);
+        if (!inBand && !pictures) return invalid();
+        for (let index = 0; index < pictures; index++) await nal(8);
+        if (cursor < box.end) {
+          if (![100, 110, 122, 144, 44, 83, 86, 118, 128, 138, 139, 134, 135].includes(header.readUInt8(1))) return invalid();
+          const extension = await take(4);
+          if ((extension.readUInt8(0) & 0xfc) !== 0xfc || (extension.readUInt8(1) & 0xf8) !== 0xf8 ||
+            (extension.readUInt8(2) & 0xf8) !== 0xf8 || (extension.readUInt8(1) & 7) > 6 ||
+            (extension.readUInt8(2) & 7) > 6) return invalid();
+          for (let index = 0; index < extension.readUInt8(3); index++) await nal(13);
+        }
+      } else if (box.kind === "hvcC") {
+        const header = await take(23);
+        if (header[0] !== 1 || (header.readUInt16BE(13) & 0xf000) !== 0xf000 ||
+          (header.readUInt8(15) & 0xfc) !== 0xfc || (header.readUInt8(16) & 0xfc) !== 0xfc ||
+          (header.readUInt8(17) & 0xf8) !== 0xf8 || (header.readUInt8(18) & 0xf8) !== 0xf8 ||
+          (header.readUInt8(17) & 7) > 6 || (header.readUInt8(18) & 7) > 6 || (header.readUInt8(21) & 3) === 2) return invalid();
+        const arrays = new Set<number>();
+        for (let index = 0; index < header.readUInt8(22); index++) {
+          const array = await take(3);
+          const kind = array.readUInt8(0) & 0x3f;
+          if ((array.readUInt8(0) & 0x40) || arrays.has(kind)) return invalid();
+          arrays.add(kind);
+          const units = array.readUInt16BE(1);
+          if (!inBand && [32, 33, 34].includes(kind) && !units) return invalid();
+          for (let unit = 0; unit < units; unit++) await nal(kind, true);
+        }
+        if (!inBand && ![32, 33, 34].every((kind) => arrays.has(kind))) return invalid();
+      } else {
+        if ((await take(4)).readUInt32BE(0) !== 0) return invalid();
+        const descriptor = async (tag: number, end: number): Promise<number> => {
+          if (cursor >= end || (await take(1)).readUInt8(0) !== tag) return invalid();
+          let length = 0;
+          for (let index = 0; index < 4; index++) {
+            if (cursor >= end) return invalid();
+            const value = (await take(1)).readUInt8(0);
+            length = length * 128 + (value & 0x7f);
+            if (!(value & 0x80)) {
+              if (!length || cursor + length > end) return invalid();
+              return cursor + length;
+            }
+          }
+          return invalid();
+        };
+        const esEnd = await descriptor(3, box.end);
+        const es = await take(3);
+        const flags = es.readUInt8(2);
+        if (flags & 0x80) skip(2);
+        if (flags & 0x40) skip((await take(1)).readUInt8(0));
+        if (flags & 0x20) skip(2);
+        const decoderEnd = await descriptor(4, esEnd);
+        const decoder = await take(13);
+        if (decoder[0] !== 0x20 || decoder.readUInt8(1) >> 2 !== 4 || !(decoder.readUInt8(1) & 1)) return invalid();
+        const specificEnd = await descriptor(5, decoderEnd);
+        skip(specificEnd - cursor);
+        if (cursor !== decoderEnd) return invalid();
+        const slEnd = await descriptor(6, esEnd);
+        skip(slEnd - cursor);
+        if (cursor !== esEnd) return invalid();
+      }
+      if (cursor !== box.end) return invalid();
+    };
     const timed = async (box: Box, minimum: number): Promise<void> => {
       const version = (await payload(box, 4))[0];
       if (version !== 0 && version !== 1) return invalid();
@@ -136,10 +228,10 @@ export async function validateRecordingFile(filePath: string, signal?: AbortSign
       if (value.readUInt32BE(version === 1 ? 20 : 12) === 0 || duration === 0n ||
         duration === (version === 1 ? 0xffffffffffffffffn : 0xffffffffn)) return invalid();
     };
-    const rows = async (box: Box, width: number, visit: (bytes: Buffer, offset: number, index: number) => void | Promise<void>): Promise<number> => {
+    const rows = async (box: Box, width: number, visit: (bytes: Buffer, offset: number, index: number) => void | Promise<void>, allowEmpty = false): Promise<number> => {
       const header = await payload(box, 8);
       const entries = header.readUInt32BE(4);
-      if (header.readUInt32BE(0) !== 0 || entries < 1 || box.end - box.data !== 8 + entries * width) return invalid();
+      if (header.readUInt32BE(0) !== 0 || (!allowEmpty && !entries) || box.end - box.data !== 8 + entries * width) return invalid();
       for (let index = 0; index < entries;) {
         const length = Math.min(1024, entries - index);
         const bytes = await read(box.data + 8 + index * width, length * width);
@@ -202,13 +294,23 @@ export async function validateRecordingFile(filePath: string, signal?: AbortSign
         const configKinds: Readonly<Record<string, string>> = { avc1: "avcC", avc3: "avcC", hvc1: "hvcC", hev1: "hvcC", mp4v: "esds" };
         const configKind = configKinds[description.kind];
         if (!configKind) return invalid();
-        await payload(one(configs, configKind), configKind === "avcC" ? 7 : configKind === "hvcC" ? 23 : 4);
+        await configuration(one(configs, configKind), description.kind === "avc3" || description.kind === "hev1");
       }
       const sizesBox = one(tables, "stsz");
       const sizes = await payload(sizesBox, 12);
       const fixedSize = sizes.readUInt32BE(4);
       const samples = sizes.readUInt32BE(8);
       if (sizes.readUInt32BE(0) !== 0 || !samples || sizesBox.end - sizesBox.data !== 12 + (fixedSize ? 0 : samples * 4)) return invalid();
+      const syncTables = tables.filter((box) => box.kind === "stss");
+      if (syncTables.length > 1) return invalid();
+      if (syncTables[0]) {
+        let previous = 0;
+        await rows(syncTables[0], 4, (bytes, offset) => {
+          const sample = bytes.readUInt32BE(offset);
+          if (sample <= previous || sample > samples) return invalid();
+          previous = sample;
+        }, true);
+      }
       let timedSamples = 0;
       await rows(one(tables, "stts"), 8, (bytes, offset) => {
         const count = bytes.readUInt32BE(offset);
@@ -463,9 +565,38 @@ export class ScreenRecorder {
   }
 
   private async finish(state: RecordingState, signal?: AbortSignal): Promise<void> {
-    if (state.exited && state.commandSettled) return;
+    const confirmed = (): void => {
+      if (state.result.status !== "saved") state.result.status = "completed";
+      if (state.failure) {
+        state.failure = new MobileUseError(state.failure.code,
+          "The owned recorder is confirmed stopped, but its attached command failed.",
+          `Recording ID: ${state.result.recordingId}. Capture is stopped; do not request another stop to end it. This failed clip cannot be exported. Device temporary files are retained.`,
+          false, true);
+      }
+    };
+    if (state.exited && state.commandSettled) {
+      confirmed();
+      return;
+    }
     const deadline = Date.now() + 10_000;
-    const options = () => ({ timeoutMs: Math.max(1, deadline - Date.now()), ...(signal ? { signal } : {}) });
+    const options = () => {
+      const timeoutMs = deadline - Date.now();
+      if (timeoutMs <= 0) {
+        throw new MobileUseError("RECORDING_STOP_FAILED", "The recorder did not confirm finalization within ten seconds.", "Check status before another stop request. Do not copy an unfinalized recording.", false, true);
+      }
+      return { timeoutMs, ...(signal ? { signal } : {}) };
+    };
+    const probe = async (command: string, mutating = false): Promise<string> => {
+      try {
+        const output = await this.command(["shell", command], { ...options(), ...(mutating ? { mutating: true } : {}) });
+        return output.toString("utf8").trim();
+      } catch (error) {
+        const failure = publicError(error);
+        // Successful attached-command completion is stronger evidence than a racing /proc lookup.
+        if (state.exited && !state.failure && !signal?.aborted && ["ADB_FAILED", "ADB_TIMEOUT"].includes(failure.code)) return "EXITED";
+        throw error;
+      }
+    };
     if (!state.pid) {
       const pid = (await this.command([
         "shell", `if [ -f ${state.directory}/pid ]; then cat ${state.directory}/pid; fi`,
@@ -476,13 +607,11 @@ export class ScreenRecorder {
     const expected = `${state.argv.join(" ")} `;
     const identity = `if [ ! -e /proc/${state.pid} ]; then echo EXITED; ` +
       `elif [ "$(tr '\\000' ' ' < /proc/${state.pid}/cmdline)" = '${expected}' ]; `;
-    const stopped = await this.command([
-      "shell", identity + `then kill -INT ${state.pid} && echo STOPPED; else echo MISMATCH; fi`,
-    ], { ...options(), mutating: true });
-    if (!["STOPPED", "EXITED"].includes(stopped.toString("utf8").trim()) && !state.exited) {
+    const stopped = await probe(identity + `then kill -INT ${state.pid} && echo STOPPED; else echo MISMATCH; fi`, true);
+    if (!["STOPPED", "EXITED"].includes(stopped) && !state.exited) {
       throw new MobileUseError("RECORDING_STOP_FAILED", "The recording process no longer matches; no stop was confirmed.", "Do not signal another process or replay automatically. Check status; unlimited capture has no fallback deadline.", false, true);
     }
-    if (stopped.toString("utf8").trim() === "EXITED") state.exited = true;
+    if (stopped === "EXITED") state.exited = true;
     while (!state.exited || !state.commandSettled) {
       checkCancelled(signal);
       if (Date.now() >= deadline) {
@@ -490,13 +619,14 @@ export class ScreenRecorder {
       }
       await delay(50);
       if (!state.exited) {
-        const status = (await this.command(["shell", identity + "then echo RUNNING; else echo MISMATCH; fi"],
-          options())).toString("utf8").trim();
+        const status = await probe(identity + "then echo RUNNING; else echo MISMATCH; fi");
+        if (state.exited) continue;
         if (status === "EXITED") state.exited = true;
         else if (status !== "RUNNING") throw this.failure("The owned recorder's exit could not be confirmed.");
       }
     }
     await state.completion;
+    confirmed();
   }
 
   async stop(recordingId: string, readUser: () => Promise<number>, signal?: AbortSignal): Promise<ScreenRecording> {
@@ -559,7 +689,7 @@ export class ScreenRecorder {
     if (!state.cleaned) {
       try {
         await this.command([
-          "shell", `rm -f ${state.directory}/capture.mp4 ${state.directory}/pid && rmdir ${state.directory}`,
+          "shell", `rm -f ${state.directory}/capture.mp4 ${state.directory}/pid && { [ ! -e ${state.directory} ] && [ ! -L ${state.directory} ] || rmdir ${state.directory}; }`,
         ], { mutating: true, ...(signal ? { signal } : {}) });
         state.cleaned = true;
       } catch (error) {

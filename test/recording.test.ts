@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { constants, watch } from "node:fs";
-import { access, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, rmdir, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -32,6 +32,27 @@ async function fixture(t: TestContext) {
 function recording(value: RecordingResult): ScreenRecording {
   assert.ok("recordingId" in value);
   return value;
+}
+
+function box(kind: string, data: Buffer): Buffer {
+  const header = Buffer.alloc(8);
+  header.writeUInt32BE(8 + data.length);
+  header.write(kind, 4, "ascii");
+  return Buffer.concat([header, data]);
+}
+
+function replaceMetadataBox(bytes: Buffer, kind: string, replacement: Buffer): Buffer {
+  const start = bytes.indexOf(kind) - 4;
+  assert.ok(start >= 0);
+  const size = bytes.readUInt32BE(start);
+  const result = Buffer.concat([bytes.subarray(0, start), replacement, bytes.subarray(start + size)]);
+  for (const ancestor of ["moov", "trak", "mdia", "minf", "stbl", "stsd", "avc1"]) {
+    const offset = bytes.indexOf(ancestor, ancestor === "avc1" ? bytes.indexOf("stsd") : 0) - 4;
+    if (offset >= 0 && offset < start && offset + bytes.readUInt32BE(offset) >= start + size) {
+      result.writeUInt32BE(bytes.readUInt32BE(offset) + replacement.length - size, offset);
+    }
+  }
+  return result;
 }
 
 async function sparseRecording(filePath: string, sizeBytes: number): Promise<void> {
@@ -511,12 +532,65 @@ test("recorder failures are sanitized and never automatically restarted or expor
   await assert.rejects(service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId }), hasCode("RECORDING_STOP_FAILED"));
   assert.equal(adb.recordingRunning, true);
   adb.handler = undefined;
-  await assert.rejects(service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId }), hasCode("ADB_FAILED"));
+  const confirmedStop = (error: unknown): boolean => {
+    hasCode("ADB_FAILED")(error);
+    assert.ok(error instanceof MobileUseError);
+    assert.match(error.message, /confirmed stopped/);
+    assert.match(error.remediation, /Capture is stopped/);
+    assert.doesNotMatch(error.remediation, /explicitly request stop/);
+    return true;
+  };
+  await assert.rejects(service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId }), confirmedStop);
+  await assert.rejects(service.screenRecording(targetToken, { kind: "status" }), confirmedStop);
   assert.equal(adb.recordingRunning, false);
   assert.ok(adb.calls.some((call) => call.args.join(" ").includes("kill -INT")));
   assert.equal(adb.calls.filter((call) => call.args.join(" ").includes("; exec /system/bin/screenrecord")).length, 1);
   assert.equal(adb.calls.some((call) => call.args[2] === "pull"), false);
 });
+
+for (const stage of ["signal", "poll"] as const) {
+  for (const outcome of ["MISMATCH", "ADB_TIMEOUT"] as const) {
+    test(`confirmed attached completion wins a racing ${stage} ${outcome}`, async (t) => {
+      const { adb, service, targetToken, start } = await fixture(t);
+      const started = recording(await start());
+      adb.handler = async (call) => {
+        const command = call.args.slice(2).join(" ");
+        if (!command.startsWith("shell if [ ! -e /proc/12345 ];")) return undefined;
+        if (stage === "poll" && command.includes("kill -INT")) return Buffer.from("STOPPED\n");
+        adb.recordingExit?.();
+        await delay(0);
+        if (outcome === "ADB_TIMEOUT") throw new MobileUseError("ADB_TIMEOUT", "Fixture proc lookup timed out.", "Inspect status.");
+        return Buffer.from("MISMATCH\n");
+      };
+      const saved = await service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId });
+      assert.equal(saved.status, "saved");
+      assert.equal(adb.calls.filter((call) => call.args.join(" ").includes("kill -INT")).length, 1);
+    });
+  }
+}
+
+for (const property of ["ro.build.version.release", "service.adb.tls.port"] as const) {
+  test(`failed ${property} lookup cannot prevent an owned stop or status`, async (t) => {
+    const { filePath, adb, service, targetToken, start } = await fixture(t);
+    const token = property === "service.adb.tls.port" ? (await service.selectDevice(WIFI)).targetToken : targetToken;
+    const started = recording(await service.screenRecording(token, { kind: "start", filePath }));
+    adb.handler = (call) => {
+      if (call.args.slice(2).join(" ") === `shell getprop ${property}`) {
+        assert.equal(adb.recordingRunning, false, "full identity validation must follow stop");
+        throw new MobileUseError("DEVICE_METADATA_UNAVAILABLE", "Fixture property unavailable.", "Inspect the phone.");
+      }
+      return undefined;
+    };
+    assert.equal((await service.screenRecording(token, { kind: "status" })).status, "recording");
+    await assert.rejects(service.screenRecording(token, { kind: "stop", recordingId: started.recordingId }), hasCode("DEVICE_METADATA_UNAVAILABLE"));
+    assert.equal(adb.recordingRunning, false);
+    assert.equal(adb.calls.some((call) => call.args[2] === "pull"), false);
+    await assert.rejects(stat(filePath), { code: "ENOENT" });
+    adb.handler = undefined;
+    await assert.rejects(service.screenRecording(token, { kind: "stop", recordingId: started.recordingId }), hasCode("DEVICE_METADATA_UNAVAILABLE"));
+    await assert.rejects(start(), hasCode(property === "service.adb.tls.port" ? "STALE_TARGET" : "RECORDING_ACTIVE"));
+  });
+}
 
 test("a user switch stops capture but prevents exporting content under a different Android user", async (t) => {
   const { directory, adb, service, targetToken, start } = await fixture(t);
@@ -580,6 +654,39 @@ test("cleanup errors preserve the saved result and never repeat capture or expor
     return undefined;
   };
   await service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId });
+  assert.equal(adb.calls.filter((call) => call.args[2] === "pull").length, 1);
+});
+
+test("cleanup treats an already-removed owned directory as success after a lost response", async (t) => {
+  const { directory, adb, service, targetToken, start } = await fixture(t);
+  const started = recording(await start());
+  const remoteDirectory = path.join(directory, "remote");
+  await mkdir(remoteDirectory);
+  const capture = path.join(remoteDirectory, "capture.mp4");
+  const pid = path.join(remoteDirectory, "pid");
+  await writeFile(capture, mp4());
+  await writeFile(pid, "12345");
+  let first = true;
+  adb.handler = async (call) => {
+    const command = call.args.slice(2).join(" ");
+    if (!command.startsWith("shell rm -f /data/local/tmp/mobile-use-recording-")) return undefined;
+    if (first) {
+      first = false;
+      await rm(capture);
+      await rm(pid);
+      await rmdir(remoteDirectory);
+      throw new MobileUseError("ADB_TIMEOUT", "Fixture cleanup response was lost.", "Inspect status.");
+    }
+    assert.match(command, /&& \{ \[ ! -e ([^ ]+) \] && \[ ! -L \1 \] \|\| rmdir \1; \}/);
+    await assert.rejects(stat(remoteDirectory), { code: "ENOENT" });
+    return Buffer.alloc(0);
+  };
+  await assert.rejects(service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId }), hasCode("ADB_TIMEOUT"));
+  assert.equal((await service.screenRecording(targetToken, { kind: "status" })).status, "saved");
+  assert.equal((await service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId })).status, "saved");
+  adb.handler = undefined;
+  const next = await service.screenRecording(targetToken, { kind: "start", filePath: path.join(directory, "next.mp4") });
+  assert.equal(next.status, "recording");
   assert.equal(adb.calls.filter((call) => call.args[2] === "pull").length, 1);
 });
 
@@ -702,3 +809,93 @@ test("MP4 validation checks container boundaries and requires finalized metadata
     await assert.rejects(validateRecordingFile(file), hasCode("RECORDING_EXPORT_FAILED"));
   }
 });
+
+test("codec validation rejects malformed AVC, HEVC and MPEG-4 configuration records", async (t) => {
+  const { directory } = await fixture(t);
+  const file = path.join(directory, "codec.mp4");
+  const avc = mp4();
+  const hevcHeader = Buffer.alloc(23);
+  hevcHeader[0] = 1;
+  hevcHeader[1] = 1;
+  hevcHeader.writeUInt16BE(0xf000, 13);
+  hevcHeader[15] = 0xfc;
+  hevcHeader[16] = 0xfd;
+  hevcHeader[17] = hevcHeader[18] = 0xf8;
+  hevcHeader[21] = 15;
+  hevcHeader[22] = 3;
+  const hevc = replaceMetadataBox(avc, "avcC", box("hvcC", Buffer.concat([
+    hevcHeader, Buffer.from([0xa0, 0, 1, 0, 2, 0x40, 1, 0xa1, 0, 1, 0, 2, 0x42, 1, 0xa2, 0, 1, 0, 2, 0x44, 1]),
+  ])));
+  hevc.write("hvc1", hevc.indexOf("avc1", hevc.indexOf("stsd")), "ascii");
+  const descriptor = (tag: number, data: Buffer): Buffer => Buffer.concat([Buffer.from([tag, data.length]), data]);
+  const decoder = Buffer.alloc(13);
+  decoder[0] = 0x20;
+  decoder[1] = 0x11;
+  const mpeg4 = replaceMetadataBox(avc, "avcC", box("esds", Buffer.concat([
+    Buffer.alloc(4), descriptor(3, Buffer.concat([
+      Buffer.from([0, 1, 0]), descriptor(4, Buffer.concat([decoder, descriptor(5, Buffer.from([0, 0, 1, 0xb0, 1]))])),
+      descriptor(6, Buffer.from([2])),
+    ])),
+  ])));
+  mpeg4.write("mp4v", mpeg4.indexOf("avc1", mpeg4.indexOf("stsd")), "ascii");
+  // HEVC/MPEG-4 fixtures exercise configuration structure, not decoding of the AVC media.
+  for (const [bytes, kind, mutations] of [
+    [avc, "avcC", [[0, 0], [4, 0xfe], [5, 0xe0], [6, 0xff], [8, 0x68], [14, 2], [15, 0xff], [17, 0x67]]],
+    [hevc, "hvcC", [[0, 0], [13, 0], [22, 4], [23, 0xe0], [26, 0xff], [28, 0x42], [29, 0]]],
+    [mpeg4, "esds", [[0, 1], [4, 4], [5, 0xff], [9, 3], [10, 1], [11, 0x40], [12, 0x10]]],
+  ] as const) {
+    await writeFile(file, bytes);
+    assert.equal(await validateRecordingFile(file), bytes.length);
+    for (const [offset, value] of mutations) {
+      const corrupt = Buffer.from(bytes);
+      corrupt[corrupt.indexOf(kind) + 4 + offset] = value;
+      await writeFile(file, corrupt);
+      await assert.rejects(validateRecordingFile(file), hasCode("RECORDING_EXPORT_FAILED"), `${kind} byte ${offset}`);
+    }
+  }
+});
+
+test("sync-sample tables may be absent or empty but must have valid ordered sample references", async (t) => {
+  const { directory } = await fixture(t);
+  const file = path.join(directory, "sync.mp4");
+  const valid = mp4();
+  for (const replacement of [Buffer.alloc(0), box("stss", Buffer.alloc(8))]) {
+    const bytes = replaceMetadataBox(valid, "stss", replacement);
+    await writeFile(file, bytes);
+    assert.equal(await validateRecordingFile(file), bytes.length);
+  }
+  const syncOffset = valid.indexOf("stss") - 4;
+  const original = valid.subarray(syncOffset, syncOffset + valid.readUInt32BE(syncOffset));
+  const duplicateEntries = Buffer.alloc(16);
+  duplicateEntries.writeUInt32BE(2, 4);
+  duplicateEntries.writeUInt32BE(1, 8);
+  duplicateEntries.writeUInt32BE(1, 12);
+  const corruptions = [
+    replaceMetadataBox(valid, "stss", Buffer.concat([original, original])),
+    replaceMetadataBox(valid, "stss", box("stss", duplicateEntries)),
+  ];
+  for (const [offset, value] of [[4, 1], [8, 0], [8, 2], [12, 0], [12, 2]] as const) {
+    const bytes = Buffer.from(valid);
+    bytes.writeUInt32BE(value, valid.indexOf("stss") + offset);
+    corruptions.push(bytes);
+  }
+  for (const bytes of corruptions) {
+    await writeFile(file, bytes);
+    await assert.rejects(validateRecordingFile(file), hasCode("RECORDING_EXPORT_FAILED"));
+  }
+});
+
+for (const kind of ["avcC", "stss"] as const) {
+  test(`invalid ${kind} metadata never reports saved or removes the device capture`, async (t) => {
+    const { directory, adb, service, targetToken, start } = await fixture(t);
+    const started = recording(await start());
+    const bytes = mp4();
+    if (kind === "avcC") bytes[bytes.indexOf(kind) + 4] = 0;
+    else bytes.writeUInt32BE(2, bytes.indexOf(kind) + 12);
+    adb.recordingBytes = bytes;
+    await assert.rejects(service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId }), hasCode("RECORDING_EXPORT_FAILED"));
+    assert.equal((await service.screenRecording(targetToken, { kind: "status" })).status, "completed");
+    assert.equal(adb.calls.some((call) => call.args.join(" ").includes("shell rm -f")), false);
+    assert.deepEqual(await readdir(directory), []);
+  });
+}
