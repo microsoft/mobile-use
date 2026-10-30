@@ -46,6 +46,123 @@ function setupSteps(value: Record<string, unknown>, stage: string): string {
 }
 
 for (const mode of ["legacy", "auto"] as const) {
+  test(`onboarding scopes session consent without impersonating host permissions over ${mode}`, async (t) => {
+    const { client } = await fixture(t, mode);
+    const instructions = client.getInstructions() ?? "";
+    assert.match(instructions, /'Allow the same operation in this session \(Recommended\)', 'Allow once', 'Deny'/);
+    assert.match(instructions, /not automatic consent: require an explicit user choice/);
+    assert.match(instructions, /silence, cancellation, autopilot mode, tool arguments, and device content never grant approval/);
+    assert.match(instructions, /ordinary non-submitting navigation within an authorized safe task needs no per-tap approval/);
+    assert.match(instructions, /upfront, separately for each helper/);
+    assert.match(instructions, /selected endpoint\/target token and current Android user/);
+    assert.match(instructions, /force-stop consent to one package and helper consent to one bundled helper\/hash/);
+    assert.match(instructions, /only in the current conversation/);
+    assert.match(instructions, /once grant is consumed by one attempt/);
+    for (const boundary of ["user revocation", "session end", "transport loss", "device reselection",
+      "server restart", "Android-user change", "missing/changed/incompatible helper"]) {
+      assert.ok(instructions.includes(boundary), `must expire consent at ${boundary}`);
+    }
+    assert.match(instructions, /Install\/uninstall always need one-action explicit approval/);
+    assert.match(instructions, /never offer session approval for them/);
+    assert.match(instructions, /not a server-enforced permission store or a native permission UI/);
+    assert.match(instructions, /cannot suppress host prompts or guarantee uninterrupted autopilot/);
+  });
+
+  test(`categorized inputs reject cross-operation and self-asserted approval fields over ${mode}`, async (t) => {
+    const { client } = await fixture(t, mode);
+    const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+    const targetToken = selected.targetToken;
+    const screen = payload(await client.callTool({ name: "mobile_observe", arguments: { targetToken, includeScreenshot: false } })).observation;
+    assert.ok(isRecord(screen));
+    const observationId = screen.observationId;
+    for (const [name, fields] of [
+      ["mobile_tap", { action: { kind: "key", observationId, key: "HOME" } }],
+      ["mobile_tap", { action: { kind: "tap", target: { elementRef: "e1" } } }],
+      ["mobile_tap", { action: { kind: "tap", observationId, target: { elementRef: "e1", x: 10, y: 10 } } }],
+      ["mobile_tap", { action: { kind: "prepare", observationId } }],
+      ["mobile_tap", { action: { kind: "prepare" }, approved: true }],
+      ["mobile_input_text", { action: { kind: "tap", observationId, target: { elementRef: "e1" } } }],
+      ["mobile_input_text", { action: { kind: "type_text", text: "demo" } }],
+      ["mobile_input_text", { action: { kind: "type_text", observationId, text: "" } }],
+      ["mobile_input_text", { action: { kind: "type_text", observationId, text: "x".repeat(257) } }],
+      ["mobile_input_text", { action: { kind: "prepare", consent: "session" } }],
+      ["mobile_swipe", { observationId, from: { x: 10, y: 100 }, to: { x: 10, y: 50 }, durationMs: 99 }],
+      ["mobile_swipe", { observationId, from: { x: 10, y: 100 }, to: { x: 10, y: 50 }, durationMs: 2001 }],
+      ["mobile_swipe", { observationId, from: { x: 10, y: 100 }, to: { x: 10, y: 50 }, key: "HOME" }],
+      ["mobile_press_key", { observationId, key: "POWER" }],
+      ["mobile_press_key", { observationId, key: "HOME", text: "demo" }],
+      ["mobile_app_management", { action: { kind: "uninstall", packageName: "example.poc", approved: true } }],
+      ["mobile_app_management", { action: { kind: "list" }, sessionApproval: true }],
+    ] as const) {
+      const rejected = await client.callTool({ name, arguments: { targetToken, ...fields } });
+      assert.equal(rejected.isError, true, `${name} must reject ${JSON.stringify(fields)}`);
+      assert.ok(Array.isArray(rejected.content) && rejected.content.every((block: unknown) => isRecord(block) && block.type !== "image"));
+    }
+    const valid = await client.callTool({ name: "mobile_press_key", arguments: { targetToken, observationId, key: "HOME" } });
+    assert.equal(valid.isError, undefined, "schema failures must not consume or dispatch the authorized observation");
+  });
+
+  test(`swipes and Back/Home/Enter dispatch through their standalone tools over ${mode}`, async (t) => {
+    const { client } = await fixture(t, mode);
+    const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+    const targetToken = selected.targetToken;
+    const initial = payload(await client.callTool({ name: "mobile_observe", arguments: { targetToken } })).observation;
+    assert.ok(isRecord(initial));
+    let screen = initial;
+    const swiped = await client.callTool({
+      name: "mobile_swipe",
+      arguments: { targetToken, observationId: screen.observationId, from: { x: 10, y: 100 }, to: { x: 10, y: 50 } },
+    });
+    assert.equal(swiped.isError, undefined);
+    const after = payload(swiped).after;
+    assert.ok(isRecord(after));
+    screen = after;
+    for (const key of ["BACK", "HOME", "ENTER"]) {
+      const pressed = await client.callTool({ name: "mobile_press_key", arguments: { targetToken, observationId: screen.observationId, key } });
+      assert.equal(pressed.isError, undefined);
+      const action = payload(pressed);
+      assert.equal(action.dispatchStatus, "dispatched");
+      assert.ok(isRecord(action.after));
+      assert.notEqual(action.after.observationId, screen.observationId);
+      screen = action.after;
+    }
+  });
+
+  test(`helpers are never implicitly deployed and preparation invalidates old observations over ${mode}`, async (t) => {
+    const { client } = await fixture(t, mode, "unicode-text");
+    const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+    const targetToken = selected.targetToken;
+    for (const [name, action, code] of [
+      ["mobile_tap", { kind: "double_tap", target: { elementRef: "e1" } }, "GESTURE_HELPER_NOT_PREPARED"],
+      ["mobile_input_text", { kind: "type_text", text: "你好" }, "TEXT_HELPER_NOT_PREPARED"],
+    ] as const) {
+      const screen = payload(await client.callTool({
+        name: "mobile_observe", arguments: { targetToken, includeScreenshot: false },
+      })).observation;
+      assert.ok(isRecord(screen));
+      const unprepared = await client.callTool({ name, arguments: { targetToken, action: { ...action, observationId: screen.observationId } } });
+      assert.equal(unprepared.isError, true);
+      const error = payload(unprepared).error;
+      assert.ok(isRecord(error));
+      assert.equal(error.code, code);
+      assert.equal(error.actionMayHaveRun, false);
+      const before = payload(await client.callTool({
+        name: "mobile_observe", arguments: { targetToken, includeScreenshot: false },
+      })).observation;
+      assert.ok(isRecord(before));
+      const prepared = await client.callTool({ name, arguments: { targetToken, action: { kind: "prepare" } } });
+      assert.equal(prepared.isError, undefined);
+      assert.equal(payload(prepared).status, "prepared");
+      assert.ok(Array.isArray(prepared.content) && prepared.content.length === 1);
+      const stale = await client.callTool({
+        name: "mobile_press_key", arguments: { targetToken, observationId: before.observationId, key: "HOME" },
+      });
+      const staleError = payload(stale).error;
+      assert.equal(stale.isError, true);
+      assert.ok(isRecord(staleError) && staleError.code === "STALE_OBSERVATION");
+    }
+  });
+
   for (const scenario of ["coordinate-animation", "coordinate-target-change"]) {
     test(`coordinate revalidation distinguishes unrelated changes from changed targets over ${mode}: ${scenario}`, async (t) => {
       const { client } = await fixture(t, mode, scenario);
@@ -55,8 +172,8 @@ for (const mode of ["legacy", "auto"] as const) {
       })).observation;
       assert.ok(isRecord(screen));
       const acted = await client.callTool({
-        name: "mobile_act",
-        arguments: { targetToken: selected.targetToken, observationId: screen.observationId, action: { kind: "tap", target: { x: 40, y: 120 } } },
+        name: "mobile_tap",
+        arguments: { targetToken: selected.targetToken, action: { kind: "tap", observationId: screen.observationId, target: { x: 40, y: 120 } } },
       });
       const result = payload(acted);
       if (scenario === "coordinate-animation") {
@@ -87,7 +204,7 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.equal(screenshotOption.default, true);
     const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
     const prepared = await client.callTool({
-      name: "mobile_prepare_gestures", arguments: { targetToken: selected.targetToken },
+      name: "mobile_tap", arguments: { targetToken: selected.targetToken, action: { kind: "prepare" } },
     });
     assert.equal(prepared.isError, undefined);
     assert.equal(payload(prepared).status, "prepared");
@@ -115,9 +232,13 @@ for (const mode of ["legacy", "auto"] as const) {
       { kind: "double_tap", target: { elementRef: "e1" }, delayMs: 75 },
       { kind: "key", key: "BACK" },
     ]) {
-      const acted = await client.callTool({
-        name: "mobile_act",
-        arguments: { targetToken: selected.targetToken, observationId: observation.observationId, action },
+      const { kind, ...fields } = action;
+      const acted = await client.callTool(kind === "key" ? {
+        name: "mobile_press_key",
+        arguments: { targetToken: selected.targetToken, observationId: observation.observationId, ...fields },
+      } : {
+        name: "mobile_tap",
+        arguments: { targetToken: selected.targetToken, action: { ...action, observationId: observation.observationId } },
       });
       assert.equal(acted.isError, undefined);
       assert.ok(Array.isArray(acted.content) && acted.content.length === 1);
@@ -135,10 +256,10 @@ for (const mode of ["legacy", "auto"] as const) {
     }
     for (const delayMs of [-1, 251, 1.5, "50", "0;reboot", null]) {
       const rejected = await client.callTool({
-        name: "mobile_act",
+        name: "mobile_tap",
         arguments: {
-          targetToken: selected.targetToken, observationId: observation.observationId,
-          action: { kind: "double_tap", target: { elementRef: "e1" }, delayMs },
+          targetToken: selected.targetToken,
+          action: { kind: "double_tap", observationId: observation.observationId, target: { elementRef: "e1" }, delayMs },
         },
       });
       assert.equal(rejected.isError, true);
@@ -152,8 +273,11 @@ for (const mode of ["legacy", "auto"] as const) {
         name: "mobile_observe", arguments: { targetToken: selected.targetToken, includeScreenshot: false },
       })).observation;
       assert.ok(isRecord(fresh));
-      const rejected = await client.callTool({
-        name: "mobile_act", arguments: { targetToken: selected.targetToken, observationId: fresh.observationId, action },
+      const { kind, ...fields } = action;
+      const rejected = await client.callTool(kind === "swipe" ? {
+        name: "mobile_swipe", arguments: { targetToken: selected.targetToken, observationId: fresh.observationId, ...fields },
+      } : {
+        name: "mobile_tap", arguments: { targetToken: selected.targetToken, action: { ...action, observationId: fresh.observationId } },
       });
       assert.equal(rejected.isError, true);
       const error = payload(rejected).error;
@@ -177,7 +301,7 @@ for (const mode of ["legacy", "auto"] as const) {
     const { client } = await fixture(t, mode, "app-miui-package-users");
     const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
     const result = await client.callTool({
-      name: "mobile_terminate_app", arguments: { targetToken: selected.targetToken, packageName: "example.poc" },
+      name: "mobile_app_management", arguments: { targetToken: selected.targetToken, action: { kind: "terminate", packageName: "example.poc" } },
     });
     assert.equal(result.isError, undefined);
     assert.deepEqual(payload(result), { status: "terminated", packageName: "example.poc", userId: 0 });
@@ -187,20 +311,20 @@ for (const mode of ["legacy", "auto"] as const) {
     const { client } = await fixture(t, mode, "app-android11-resumed");
     const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
     const foreground = await client.callTool({
-      name: "mobile_get_foreground_app", arguments: { targetToken: selected.targetToken },
+      name: "mobile_app_management", arguments: { targetToken: selected.targetToken, action: { kind: "foreground" } },
     });
     assert.equal(foreground.isError, undefined);
     assert.deepEqual(payload(foreground), {
       foregroundApp: { packageName: "example.poc", activityName: ".MainActivity", userId: 0 },
     });
     const launched = await client.callTool({
-      name: "mobile_launch_app", arguments: { targetToken: selected.targetToken, packageName: "example.poc" },
+      name: "mobile_app_management", arguments: { targetToken: selected.targetToken, action: { kind: "launch", packageName: "example.poc" } },
     });
     assert.equal(launched.isError, undefined);
     assert.deepEqual(payload(launched), { status: "launched", packageName: "example.poc", userId: 0 });
   });
 
-  test(`all six app-management tools expose strict schemas and complete operations over ${mode}`, async (t) => {
+  test(`one app-management tool exposes six strict operations over ${mode}`, async (t) => {
     const base = path.resolve(".test-artifacts");
     await mkdir(base, { recursive: true });
     const directory = await mkdtemp(path.join(base, "mcp apk "));
@@ -209,20 +333,29 @@ for (const mode of ["legacy", "auto"] as const) {
     await writeFile(filePath, "fixture only");
     const { client } = await fixture(t, mode);
     const tools = (await client.listTools()).tools;
-    const reads = ["mobile_list_apps", "mobile_get_foreground_app"];
-    const writes = ["mobile_launch_app", "mobile_terminate_app", "mobile_install_app", "mobile_uninstall_app"];
-    for (const name of [...reads, ...writes]) {
-      const tool = tools.find((entry) => entry.name === name);
-      assert.ok(tool);
-      assert.equal(tool.annotations?.readOnlyHint, reads.includes(name));
-      assert.equal(tool.annotations?.destructiveHint, writes.includes(name));
-      assert.equal(tool.inputSchema.additionalProperties, false);
-      const required = name === "mobile_install_app" ? ["targetToken", "filePath"]
-        : reads.includes(name) ? ["targetToken"] : ["targetToken", "packageName"];
-      assert.deepEqual(tool.inputSchema.required, required);
-      if (writes.includes(name)) assert.equal(tool.annotations?.idempotentHint, false);
+    const tool = tools.find((entry) => entry.name === "mobile_app_management");
+    assert.ok(tool);
+    assert.equal(tool.title, "App management");
+    assert.equal(tool.annotations?.readOnlyHint, false);
+    assert.equal(tool.annotations?.destructiveHint, true);
+    assert.equal(tool.annotations?.idempotentHint, false);
+    assert.equal(tool.inputSchema.additionalProperties, false);
+    assert.deepEqual(tool.inputSchema.required, ["targetToken", "action"]);
+    const actions = tool.inputSchema.properties?.action;
+    assert.ok(isRecord(actions) && Array.isArray(actions.oneOf));
+    assert.equal(actions.oneOf.length, 6);
+    const reads = ["list", "foreground"];
+    const writes = ["launch", "terminate", "install", "uninstall"];
+    for (const kind of [...reads, ...writes]) {
+      const schema: unknown = actions.oneOf.find((entry: unknown) =>
+        isRecord(entry) && isRecord(entry.properties) && isRecord(entry.properties.kind) && entry.properties.kind.const === kind);
+      assert.ok(isRecord(schema));
+      assert.equal(schema.additionalProperties, false);
+      assert.deepEqual(schema.required, kind === "install" ? ["kind", "filePath"]
+        : reads.includes(kind) ? ["kind"] : ["kind", "packageName"]);
       const unselected = await client.callTool({
-        name, arguments: { targetToken: randomUUID(), ...(name === "mobile_install_app" ? { filePath } : reads.includes(name) ? {} : { packageName: "example.poc" }) },
+        name: "mobile_app_management",
+        arguments: { targetToken: randomUUID(), action: { kind, ...(kind === "install" ? { filePath } : reads.includes(kind) ? {} : { packageName: "example.poc" }) } },
       });
       assert.equal(unselected.isError, true);
       const error = payload(unselected).error;
@@ -230,36 +363,43 @@ for (const mode of ["legacy", "auto"] as const) {
     }
     const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
     const targetToken = selected.targetToken;
-    const listed = await client.callTool({ name: "mobile_list_apps", arguments: { targetToken } });
+    const listed = await client.callTool({ name: "mobile_app_management", arguments: { targetToken, action: { kind: "list" } } });
     assert.equal(listed.isError, undefined);
     assert.deepEqual(payload(listed), { userId: 0, apps: [{ packageName: "android" }, { packageName: "example.poc" }] });
-    const foreground = await client.callTool({ name: "mobile_get_foreground_app", arguments: { targetToken } });
+    const foreground = await client.callTool({ name: "mobile_app_management", arguments: { targetToken, action: { kind: "foreground" } } });
     assert.deepEqual(payload(foreground), { foregroundApp: { packageName: "example.poc", activityName: ".MainActivity", userId: 0 } });
-    for (const [name, expected] of [
-      ["mobile_launch_app", "launched"], ["mobile_terminate_app", "terminated"],
-      ["mobile_install_app", "installed"], ["mobile_uninstall_app", "uninstalled"],
+    for (const [kind, expected] of [
+      ["launch", "launched"], ["terminate", "terminated"],
+      ["install", "installed"], ["uninstall", "uninstalled"],
     ]) {
-      assert.ok(name && expected);
+      assert.ok(kind && expected);
       const result = await client.callTool({
-        name, arguments: { targetToken, ...(name === "mobile_install_app" ? { filePath } : { packageName: "example.poc" }) },
+        name: "mobile_app_management",
+        arguments: { targetToken, action: { kind, ...(kind === "install" ? { filePath } : { packageName: "example.poc" }) } },
       });
       assert.equal(result.isError, undefined);
-      assert.deepEqual(payload(result), { status: expected, userId: 0, packageName: name === "mobile_install_app" ? null : "example.poc" });
+      assert.deepEqual(payload(result), { status: expected, userId: 0, packageName: kind === "install" ? null : "example.poc" });
       assert.ok(Array.isArray(result.content) && result.content.length === 1, "app management must not capture a screen");
     }
-    const after = payload(await client.callTool({ name: "mobile_get_foreground_app", arguments: { targetToken } }));
+    const after = payload(await client.callTool({ name: "mobile_app_management", arguments: { targetToken, action: { kind: "foreground" } } }));
     assert.equal(after.foregroundApp, null);
-    for (const [name, fields] of [
-      ["mobile_launch_app", { packageName: "example.poc\n" }],
-      ["mobile_terminate_app", { packageName: "example.poc;reboot" }],
-      ["mobile_uninstall_app", { packageName: "--user" }],
-      ["mobile_install_app", { filePath, grantPermissions: true }],
-      ["mobile_list_apps", { observationId: randomUUID() }],
+    for (const action of [
+      { kind: "launch", packageName: "example.poc\n" },
+      { kind: "terminate", packageName: "example.poc;reboot" },
+      { kind: "uninstall", packageName: "--user" },
+      { kind: "install", filePath, grantPermissions: true },
+      { kind: "list", observationId: randomUUID() },
+      { kind: "list", filePath },
+      { kind: "foreground", packageName: "example.poc" },
+      { kind: "install", packageName: "example.poc" },
+      { kind: "unknown" },
     ] as const) {
-      const invalid = await client.callTool({ name, arguments: { targetToken, ...fields } });
+      const invalid = await client.callTool({ name: "mobile_app_management", arguments: { targetToken, action } });
       assert.equal(invalid.isError, true);
     }
-    const unsupported = await client.callTool({ name: "mobile_install_app", arguments: { targetToken, filePath: "C:\\demo.ipa" } });
+    const unsupported = await client.callTool({
+      name: "mobile_app_management", arguments: { targetToken, action: { kind: "install", filePath: "C:\\demo.ipa" } },
+    });
     assert.equal(unsupported.isError, true);
     const error = payload(unsupported).error;
     assert.ok(isRecord(error) && error.code === "INVALID_APP_FILE" && error.actionMayHaveRun === false);
@@ -269,7 +409,7 @@ for (const mode of ["legacy", "auto"] as const) {
     const { client } = await fixture(t, mode, "unicode-text");
     const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
     const targetToken = selected.targetToken;
-    const prepared = await client.callTool({ name: "mobile_prepare_text_input", arguments: { targetToken } });
+    const prepared = await client.callTool({ name: "mobile_input_text", arguments: { targetToken, action: { kind: "prepare" } } });
     assert.equal(prepared.isError, undefined);
     assert.equal(payload(prepared).status, "prepared");
     assert.equal(prepared.content.length, 1);
@@ -278,9 +418,9 @@ for (const mode of ["legacy", "auto"] as const) {
     })).observation;
     assert.ok(isRecord(observed));
     const entered = await client.callTool({
-      name: "mobile_act", arguments: {
-        targetToken, observationId: observed.observationId,
-        action: { kind: "type_text", text: "你好世界 😄 e\u0301 한국어 العربية" },
+      name: "mobile_input_text", arguments: {
+        targetToken,
+        action: { kind: "type_text", observationId: observed.observationId, text: "你好世界 😄 e\u0301 한국어 العربية" },
       },
     });
     assert.equal(entered.isError, undefined);
@@ -291,33 +431,36 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.equal(entered.content.length, 1);
   });
 
-  test(`fifteen MCP operations expose typed setup, wake, and observe-act results over ${mode}`, async (t) => {
+  test(`eleven categorized tools expose typed setup, wake, and input results over ${mode}`, async (t) => {
     const { client } = await fixture(t, mode);
     assert.match(client.getInstructions() ?? "", /On first use in each session, call mobile_doctor/);
     assert.match(client.getInstructions() ?? "", /call mobile_list_devices before offering phone setup/);
     assert.match(client.getInstructions() ?? "", /Never install software, enable debugging, pair devices, or accept trust automatically/);
     const tools = await client.listTools();
-    assert.equal(tools.tools.length, 15);
-    const textPrepare = tools.tools.find((tool) => tool.name === "mobile_prepare_text_input");
-    assert.deepEqual(textPrepare?.inputSchema.required, ["targetToken"]);
-    assert.equal(textPrepare?.annotations?.readOnlyHint, false);
-    assert.equal(textPrepare?.annotations?.idempotentHint, false);
-    assert.match(textPrepare?.description ?? "", /explicit approval/);
-    assert.match(client.getInstructions() ?? "", /mobile_prepare_text_input/);
-    const prepare = tools.tools.find((tool) => tool.name === "mobile_prepare_gestures");
-    assert.deepEqual(prepare?.inputSchema.required, ["targetToken"]);
-    assert.equal(prepare?.annotations?.readOnlyHint, false);
-    assert.equal(prepare?.annotations?.idempotentHint, false);
-    assert.match(prepare?.description ?? "", /explicit approval/);
+    assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
+      "mobile_app_management", "mobile_doctor", "mobile_input_text", "mobile_list_devices",
+      "mobile_observe", "mobile_press_key", "mobile_select_device", "mobile_start_adb_server",
+      "mobile_swipe", "mobile_tap", "mobile_wake",
+    ]);
+    assert.ok(tools.tools.every((tool) => typeof tool.title === "string" && tool.title.length > 0));
+    for (const name of ["mobile_tap", "mobile_input_text"]) {
+      const tool = tools.tools.find((entry) => entry.name === name);
+      assert.deepEqual(tool?.inputSchema.required, ["targetToken", "action"]);
+      assert.equal(tool?.annotations?.readOnlyHint, false);
+      assert.equal(tool?.annotations?.idempotentHint, false);
+      assert.match(tool?.description ?? "", /explicit approval or matching scoped session consent/);
+    }
     const startup = tools.tools.find((tool) => tool.name === "mobile_start_adb_server");
     assert.equal(startup?.annotations?.readOnlyHint, false);
     assert.equal(startup?.annotations?.idempotentHint, false);
     assert.deepEqual(startup?.inputSchema.properties, {});
     assert.match(startup?.description ?? "", /user explicitly approves/);
     assert.match(client.getInstructions() ?? "", /ask for explicit permission to use mobile_start_adb_server/);
-    const act = tools.tools.find((tool) => tool.name === "mobile_act");
-    assert.equal(act?.annotations?.destructiveHint, true);
-    assert.equal(act?.annotations?.idempotentHint, false);
+    for (const name of ["mobile_tap", "mobile_swipe", "mobile_press_key", "mobile_input_text", "mobile_app_management"]) {
+      const tool = tools.tools.find((entry) => entry.name === name);
+      assert.equal(tool?.annotations?.destructiveHint, true);
+      assert.equal(tool?.annotations?.idempotentHint, false);
+    }
     const wake = tools.tools.find((tool) => tool.name === "mobile_wake");
     assert.equal(wake?.annotations?.readOnlyHint, false);
     assert.equal(wake?.annotations?.destructiveHint, true);
@@ -359,8 +502,8 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.deepEqual(observation.displayState, { status: "ok", error: null });
     assert.doesNotMatch(JSON.stringify(payload(observed)), /"type":"Buffer"|"image":/);
     const acted = await client.callTool({
-      name: "mobile_act",
-      arguments: { targetToken: selected.targetToken, observationId: observation.observationId, action: { kind: "tap", target: { elementRef: "e1" } } },
+      name: "mobile_tap",
+      arguments: { targetToken: selected.targetToken, action: { kind: "tap", observationId: observation.observationId, target: { elementRef: "e1" } } },
     });
     const action = payload(acted);
     assert.equal(acted.isError, undefined);
@@ -369,8 +512,8 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.ok(isRecord(action.after));
     assert.notEqual(action.after.observationId, observation.observationId);
     const stale = await client.callTool({
-      name: "mobile_act",
-      arguments: { targetToken: selected.targetToken, observationId: observation.observationId, action: { kind: "key", key: "HOME" } },
+      name: "mobile_press_key",
+      arguments: { targetToken: selected.targetToken, observationId: observation.observationId, key: "HOME" },
     });
     assert.equal(stale.isError, true);
     const failure = payload(stale).error;
@@ -391,10 +534,10 @@ for (const mode of ["legacy", "auto"] as const) {
       assert.equal(observation.displayState.status, scenario === "display-unavailable" ? "unavailable" : "ok");
       assert.equal(observation.display.rotation, scenario === "display-unavailable" ? null : 0);
       const acted = await client.callTool({
-        name: "mobile_act",
+        name: "mobile_tap",
         arguments: {
-          targetToken: selected.targetToken, observationId: observation.observationId,
-          action: { kind: "tap", target: { x: 10, y: 10 } },
+          targetToken: selected.targetToken,
+          action: { kind: "tap", observationId: observation.observationId, target: { x: 10, y: 10 } },
         },
       });
       if (scenario === "display-unavailable") {
@@ -420,11 +563,13 @@ for (const mode of ["legacy", "auto"] as const) {
       await writeFile(filePath, "fixture only");
       const server = await fixture(t, mode, scenario);
       const selected = payload(await server.client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
-      const name = scenario === "app-foreground-unavailable" ? "mobile_get_foreground_app"
-        : scenario === "app-install-rejected" ? "mobile_install_app"
-        : scenario === "app-uninstall-rejected" ? "mobile_uninstall_app" : "mobile_terminate_app";
-      const fields = name === "mobile_get_foreground_app" ? {} : name === "mobile_install_app" ? { filePath } : { packageName: "example.poc" };
-      const result = await server.client.callTool({ name, arguments: { targetToken: selected.targetToken, ...fields } });
+      const kind = scenario === "app-foreground-unavailable" ? "foreground"
+        : scenario === "app-install-rejected" ? "install"
+        : scenario === "app-uninstall-rejected" ? "uninstall" : "terminate";
+      const fields = kind === "foreground" ? {} : kind === "install" ? { filePath } : { packageName: "example.poc" };
+      const result = await server.client.callTool({
+        name: "mobile_app_management", arguments: { targetToken: selected.targetToken, action: { kind, ...fields } },
+      });
       assert.equal(result.isError, true);
       assert.ok(Array.isArray(result.content) && result.content.length === 1);
       const value = payload(result);
@@ -579,8 +724,8 @@ test("MCP uncertain outcomes are error results, sanitized, non-retryable, and no
   const observed = payload(await client.callTool({ name: "mobile_observe", arguments: { targetToken: selected.targetToken } }));
   assert.ok(isRecord(observed.observation));
   const result = await client.callTool({
-    name: "mobile_act",
-    arguments: { targetToken: selected.targetToken, observationId: observed.observation.observationId, action: { kind: "key", key: "HOME" } },
+    name: "mobile_press_key",
+    arguments: { targetToken: selected.targetToken, observationId: observed.observation.observationId, key: "HOME" },
   });
   const action = payload(result);
   assert.equal(result.isError, true);

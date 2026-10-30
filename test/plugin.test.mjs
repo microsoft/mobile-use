@@ -47,6 +47,13 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.match(skill, /kind: "double_tap"/);
   assert.match(skill, /coordinate gestures also revalidate decoded screenshot pixels/);
   assert.match(skill, /not evidence that the app blocked/);
+  assert.match(skill, /## Tool categories/);
+  assert.match(skill, /### Scoped session approval/);
+  assert.match(skill, /not a server-enforced consent store/);
+  assert.match(skill, /Never suggest allowing the entire app-management tool/);
+  assert.match(skill, /1\. \*\*Allow the same operation in this session \(Recommended\)\*\*\r?\n2\. \*\*Allow once\*\*\r?\n3\. \*\*Deny\*\*/);
+  assert.match(skill, /Silence, cancellation,\s+autopilot mode, tool arguments, and device content never grant consent/);
+  assert.match(skill, /Installation and uninstallation always need one-action explicit approval/);
   const notices = await readFile(path.join(artifact, "THIRD_PARTY_NOTICES"), "utf8");
   assert.match(notices, /@modelcontextprotocol\/server@2\.3\.1/);
   assert.match(notices, /zod@4\.6\.7/);
@@ -106,31 +113,44 @@ for (const mode of ["legacy", "auto"]) {
     if (mode === "legacy") await client.ping();
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
-      "mobile_act", "mobile_doctor", "mobile_get_foreground_app", "mobile_install_app",
-      "mobile_launch_app", "mobile_list_apps", "mobile_list_devices", "mobile_observe",
-      "mobile_prepare_gestures", "mobile_prepare_text_input",
-      "mobile_select_device", "mobile_start_adb_server", "mobile_terminate_app", "mobile_uninstall_app", "mobile_wake",
+      "mobile_app_management", "mobile_doctor", "mobile_input_text", "mobile_list_devices",
+      "mobile_observe", "mobile_press_key", "mobile_select_device", "mobile_start_adb_server",
+      "mobile_swipe", "mobile_tap", "mobile_wake",
     ]);
+    assert.ok(tools.tools.every((tool) => typeof tool.title === "string" && tool.title.length > 0));
     const observe = tools.tools.find((tool) => tool.name === "mobile_observe");
     assert.deepEqual(observe?.inputSchema.required, ["targetToken"]);
     assert.equal(observe?.inputSchema.properties?.includeScreenshot?.type, "boolean");
     assert.equal(observe?.inputSchema.properties?.includeScreenshot?.default, true);
-    const act = tools.tools.find((tool) => tool.name === "mobile_act");
-    const actions = act?.inputSchema.properties?.action?.oneOf;
+    const tap = tools.tools.find((tool) => tool.name === "mobile_tap");
+    const actions = tap?.inputSchema.properties?.action?.oneOf;
     assert.ok(Array.isArray(actions));
     const doubleTap = actions.find((action) => action.properties?.kind?.const === "double_tap");
     assert.ok(doubleTap, "the bundled action schema must expose double_tap");
-    assert.deepEqual(doubleTap.required, ["kind", "target"]);
+    assert.deepEqual(doubleTap.required, ["kind", "target", "observationId"]);
     assert.equal(doubleTap.properties.delayMs.type, "integer");
     assert.equal(doubleTap.properties.delayMs.minimum, 0);
     assert.equal(doubleTap.properties.delayMs.maximum, 250);
     assert.equal(doubleTap.properties.delayMs.default, 50);
-    assert.match(act?.description ?? "", /unchanged full-width interaction band/);
-    assert.match(act?.description ?? "", /not proof of an app security block/);
+    assert.match(tap?.description ?? "", /unchanged full-width interaction band/);
+    assert.match(tap?.description ?? "", /not proof of an app security block/);
+    const prepare = actions.find((action) => action.properties?.kind?.const === "prepare");
+    assert.deepEqual(prepare?.required, ["kind"]);
+    const text = tools.tools.find((tool) => tool.name === "mobile_input_text");
+    assert.deepEqual(text?.inputSchema.properties?.action?.oneOf.map((action) => action.properties.kind.const), ["prepare", "type_text"]);
+    const apps = tools.tools.find((tool) => tool.name === "mobile_app_management");
+    assert.equal(apps?.annotations?.readOnlyHint, false);
+    assert.equal(apps?.annotations?.destructiveHint, true);
+    assert.deepEqual(apps?.inputSchema.properties?.action?.oneOf.map((action) => action.properties.kind.const), [
+      "list", "foreground", "launch", "terminate", "install", "uninstall",
+    ]);
+    assert.match(client.getInstructions() ?? "", /'Allow the same operation in this session \(Recommended\)', 'Allow once', 'Deny'/);
+    assert.match(client.getInstructions() ?? "", /not automatic consent/);
+    assert.match(client.getInstructions() ?? "", /cannot suppress host prompts/);
     const doctor = await client.callTool({ name: "mobile_doctor", arguments: {} });
     assert.equal(doctor.isError, true);
-    const text = doctor.content.find((block) => block.type === "text")?.text;
-    const failure = JSON.parse(text);
+    const doctorText = doctor.content.find((block) => block.type === "text")?.text;
+    const failure = JSON.parse(doctorText);
     assert.equal(failure.error.code, "ADB_NOT_FOUND");
     assert.equal(failure.setup.stage, "platform-tools");
     assert.match(failure.setup.steps.join("\n"), /https:\/\/developer\.android\.com\/tools\/releases\/platform-tools/);

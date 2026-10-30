@@ -10,7 +10,7 @@ function helperError(actionMayHaveRun = false): MobileUseError {
   return new MobileUseError(
     "GESTURE_HELPER_UNAVAILABLE",
     "The approved gesture helper is missing, changed, or incompatible with this Android build.",
-    "Stop input. Ask for approval to prepare the bundled helper again; never fall back to separate input commands or replay uncertain taps.",
+    "Stop input and revoke this helper's session consent. Ask for fresh approval before mobile_tap with action.kind prepare; never fall back to separate input commands or replay uncertain taps.",
     false, actionMayHaveRun,
   );
 }
@@ -32,7 +32,7 @@ export async function doubleTap(
   if (!remotePath) {
     throw new MobileUseError(
       "GESTURE_HELPER_NOT_PREPARED", "Double-tap requires explicit preparation of the bundled single-process helper.",
-      "Ask for approval to upload and run the gesture helper on the selected device, then call mobile_prepare_gestures and observe again.",
+      "Obtain explicit approval or use matching scoped session consent to upload and run the gesture helper, then call mobile_tap with action.kind prepare and observe again.",
     );
   }
   if (![x, y].every((value) => Number.isSafeInteger(value) && value >= 0 && value <= 0x7fffffff) ||

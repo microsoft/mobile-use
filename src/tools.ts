@@ -5,8 +5,11 @@ import packageInfo from "../package.json" with { type: "json" };
 import type { MobileUseService } from "./device-session.js";
 import { publicError } from "./errors.js";
 import { onboardingInstructions, phoneSetup, setupForDevices, setupForError } from "./setup.js";
-import { actionSchema, packageNameSchema } from "./types.js";
-import type { ObservedScreen } from "./types.js";
+import {
+  doubleTapActionSchema, keyActionSchema, packageNameSchema, swipeActionSchema,
+  tapActionSchema, textActionSchema,
+} from "./types.js";
+import type { ActionResult, ObservedScreen } from "./types.js";
 
 function result(payload: unknown, image: Buffer | null = null, isError = false): CallToolResult {
   const content: CallToolResult["content"] = [{ type: "text", text: JSON.stringify(payload) }];
@@ -29,15 +32,29 @@ function observationResult(screen: ObservedScreen): CallToolResult {
   return result({ observation: screen.observation }, screen.image);
 }
 
+function actionResult(action: ActionResult): CallToolResult {
+  return result({
+    dispatchStatus: action.dispatchStatus,
+    verificationStatus: action.verificationStatus,
+    after: action.after?.observation ?? null,
+    error: action.error,
+    ...(action.gestureTiming ? { gestureTiming: action.gestureTiming } : {}),
+  }, action.after?.image ?? null, action.verificationStatus === "unverified");
+}
+
 export function createMobileUseServer(service: MobileUseService): McpServer {
   const server = new McpServer(
     { name: "mobile-use", version: packageInfo.version },
     { instructions: onboardingInstructions },
   );
   const readOnly = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };
+  const mutation = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true };
   const targetToken = z.string().uuid();
+  const observationId = z.string().uuid();
+  const prepareAction = z.strictObject({ kind: z.literal("prepare") });
 
   server.registerTool("mobile_doctor", {
+    title: "Check mobile setup",
     description: "Start here on first use: diagnose Windows/ADB prerequisites and return step-by-step setup guidance. Ready means host Platform-Tools only; then call mobile_list_devices before guiding missing phone setup. Guide Platform-Tools installation, Developer options, and USB/Wireless debugging only as needed. Never installs software, pairs, changes settings, lists, or controls devices.",
     inputSchema: z.strictObject({}),
     annotations: readOnly,
@@ -46,7 +63,8 @@ export function createMobileUseServer(service: MobileUseService): McpServer {
   })));
 
   server.registerTool("mobile_start_adb_server", {
-    description: "Only after the user explicitly approves starting the local ADB server: reuse a compatible server at 127.0.0.1:5037 or start a missing one, verify readiness, and retry read-only device discovery. The shared server may remain running after this plugin exits and may initialize standard local ADB host keys. Never kills, replaces, or restarts a server, changes settings, pairs, approves phone trust, or controls devices. Conflicts fail explicitly. Never automatically retry uncertain startup.",
+    title: "Start ADB server",
+    description: "Only after the user explicitly approves starting the local ADB server: reuse a compatible server at 127.0.0.1:5037 or start a missing one, verify readiness, and retry read-only device discovery. The shared server may remain running after this plugin exits and may initialize standard local ADB host keys. Never kills, replaces, or restarts a server, changes settings, pairs, approves phone trust, or controls devices. Conflicts fail explicitly. Reuse an already explicit exact authorization rather than asking twice. Never automatically retry uncertain startup.",
     inputSchema: z.strictObject({}),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, (_input, ctx) => safely(async () => {
@@ -55,6 +73,7 @@ export function createMobileUseServer(service: MobileUseService): McpServer {
   }));
 
   server.registerTool("mobile_list_devices", {
+    title: "List devices",
     description: "After mobile_doctor, list local ADB endpoints with online/unauthorized/offline states and the next setup steps. Empty inventory prompts Developer options/USB debugging guidance; unauthorized/offline entries need user setup. USB and Wi-Fi may be the same phone. Do not silently select a device or confuse endpoint identity with physical identity.",
     inputSchema: z.strictObject({}),
     annotations: readOnly,
@@ -64,90 +83,102 @@ export function createMobileUseServer(service: MobileUseService): McpServer {
   }));
 
   server.registerTool("mobile_select_device", {
+    title: "Select device",
     description: "Select exactly the endpoint the user chose from mobile_list_devices. Verify a real Android 11+ device and modern paired wireless when applicable. Does not pair or connect devices. Every selection invalidates prior target/observation tokens.",
     inputSchema: z.strictObject({ endpointId: z.string().min(1).max(512) }),
     annotations: readOnly,
   }, (input, ctx) => safely(async () => result(await service.selectDevice(input.endpointId, ctx.mcpReq.signal))));
 
   server.registerTool("mobile_observe", {
-    description: "Read the selected device's native UI hierarchy and independently verified display geometry, optionally with a primary display PNG. includeScreenshot defaults to true; set false for hierarchy-only observation that never captures a screenshot, including subsequent mobile_act revalidation and results. Screenshot status is skipped in that mode, and coordinate taps/swipes are blocked; use elementRef taps. Unverified display state blocks input. Only observe user-approved non-sensitive content; results can be sent to the configured model service.",
+    title: "Observe screen",
+    description: "Read the selected device's native UI hierarchy and independently verified display geometry, optionally with a primary display PNG. includeScreenshot defaults to true; set false for hierarchy-only observation that never captures a screenshot, including subsequent input revalidation and results. Screenshot status is skipped in that mode, and coordinate taps/swipes are blocked; use elementRef taps. Unverified display state blocks input. Only observe user-approved non-sensitive content; results can be sent to the configured model service.",
     inputSchema: z.strictObject({ targetToken, includeScreenshot: z.boolean().default(true) }),
     annotations: readOnly,
   }, (input, ctx) => safely(async () => observationResult(await service.observe(input.targetToken, ctx.mcpReq.signal, input.includeScreenshot))));
 
   server.registerTool("mobile_wake", {
-    description: "Only when explicitly requested, wake the selected phone and dismiss an unsecured lock screen. Requires a target token but no screen observation; invalidates previous observations. Never enters credentials, bypasses authentication, or captures the lock screen. Secure or unrecognized lock states require manual unlocking. After success, observe approved non-sensitive content before subsequent mobile_act input. Never automatically replay an uncertain result.",
+    title: "Wake device",
+    description: "Only when explicitly requested, wake the selected phone and dismiss an unsecured lock screen. Requires a target token but no screen observation; invalidates previous observations. Never enters credentials, bypasses authentication, or captures the lock screen. Secure or unrecognized lock states require manual unlocking. After success, observe approved non-sensitive content before subsequent input. Do not ask again when this exact wake is already explicitly authorized. Never automatically replay an uncertain result.",
     inputSchema: z.strictObject({ targetToken }),
-    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+    annotations: mutation,
   }, (input, ctx) => safely(async () => result(await service.wake(input.targetToken, ctx.mcpReq.signal))));
 
-  server.registerTool("mobile_prepare_gestures", {
-    description: "Only after explicit approval to upload and run the bundled gesture helper on this selected device: deploy its embedded DEX to a new private /data/local/tmp/mobile-use-gestures-* directory, make the DEX read-only, verify SHA-256, and check its input API compatibility without injecting any input. No APK, permissions, service, network connection, or daemon is installed. Files remain on the device; no automatic deletion is performed. Requires a target token, invalidates old observations, and must be repeated with fresh approval after reselection/server restart. Never automatically retry uncertain preparation. Required before double_tap, not other actions.",
-    inputSchema: z.strictObject({ targetToken }),
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-  }, (input, ctx) => safely(async () => result(await service.prepareGestures(input.targetToken, ctx.mcpReq.signal))));
-
-  server.registerTool("mobile_prepare_text_input", {
-    description: "Only after explicit approval to upload and run the bundled Unicode text helper on this selected device: deploy its pinned read-only DEX to a new private /data/local/tmp/mobile-use-text-* directory and check UiAutomation compatibility without reading screen content or entering text.     No APK, IME change, clipboard, permissions, network service, or daemon is installed; existing accessibility services are not suppressed. Once prepared, hierarchy observations also use the hash-checked helper to preserve exact Unicode, including emoji and whitespace, without a lossy stock-dump fallback. Files remain on the device. Invalidates old observations; fresh approval/preparation is required after reselection/server restart. Never automatically deploy or replay uncertain preparation. Required for text outside the original ASCII letters/digits/space/period/comma/underscore/hyphen subset.",
-    inputSchema: z.strictObject({ targetToken }),
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-  }, (input, ctx) => safely(async () => result(await service.prepareTextInput(input.targetToken, ctx.mcpReq.signal))));
-
-  server.registerTool("mobile_act", {
-    description: "Perform ONE explicitly authorized bounded action on the selected transport using the latest observation (consumed on attempt, expires after 30 seconds). Coordinate taps/swipes require an unchanged full-width interaction band around the target or swipe path; bounded pixel changes elsewhere are allowed only with matching app/activity/user and hierarchy context. Large screen changes, changed target pixels/controls, and geometry changes reject input. A stale-observation error is a local revalidation failure, not proof of an app security block or an ad. double_tap requires prior approved mobile_prepare_gestures; it verifies the helper hash and injects both taps in ONE Android process, checking all four injection acknowledgements. Optional integer delayMs (0-250, default 50) requests the first-UP to second-DOWN event-time interval. Scheduling can increase it; gestureTiming reports the actual injected event-time gap, not proof of recognition. No automatic helper deployment or two-process fallback. Preserve the observation's screenshot setting during revalidation and the returned observation; hierarchy-only mode never captures screenshots and rejects coordinate taps/swipes. Then verify the requested state.     Text requires one unchanged focused enabled non-password native EditText. The original ASCII subset uses ADB input. Unicode, emoji, other punctuation, tabs and line breaks require prior approved mobile_prepare_text_input and append to the end of the actual value using ACTION_SET_TEXT, without inserting placeholder text, clearing existing content, or sending Enter.     Maximum 256 UTF-16 code units per action; the helper's resulting value plus exposed label/hint is capped at 4096. Unpaired surrogates and other control characters are unsupported. Custom fields/input filters may reject text; uncertain results are never replayed. No blind batches, arbitrary shell, or endpoint fallback. Never replay uncertain input. Generic taps/keys can have consequences: installation/debugging trust is not user consent.",
-    inputSchema: z.strictObject({ targetToken, observationId: z.string().uuid(), action: actionSchema }),
-    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  server.registerTool("mobile_tap", {
+    title: "Taps",
+    description: "Tap or double-tap one observed target. action.kind is tap, double_tap, or prepare. Input actions require action.observationId (latest, at most 30 seconds old, consumed on attempt) and target: an enabled clickable elementRef, or screenshot coordinates. Coordinate taps require an unchanged full-width interaction band and matching app/geometry; bounded changes elsewhere are allowed. A stale-observation error is not proof of an app security block. Double-tap uses one verified helper process, exactly two taps at the same point, and optional delayMs (0-250, default 50); gestureTiming is not proof of recognition. prepare requires explicit approval or matching scoped session consent to upload and run the bundled read-only DEX; no APK, permissions, service, or daemon is installed, and files remain on the device. Preparation invalidates observations and needs no observationId; observe again afterward. Never prepare implicitly, replace a changed helper, or replay uncertain input. Preserve screenshot-free mode; coordinates require a screenshot. Reuse authorization for ordinary navigation within the user's safe task; consequential taps still require specific authorization.",
+    inputSchema: z.strictObject({
+      targetToken,
+      action: z.discriminatedUnion("kind", [
+        prepareAction, tapActionSchema.extend({ observationId }), doubleTapActionSchema.extend({ observationId }),
+      ]),
+    }),
+    annotations: mutation,
   }, (input, ctx) => safely(async () => {
-    const action = await service.act(input.targetToken, input.observationId, input.action, ctx.mcpReq.signal);
-    return result({
-      dispatchStatus: action.dispatchStatus,
-      verificationStatus: action.verificationStatus,
-      after: action.after?.observation ?? null,
-      error: action.error,
-      ...(action.gestureTiming ? { gestureTiming: action.gestureTiming } : {}),
-    }, action.after?.image ?? null, action.verificationStatus === "unverified");
+    if (input.action.kind === "prepare") return result(await service.prepareGestures(input.targetToken, ctx.mcpReq.signal));
+    const { observationId, ...action } = input.action;
+    return actionResult(await service.act(input.targetToken, observationId, action, ctx.mcpReq.signal));
   }));
 
-  server.registerTool("mobile_list_apps", {
-    description: "List all installed Android packages, including system apps, for the current Android user on the explicitly selected device. Requires a target token, not a screen observation. Returns package names, not app labels. App inventory may be sensitive; use only for the user's authorized task.",
-    inputSchema: z.strictObject({ targetToken }),
-    annotations: readOnly,
-  }, (input, ctx) => safely(async () => result(await service.listApps(input.targetToken, ctx.mcpReq.signal))));
+  server.registerTool("mobile_swipe", {
+    title: "Swipes",
+    description: "Perform one bounded screenshot-based swipe using the latest observationId (at most 30 seconds old, consumed on attempt). Supply from/to coordinates and optional durationMs (100-2000, default 400). The full-width swipe path plus padding must be unchanged, with matching foreground app and display geometry and at most 20% changed pixels elsewhere. Hierarchy-only observations reject swipes without capturing an image. Return the next observation in the same screenshot mode and verify the intended state. Reuse the user's safe navigation task authorization; never replay an uncertain swipe.",
+    inputSchema: swipeActionSchema.omit({ kind: true }).extend({ targetToken, observationId }),
+    annotations: mutation,
+  }, (input, ctx) => safely(async () => {
+    const { targetToken, observationId, ...swipe } = input;
+    return actionResult(await service.act(targetToken, observationId, { kind: "swipe", ...swipe }, ctx.mcpReq.signal));
+  }));
 
-  server.registerTool("mobile_get_foreground_app", {
-    description: "Read the foreground app's package, activity, and Android user on the selected device's primary display, without a screenshot. Requires a target token. Returns null only when Android explicitly reports no resumed activity; ambiguous or unsupported diagnostics are errors.",
-    inputSchema: z.strictObject({ targetToken }),
-    annotations: readOnly,
-  }, (input, ctx) => safely(async () => result({
-    foregroundApp: await service.getForegroundApp(input.targetToken, ctx.mcpReq.signal),
-  })));
+  server.registerTool("mobile_press_key", {
+    title: "Back / Home / Enter",
+    description: "Press exactly one BACK, HOME, or ENTER key using the latest observationId (at most 30 seconds old, consumed on attempt). Revalidate display state and return the next observation, preserving screenshot-free mode. Ordinary safe navigation needs no repeated conversational approval within the authorized task. ENTER can submit a field: require specific authorization for any consequential action, and never enter credentials or replay uncertain input.",
+    inputSchema: keyActionSchema.omit({ kind: true }).extend({ targetToken, observationId }),
+    annotations: mutation,
+  }, (input, ctx) => safely(async () => actionResult(await service.act(
+    input.targetToken, input.observationId, { kind: "key", key: input.key }, ctx.mcpReq.signal,
+  ))));
 
-  const appMutation = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true };
-  const packageInput = z.strictObject({ targetToken, packageName: packageNameSchema });
+  server.registerTool("mobile_input_text", {
+    title: "Input text",
+    description: "Append text to one unchanged focused enabled non-password native EditText. action.kind is type_text or prepare. type_text requires action.observationId (latest, at most 30 seconds old, consumed on attempt) and 1-256 UTF-16 code units of text. ASCII letters/digits/space/period/comma/underscore/hyphen use ADB input; Unicode, emoji, other punctuation, tabs and line breaks require the prepared helper. prepare requires explicit approval or matching scoped session consent to upload and run the pinned read-only DEX; no APK, keyboard change, clipboard, permissions, service, or daemon is installed, and files remain. Preparation invalidates observations and needs no observationId; observe again afterward. The helper appends at the end of the actual value, excluding hints, using ACTION_SET_TEXT and exact readback in the same window; the result plus exposed label/hint is capped at 4096. It never clears or submits. Preserve screenshot-free mode. Never prepare implicitly, replace a changed helper, fall back, or replay uncertain input.",
+    inputSchema: z.strictObject({
+      targetToken,
+      action: z.discriminatedUnion("kind", [prepareAction, textActionSchema.extend({ observationId })]),
+    }),
+    annotations: mutation,
+  }, (input, ctx) => safely(async () => {
+    if (input.action.kind === "prepare") return result(await service.prepareTextInput(input.targetToken, ctx.mcpReq.signal));
+    const { observationId, ...action } = input.action;
+    return actionResult(await service.act(input.targetToken, observationId, action, ctx.mcpReq.signal));
+  }));
 
-  server.registerTool("mobile_launch_app", {
-    description: "Launch the specifically requested installed Android package for the current Android user, then verify it is in the foreground on the primary display. Requires an explicitly selected target, not a screen observation. Invalidates earlier observations and never installs an app, captures a screen, or retries an uncertain launch.",
-    inputSchema: packageInput,
-    annotations: appMutation,
-  }, (input, ctx) => safely(async () => result(await service.launchApp(input.targetToken, input.packageName, ctx.mcpReq.signal))));
-
-  server.registerTool("mobile_terminate_app", {
-    description: "Only with specific user authorization, force-stop the requested installed Android package, including its activities and services, for the current Android user. May discard unsaved app state. Requires a selected target, not a screen observation. Verifies the package is stopped, invalidates prior observations, and never retries uncertain termination.",
-    inputSchema: packageInput,
-    annotations: appMutation,
-  }, (input, ctx) => safely(async () => result(await service.terminateApp(input.targetToken, input.packageName, ctx.mcpReq.signal))));
-
-  server.registerTool("mobile_install_app", {
-    description: "Only after explicit approval for this APK and selected device, install one existing local .apk file for the current Android user. filePath must be an absolute Windows drive path to a regular 1-byte to 512-MiB file. No URLs, UNC paths, .ipa/.app/.zip, split bundles, automatic permission grants, downgrade flags, or automatic launch. Requires a target token, not an observation; invalidates prior observations. Bounded to 120 seconds; never retry uncertain installation.",
-    inputSchema: z.strictObject({ targetToken, filePath: z.string().min(1).max(32_767) }),
-    annotations: appMutation,
-  }, (input, ctx) => safely(async () => result(await service.installApp(input.targetToken, input.filePath, ctx.mcpReq.signal))));
-
-  server.registerTool("mobile_uninstall_app", {
-    description: "Only after explicit approval naming this package and selected device, uninstall an Android app for the current Android user and delete that user's app data. Other Android users are not targeted. Verifies package removal, invalidates prior observations, and never retries uncertain deletion or bypasses protected-app/device policy. Requires a target token, not a screen observation.",
-    inputSchema: packageInput,
-    annotations: appMutation,
-  }, (input, ctx) => safely(async () => result(await service.uninstallApp(input.targetToken, input.packageName, ctx.mcpReq.signal))));
+  server.registerTool("mobile_app_management", {
+    title: "App management",
+    description: "Manage apps on the selected device for the current Android user, without screenshots or observationId. action.kind: list returns installed package names (including system apps, not labels); foreground returns package/activity/user or null only for explicitly absent resumed activity; launch verifies a requested installed package is foreground; terminate force-stops its activities/services and verifies stopped state (may lose unsaved work); install accepts one existing local Windows .apk filePath (1 byte to 512 MiB, 120-second limit); uninstall deletes package and current-user app data and verifies removal. launch/terminate/uninstall require packageName. App metadata can be sensitive. Termination requires specific authorization or matching scoped session consent for that package/device/user. Each install/uninstall requires explicit one-action approval naming the APK/package and device, including app-data deletion for uninstall; never offer blanket session approval for them. Reuse an already explicit exact authorization rather than asking twice. No downloads, permission/downgrade flags, automatic launch after install, user switching, or policy bypass. Installation returns packageName: null, never inferred from filenames. Mutations invalidate observations even on failure; never retry an uncertain mutation. Tool-level annotations conservatively cover all operations.",
+    inputSchema: z.strictObject({
+      targetToken,
+      action: z.discriminatedUnion("kind", [
+        z.strictObject({ kind: z.literal("list") }),
+        z.strictObject({ kind: z.literal("foreground") }),
+        z.strictObject({ kind: z.literal("launch"), packageName: packageNameSchema }),
+        z.strictObject({ kind: z.literal("terminate"), packageName: packageNameSchema }),
+        z.strictObject({ kind: z.literal("install"), filePath: z.string().min(1).max(32_767) }),
+        z.strictObject({ kind: z.literal("uninstall"), packageName: packageNameSchema }),
+      ]),
+    }),
+    annotations: mutation,
+  }, (input, ctx) => safely(async () => {
+    const { targetToken, action } = input;
+    const signal = ctx.mcpReq.signal;
+    switch (action.kind) {
+      case "list": return result(await service.listApps(targetToken, signal));
+      case "foreground": return result({ foregroundApp: await service.getForegroundApp(targetToken, signal) });
+      case "launch": return result(await service.launchApp(targetToken, action.packageName, signal));
+      case "terminate": return result(await service.terminateApp(targetToken, action.packageName, signal));
+      case "install": return result(await service.installApp(targetToken, action.filePath, signal));
+      case "uninstall": return result(await service.uninstallApp(targetToken, action.packageName, signal));
+    }
+  }));
 
   server.server.onclose = () => service.stop();
   return server;

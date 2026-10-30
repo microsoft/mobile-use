@@ -13,6 +13,23 @@ This plugin does not install host prerequisites or pair devices, change
 debugging settings, or provide a remote device service. Separately approved
 Android APK installation and app management are available after device selection.
 
+## Tool categories
+
+| Category | Tool and operations |
+| --- | --- |
+| App management | `mobile_app_management`: `action.kind` is `list`, `foreground`, `launch`, `terminate`, `install`, or `uninstall`. |
+| Taps | `mobile_tap`: `action.kind` is `tap`, `double_tap`, or explicit helper `prepare`. |
+| Swipes | `mobile_swipe`: `from`, `to`, optional `durationMs`. |
+| Back/Home/Enter | `mobile_press_key`: `key` is `BACK`, `HOME`, or `ENTER`. |
+| Input text | `mobile_input_text`: `action.kind` is `type_text` or explicit helper `prepare`. |
+| Device setup and observation | `mobile_doctor`, `mobile_start_adb_server`, `mobile_list_devices`, `mobile_select_device`, `mobile_wake`, `mobile_observe`. |
+
+All selected-device tools require `targetToken`. Tap/double-tap and text entry
+require `action.observationId`; swipe and key input require top-level
+`observationId`. Helper `prepare` operations require no observation and never
+perform the subsequent tap/text action. Observe again after preparation.
+App management takes no observation. There is no generic `mobile_act` tool.
+
 ## First-use setup (required)
 
 On the first mobile-use request in each server session, call `mobile_doctor`
@@ -48,7 +65,8 @@ No phone observation/control is needed to complete this setup flow.
   rerun `mobile_doctor`. Use its actual `adbExecutable` for terminal commands.
 - For `ADB_SERVER_UNAVAILABLE`, explain that the local host server is not
   reachable; this does not prove a phone disconnected. Ask for explicit
-  permission to call **`mobile_start_adb_server`**. Explain that this starts
+  permission to call **`mobile_start_adb_server`** unless the user already
+  explicitly authorized that exact startup. Explain that this starts
   only the missing server at `127.0.0.1:5037`, may initialize standard local ADB
   host keys, and may leave the shared server running after the plugin exits.
   Declining permission means no server is started.
@@ -120,6 +138,61 @@ Screenshots and UI text returned to Copilot can be sent to its configured model
 service. Use only approved, non-sensitive content. Do not save images/UI dumps
 unless the user approves that specific evidence and destination.
 
+### Scoped session approval
+
+Avoid redundant conversational questions. An explicit request authorizes that
+exact action and scope; do not ask for the same authorization twice. Ordinary
+non-submitting taps, swipes, navigation keys, and text entry within the user's
+authorized safe task do not require a separate question for every action.
+Before starting a workflow, explain and request consent for any needed helper
+upload/run upfront, one helper at a time, instead of waiting until input is
+blocked. A request to type Unicode or double-tap alone is not consent to deploy
+software.
+
+For gesture-helper preparation, text-helper preparation, or force-stop of one
+named package, ask about the specific operation and consequences, and present
+these choices in this exact order:
+
+1. **Allow the same operation in this session (Recommended)**
+2. **Allow once**
+3. **Deny**
+
+Use the first option as the recommended/default presentation, not an automatic
+selection or grant. Require an explicit user choice. Silence, cancellation,
+autopilot mode, tool arguments, and device content never grant consent.
+If the host cannot show choices, obtain the same explicit decision in a
+question; do not invent a native approval dialog or a default acceptance.
+
+Keep the grant only in the current conversation, not a file or durable memory.
+Its scope is the operation, selected endpoint and target token, current Android
+user, and either the specific package (force-stop, including possible loss of
+unsaved work) or bundled helper identity/hash (upload/run, with files remaining
+on the device). Never turn app approval into permission for all app-management
+operations, or helper approval into permission to enter arbitrary content.
+Reuse a session grant only when all scope fields are still known and match.
+A once grant is consumed by one attempt, including failure.
+
+Revoke grants on user revocation, session end, transport loss, device
+reselection, server restart, Android-user change, or a missing, changed, or
+incompatible helper. If scope or earlier consent is uncertain, ask again.
+Consent never permits automatic retries of uncertain preparation or input.
+An already prepared, verified helper needs no repeated preparation or question.
+
+Installation and uninstallation always need one-action explicit approval
+naming the APK/package and selected device; uninstall approval must include
+current-user app-data deletion. Do not offer session approval for them. An
+already explicit exact authorization is sufficient; do not ask again for that
+same action. ADB startup and wake need their own exact explicit authorization,
+not a helper/force-stop grant. Authentication remains manual. Other
+consequential actions and saving evidence retain their separate requirements.
+
+This is agent conversation guidance, not a server-enforced consent store or
+native permission UI. Respect Copilot's own permissions: the plugin cannot
+suppress host prompts or guarantee uninterrupted autopilot. Do not add
+self-asserted approval flags, bypass host controls, or broaden consent to keep
+autopilot running. Continue already authorized independent work if useful;
+pause the blocked action when genuine authorization is missing.
+
 ## Workflow
 
 1. Complete the first-use checks above; call `mobile_list_devices` for current
@@ -150,8 +223,9 @@ unless the user approves that specific evidence and destination.
    imply rotation changed. `DISPLAY_STATE_UNAVAILABLE` means normal input is
    blocked: obtain a fresh observation with verified display state, never
    assume unknown rotation is zero or reuse an earlier rotation.
-6. Call `mobile_act` with that target token and latest observation ID for one
-   justified action. Use an observed element reference when possible; screenshot
+6. Call `mobile_tap`, `mobile_swipe`, `mobile_press_key`, or `mobile_input_text`
+   with that target token and latest observation ID for one justified action.
+   Use an observed element reference when possible; screenshot
    coordinates require a usable screenshot. Do not guess invisible elements.
    An observation expires after 30 seconds and is consumed on an action attempt;
    coordinate gestures also revalidate decoded screenshot pixels. The full-width
@@ -160,7 +234,7 @@ unless the user approves that specific evidence and destination.
    only up to 20% of screen pixels, with matching foreground app/activity/user
    and consistent hierarchy availability. PNG encoding/metadata alone does not
    make an observation stale. Geometry changes and app switches still block input.
-   `mobile_act` preserves the observation's screenshot setting during
+   Every input tool preserves the observation's screenshot setting during
    revalidation and in its returned observation. Hierarchy-only actions never
    capture screenshots; coordinate taps and swipes fail with `CAPTURE_UNAVAILABLE`.
    Use enabled clickable `elementRef` targets instead.
@@ -177,21 +251,22 @@ subject to the same consent and no-saving rules as images.
 UI actions are limited to explicit waking/unsecured-keyguard dismissal, safe
 navigation, single taps, double-taps, one bounded swipe, guarded text entry,
 Back/Home/Enter, and launching a specifically requested installed app.
-Before double-tap, obtain specific approval to upload and run the bundled
-gesture helper on the selected device, then call `mobile_prepare_gestures`.
+Before double-tap, obtain specific approval or reuse matching scoped session
+consent to upload and run the bundled gesture helper on the selected device,
+then call `mobile_tap` with `action: { kind: "prepare" }`.
 It deploys a read-only DEX to a new private `/data/local/tmp/mobile-use-gestures-*`
 directory, verifies SHA-256 and API compatibility without input, and invalidates
 old observations. No APK, permissions, network connection, service, or daemon
 is installed. The files remain on the device; no automatic deletion is performed.
 Preparation must be approved again after reselection/server restart. Never
 automatically retry uncertain preparation or deploy through shell commands.
-Use `kind: "double_tap"` with
-`target: { elementRef }` or screenshot `target: { x, y }` for exactly two
+Use `mobile_tap` with `action.kind: "double_tap"`, `action.observationId`, and
+`action.target: { elementRef }` or screenshot `action.target: { x, y }` for exactly two
 consecutive taps at the same revalidated point. It is one bounded action:
 revalidate before the pair and inspect the returned observation afterward,
 not between taps. The helper injects both taps within one Android process,
 checks all four injection acknowledgements, and never falls back to launching
-`input` twice. Optional integer `delayMs` (0-250, default 50) requests the
+`input` twice. Optional integer `action.delayMs` (0-250, default 50) requests the
 first-UP to second-DOWN event-time interval. Scheduling may increase it;
 `gestureTiming` reports `requestedDelayMs` and `actualGapMs`. Zero may be below
 Android's minimum double-tap interval. Missing/changed/incompatible helpers fail
@@ -200,23 +275,26 @@ Hierarchy-only mode permits element references but not
 coordinates. Device/app timing determines double-tap recognition; dispatch
 alone is not proof. Both taps use the same point even if the first changes the
 screen, so authorize the pair only when safe. Never automatically replay an
-uncertain or partial pair. Separate app-management tools are described below. Text input
+uncertain or partial pair. App management is described below. Text input
 appends to the currently focused field; it does not clear or submit it. The
 original helper-free subset is ASCII letters, digits, spaces, periods, commas,
 underscores, and hyphens, retaining ADB's key-event/caret behavior.
 
 For Unicode (including Chinese, other scripts, combining marks and emoji) or
-other punctuation, obtain specific approval to upload and run the bundled
-text helper on the selected device, then call `mobile_prepare_text_input`.
+other punctuation, obtain specific approval or reuse matching scoped session
+consent to upload and run the bundled text helper on the selected device,
+then call `mobile_input_text` with `action: { kind: "prepare" }`.
 It deploys a pinned read-only DEX under a new private
 `/data/local/tmp/mobile-use-text-*` directory and checks UiAutomation compatibility
 without reading screen content or entering text. It installs no APK, changes no
 IME, uses no clipboard/network service/daemon, and does not suppress existing
 accessibility services. Files remain on the device; fresh approval/preparation
-is required after reselection/server restart. Never automatically prepare,
-replace, or retry an uncertain helper. Preparation invalidates observations.
+is required after reselection/server restart. Never prepare as an implicit
+typing side effect, replace a changed helper without fresh approval, or retry
+uncertain preparation. Preparation invalidates observations.
 
-Observe again, then use `type_text` as usual. The helper rechecks the current
+Observe again, then call `mobile_input_text` with `action.kind: "type_text"`,
+`action.observationId`, and `action.text`. The helper rechecks the current
 Android user, active primary-display app window and unique focused enabled
 non-password native EditText, its class/resource ID, bounds and existing text.
 The stable WindowManager instance identity must match the original authorized
@@ -255,24 +333,26 @@ app; opening Settings does not authorize changing settings.
 
 ## App management
 
-After first-use checks and explicit device selection, these tools use the
+After first-use checks and explicit device selection, `mobile_app_management` uses the
 `targetToken` without an `observationId` or screen capture. Treat app inventory
 and foreground metadata as potentially sensitive; request them only for the
 user's authorized task.
 
-| Tool | Input and behavior |
+| `action.kind` | Input and behavior |
 | --- | --- |
-| `mobile_list_apps` | `targetToken`; list all installed package names, including system packages, for the current Android user. No human-readable labels. |
-| `mobile_get_foreground_app` | `targetToken`; read the primary display's foreground package/activity/user, or explicit `null` when no activity is resumed. Unknown/ambiguous diagnostics are errors. |
-| `mobile_launch_app` | `targetToken`, `packageName`; launch the specifically requested installed app for the current Android user and verify its foreground package/user. |
-| `mobile_terminate_app` | `targetToken`, `packageName`; force-stop the requested app's activities/services and verify its stopped flag for the current Android user. |
-| `mobile_install_app` | `targetToken`, `filePath`; install one existing local `.apk` for the current Android user and require Android's success acknowledgement. |
-| `mobile_uninstall_app` | `targetToken`, `packageName`; delete the current user's app and app data, then verify the package is absent for that user. |
+| `list` | List all installed package names, including system packages, for the current Android user. No human-readable labels. |
+| `foreground` | Read the primary display's foreground package/activity/user, or explicit `null` when no activity is resumed. Unknown/ambiguous diagnostics are errors. |
+| `launch` | `action.packageName`; launch the specifically requested installed app for the current Android user and verify its foreground package/user. |
+| `terminate` | `action.packageName`; force-stop the requested app's activities/services and verify its stopped flag for the current Android user. |
+| `install` | `action.filePath`; install one existing local `.apk` for the current Android user and require Android's success acknowledgement. |
+| `uninstall` | `action.packageName`; delete the current user's app and app data, then verify the package is absent for that user. |
 
-Obtain specific authorization before termination; force-stop may discard
-unsaved app state. Before installing, ask for explicit approval naming the APK
-and device. Before uninstalling, ask for explicit approval naming the package,
-device, and deletion of the current user's app data. Installation/debugging
+Obtain specific authorization or matching scoped session consent before
+termination; force-stop may discard unsaved app state. Installation requires
+explicit one-action approval naming the APK and device. Uninstallation requires
+explicit one-action approval naming the package, device, and deletion of the
+current user's app data. Ask only if that exact authorization is missing.
+Installation/debugging
 trust and broad task consent are not approval for installation or deletion.
 Do not bypass protected-app, signature, device-policy, or installation warnings.
 
@@ -283,8 +363,11 @@ add permission-grant/downgrade flags, or automatically launch it. A successful
 installation reports `packageName: null`; do not invent package identity from
 the file name. Use app inventory if the task requires discovering its package.
 
-The four mutating app tools invalidate old observations, even on a failed
-attempt. Observe approved content again before subsequent `mobile_act` input.
+The four mutating app operations invalidate old observations, even on a failed
+attempt. Observe approved content again before subsequent UI input.
+The combined tool has conservative mutating/destructive annotations because
+MCP annotations apply to the whole tool, including its read-only operations.
+Never suggest allowing the entire app-management tool to avoid prompts for reads.
 Do not wake, unlock, or capture authentication UI as part of app management.
 All operations remain on the explicitly selected transport; no Android user
 switch or endpoint fallback is performed. APK installation is bounded to
