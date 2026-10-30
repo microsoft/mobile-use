@@ -391,20 +391,15 @@ export class AndroidBackend {
     return value;
   }
 
-  async screenRecording(action: RecordingAction, requestSignal?: AbortSignal, verifyExportIdentity?: () => Promise<void>): Promise<RecordingResult> {
+  async screenRecording(action: RecordingAction, requestSignal?: AbortSignal): Promise<RecordingResult> {
     const signal = requestSignal ? AbortSignal.any([this.targetSignal, requestSignal]) : this.targetSignal;
     if (action.kind === "capabilities") return this.recorder.capabilities(signal);
-    if (action.kind === "status") return this.recorder.status();
-    if (action.kind === "stop") return this.recorder.stop(action.recordingId, async () => {
-      await verifyExportIdentity?.();
-      return this.currentUser(signal);
-    }, signal);
+    if (action.kind === "status") return this.recorder.status(signal);
+    if (action.kind === "stop") return this.recorder.stop(action.recordingId, () => this.currentUser(signal), signal);
     const userId = await this.currentUser(signal);
     return this.recorder.start(action.filePath, action.timeLimitSeconds, async () => {
-      const currentUser = await this.currentUser(signal);
       const lock = parseKeyguardState((await this.command(["shell", "dumpsys", "window", "policy"], { signal })).toString("utf8"));
-      if (currentUser !== userId || lock.showing || lock.inputRestricted || !lock.screenOn || lock.userId !== userId ||
-        await this.currentUser(signal) !== userId) {
+      if (lock.showing || lock.inputRestricted || !lock.screenOn || lock.userId !== userId) {
         throw new MobileUseError("MANUAL_UNLOCK_REQUIRED", "Recording requires an already awake and unlocked phone for the original Android user.", "Wake and unlock manually; obtain fresh approval after a user change. Never record authentication screens.");
       }
       return userId;

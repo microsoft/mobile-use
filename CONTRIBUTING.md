@@ -170,8 +170,8 @@ including to another connection to the same phone.
 | Action | Contract |
 | --- | --- |
 | `{ kind: "capabilities" }` | Read the selected device's native help without capture or observation invalidation. Return `{ status: "available", source: "device-help", unlimitedSupported, maxTimeLimitSeconds, nativeDefaultTimeLimitSeconds }`. No recording consent or unlocked screen is needed for this read-only metadata check. |
-| `{ kind: "start", filePath, timeLimitSeconds? }` | Require an already awake/unlocked phone and explicit consent for the device, non-sensitive screen content, duration or unlimited capture, and destination. `filePath` is a new absolute local Windows `.mp4` path in an existing writable directory. Optional `timeLimitSeconds` is a positive integer up to 4294967295 (native unsigned 32-bit argument range), restricted further by live capabilities. Omit it for unlimited recording until stopped where supported; the plugin never substitutes a finite default. Return recording metadata including `recordingId`. |
-| `{ kind: "status" }` | Return `status: idle` when no recording exists, otherwise metadata with `starting`, `recording`, `completed` or `saved`. `timeLimitSeconds: null` means unlimited. Native recorder failures remain explicit errors. No screen capture or export. |
+| `{ kind: "start", filePath, timeLimitSeconds? }` | Require an already awake/unlocked phone and explicit consent for the device, non-sensitive screen content, duration or unlimited capture, and destination. `filePath` is a new absolute local Windows `.mp4` path in an existing writable directory. Optional `timeLimitSeconds` is a positive integer up to 4294967295 (native unsigned 32-bit argument range), restricted further by live capabilities. Omit it for unlimited recording until stopped where supported; the plugin never substitutes a finite default. Dispatch once and return `status: starting` with `recordingId`, without waiting for startup. |
+| `{ kind: "status" }` | Return `status: idle` when no recording exists, otherwise metadata with `starting`, `recording`, `completed` or `saved`. For `starting`, perform one startup check per caller request. `timeLimitSeconds: null` means unlimited. Native recorder and query failures remain explicit errors. No screen capture or export. |
 | `{ kind: "stop", recordingId }` | Stop only this selection's matching recording, await native finalization, and export to the original destination. Also exports a recording that already reached its deadline. Return `status: saved`, `filePath` and `sizeBytes` only after a successful exclusive copy. Remove only this recording's generated device temporary files. |
 
 One active or unsaved recording is allowed per selection. Start and stop
@@ -192,33 +192,25 @@ on the native limit rather than overflowing the host timer. Unsupported older
 recorders fail explicitly, without falling back to a shorter capture.
 
 The adapter creates a private, randomly named device directory and keeps the
-recorder's ADB shell attached to the selection lifetime. After native-help and
-local-file preflight, it rechecks the original Android user and unlocked state
-immediately before the shell creates the directory and launches capture.
-Startup verifies the
-native PID's exact NUL-delimited command line, including this recording's unique
-output path, and requires the output file to exist so a rejected duration
-cannot be reported as a running recorder before argument parsing. A successful
-short recording that finishes during startup returns `completed` metadata and
-its recording ID; it still needs explicit stop/export validation. Stop checks
-that identity again in the signaling shell and sends
-SIGINT only to that PID; it never uses killall/pkill or another endpoint.
-Finalization is bounded to ten seconds. A failed attached host command is not
-proof that the native recorder exited: an explicit stop on a still-current
-target can verify and stop its owned PID, but the failed clip cannot be exported.
-The error remediation includes its recording ID.
-Once an explicit stop confirms native exit, both the stop error and subsequent
-status errors say capture is stopped rather than asking to stop it again.
-Successful attached-command completion also takes precedence over a racing
-process lookup that fails or sees an already-exiting process.
+recorder's ADB shell attached to the selection lifetime. Start checks native
+help, the local destination, and the unlocked state, then dispatches capture
+without startup polling. The caller requests status when it needs readiness:
+each request checks the owned PID/command line and output existence once while
+the recording is `starting`.
 
-Stop and status require the pinned transport, not fresh build/TLS metadata.
-Stop finalizes capture before revalidating full device identity or reading the
-active Android user, so those lookups cannot prevent the stop signal.
-Export checks identity and user after finalization
-and again before the final copy. A detected mismatch or failed lookup permanently
-blocks this clip's export, even after switching back. An already saved clip can
-still have its temporary files cleaned without checking the active user.
+Stop sends one SIGINT command guarded by the owned PID and unique output path,
+then waits up to ten seconds for the attached recorder command to finish before
+saving. It does not poll process exit, retry commands, reconcile racing results,
+or replace command failures with inferred success. A recorder that has already
+completed needs only export. Failed native commands are never exported.
+The caller decides when to check status, how to sequence operations, and whether
+a retry is justified by the returned result and existing authorization.
+
+Stop and status require the pinned transport, not repeated build/TLS metadata.
+Stop occurs before one current-user check for export; there is no repeated
+identity/user race checking or permanent export-failure latch. The caller must
+keep the approved user unchanged and handle failures before continuing.
+An already saved clip can have its temporary files cleaned without a user check.
 
 Recording is supervised and restricted to the same approved Android user
 throughout capture. Native screenrecord captures the shared primary display,
@@ -235,7 +227,7 @@ movie and video-track headers, nested box boundaries, local data references,
 AVC/HEVC configuration records and MPEG-4 descriptor lengths, sample-table
 counts, optional sync-sample references, and media ranges using bounded reads;
 it is structural validation, not a decoder or proof of playback. The exclusive
-streaming copy from the private local temporary directory is also abortable.
+streaming copy from the randomly named local temporary directory is also abortable.
 Cancellation removes only the partial destination created by that copy.
 There is no fixed video-size cap and the video is not buffered in server memory.
 Unlimited capture can exhaust device
@@ -251,7 +243,10 @@ status still exposes the saved path, and another explicit stop retries only
 cleanup, not capture or export.
 Cleanup treats an already-absent owned directory as success, including after
 a lost response, but still reports other removal failures.
-Failed or permanently export-blocked recordings retain their device files and
+The staging directory is beside the approved destination and inherits Windows
+folder permissions, as does the final file. The caller must choose an
+appropriately restricted destination; a random name does not provide isolation.
+Failed or unsaved recordings retain their device files and
 occupy the recording slot. There is no discard/delete operation: confirm capture
 stopped before explicitly reselecting; reselection does not remove those files.
 

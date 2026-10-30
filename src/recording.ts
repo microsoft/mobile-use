@@ -445,10 +445,8 @@ interface RecordingState {
   argv: string[];
   pid: string | undefined;
   completion: Promise<void>;
-  commandSettled: boolean;
-  exited: boolean;
+  settled: boolean;
   failure: MobileUseError | undefined;
-  exportFailure: MobileUseError | undefined;
   cleaned: boolean;
 }
 
@@ -501,8 +499,8 @@ export class ScreenRecorder {
     const argv = ["/system/bin/screenrecord", "--bit-rate", String(BIT_RATE), "--time-limit", String(timeLimitSeconds ?? 0), `${directory}/capture.mp4`];
     const state: RecordingState = {
       result: { recordingId: id, status: "starting", startedAt: new Date().toISOString(), timeLimitSeconds: timeLimitSeconds ?? null, userId, filePath: destination },
-      directory, argv, pid: undefined, completion: Promise.resolve(), commandSettled: false, exited: false,
-      failure: undefined, exportFailure: undefined, cleaned: false,
+      directory, argv, pid: undefined, completion: Promise.resolve(), settled: false,
+      failure: undefined, cleaned: false,
     };
     this.state = state;
     const requestedTimeoutMs = timeLimitSeconds === undefined ? 0 : (timeLimitSeconds + 15) * 1000;
@@ -512,121 +510,77 @@ export class ScreenRecorder {
     state.completion = this.command([
       "shell", `umask 077; mkdir -m 700 ${directory} || exit $?; echo $$ > ${directory}/pid || exit $?; exec ${argv.join(" ")}`,
     ], { mutating: true, timeoutMs }).then(() => {
-      state.commandSettled = true;
-      state.exited = true;
+      state.settled = true;
       state.result.status = "completed";
     }, (error: unknown) => {
-      state.commandSettled = true;
+      state.settled = true;
       const failure = publicError(error);
       state.failure = new MobileUseError(failure.code, failure.message,
-        `${failure.remediation} Recording ID: ${state.result.recordingId}. If this target is still available, explicitly request stop to verify and stop the owned process. This failed clip cannot be exported.`, false, true);
+        `${failure.remediation} Recording ID: ${state.result.recordingId}. Recorder state is uncertain; the caller must decide whether to request status or an explicit stop. This failed clip cannot be exported.`, false, true);
     });
-    try {
-      const deadline = Date.now() + 5000;
-      while (Date.now() < deadline) {
-        checkCancelled(signal);
-        if (state.failure) throw state.failure;
-        if (state.exited) return { ...state.result };
-        const pid = (await this.command([
-          "shell", `if [ -f ${directory}/pid ]; then cat ${directory}/pid; fi`,
-        ], { timeoutMs: Math.max(1, deadline - Date.now()), ...(signal ? { signal } : {}) })).toString("utf8").trim();
-        if (/^[1-9]\d{0,8}$/.test(pid)) {
-          const cmdline = await this.command([
-            "shell", `if [ -r /proc/${pid}/cmdline ] && [ -f ${directory}/capture.mp4 ]; then cat /proc/${pid}/cmdline; fi`,
-          ], { timeoutMs: Math.max(1, deadline - Date.now()), ...(signal ? { signal } : {}) });
-          if (cmdline.equals(Buffer.from(`${argv.join("\0")}\0`))) {
-            state.pid = pid;
-            if (state.failure) throw state.failure;
-            if (state.exited) return { ...state.result };
-            state.result.status = "recording";
-            return { ...state.result };
-          }
-          if (state.failure) throw state.failure;
-          if (state.exited) return { ...state.result };
-        } else if (pid) {
-          throw this.failure("The recorder returned an invalid process identity.");
-        }
-        await delay(100);
-      }
-      throw this.failure("The recorder's running state could not be verified within five seconds.");
-    } catch (error) {
-      const failure = publicError(error);
-      if (state.exited && !state.failure && !signal?.aborted &&
-        ["ADB_FAILED", "ADB_TIMEOUT", "RECORDING_FAILED"].includes(failure.code)) return { ...state.result };
-      throw new MobileUseError(failure.code, failure.message, failure.remediation, false, true);
-    }
+    return { ...state.result };
   }
 
-  status(): RecordingStatus {
-    if (!this.state) return { status: "idle" };
-    if (this.state.failure) throw this.state.failure;
-    if (this.state.exportFailure) throw this.state.exportFailure;
-    return { ...this.state.result };
+  private async readPid(state: RecordingState, signal?: AbortSignal): Promise<string | undefined> {
+    const pid = (await this.command([
+      "shell", `if [ -f ${state.directory}/pid ]; then cat ${state.directory}/pid; fi`,
+    ], signal ? { signal } : {})).toString("utf8").trim();
+    if (!pid) return undefined;
+    if (!/^[1-9]\d{0,8}$/.test(pid)) throw this.failure("The recorder returned an invalid process identity.");
+    return pid;
+  }
+
+  async status(signal?: AbortSignal): Promise<RecordingStatus> {
+    const state = this.state;
+    if (!state) return { status: "idle" };
+    if (state.failure) throw state.failure;
+    if (state.result.status === "starting") {
+      const pid = await this.readPid(state, signal);
+      if (pid) {
+        const cmdline = await this.command([
+          "shell", `if [ -r /proc/${pid}/cmdline ] && [ -f ${state.directory}/capture.mp4 ]; then cat /proc/${pid}/cmdline; fi`,
+        ], signal ? { signal } : {});
+        if (!state.settled && cmdline.equals(Buffer.from(`${state.argv.join("\0")}\0`))) {
+          state.pid = pid;
+          state.result.status = "recording";
+        }
+      }
+    }
+    if (state.failure) throw state.failure;
+    return { ...state.result };
   }
 
   private async finish(state: RecordingState, signal?: AbortSignal): Promise<void> {
-    const confirmed = (): void => {
-      if (state.result.status !== "saved") state.result.status = "completed";
-      if (state.failure) {
-        state.failure = new MobileUseError(state.failure.code,
-          "The owned recorder is confirmed stopped, but its attached command failed.",
-          `Recording ID: ${state.result.recordingId}. Capture is stopped; do not request another stop to end it. This failed clip cannot be exported. Device temporary files are retained.`,
-          false, true);
-      }
-    };
-    if (state.exited && state.commandSettled) {
-      confirmed();
-      return;
+    checkCancelled(signal);
+    if (state.result.status === "completed" || state.result.status === "saved") return;
+    const pid = state.pid ?? await this.readPid(state, signal);
+    if (!pid) throw this.failure("The recorder has no process identity yet; no stop signal was sent.");
+    const stopped = (await this.command([
+      "shell", `if [ ! -e /proc/${pid} ]; then echo EXITED; ` +
+        `elif [ "$(tr '\\000' ' ' < /proc/${pid}/cmdline)" = '${state.argv.join(" ")} ' ]; ` +
+        `then kill -INT ${pid} && echo STOPPED; else echo MISMATCH; fi`,
+    ], { mutating: true, ...(signal ? { signal } : {}) })).toString("utf8").trim();
+    if (!["STOPPED", "EXITED"].includes(stopped)) {
+      throw new MobileUseError("RECORDING_STOP_FAILED", "The device did not acknowledge stopping the owned recorder.",
+        "Check status and decide whether another stop is appropriate. The tool does not retry or reconcile racing commands.", false, true);
     }
-    const deadline = Date.now() + 10_000;
-    const options = () => {
-      const timeoutMs = deadline - Date.now();
-      if (timeoutMs <= 0) {
-        throw new MobileUseError("RECORDING_STOP_FAILED", "The recorder did not confirm finalization within ten seconds.", "Check status before another stop request. Do not copy an unfinalized recording.", false, true);
-      }
-      return { timeoutMs, ...(signal ? { signal } : {}) };
-    };
-    const probe = async (command: string, mutating = false): Promise<string> => {
-      try {
-        const output = await this.command(["shell", command], { ...options(), ...(mutating ? { mutating: true } : {}) });
-        return output.toString("utf8").trim();
-      } catch (error) {
-        const failure = publicError(error);
-        // Successful attached-command completion is stronger evidence than a racing /proc lookup.
-        if (state.exited && !state.failure && !signal?.aborted && ["ADB_FAILED", "ADB_TIMEOUT"].includes(failure.code)) return "EXITED";
-        throw error;
-      }
-    };
-    if (!state.pid) {
-      const pid = (await this.command([
-        "shell", `if [ -f ${state.directory}/pid ]; then cat ${state.directory}/pid; fi`,
-      ], options())).toString("utf8").trim();
-      if (/^[1-9]\d{0,8}$/.test(pid)) state.pid = pid;
-    }
-    if (!state.pid) throw this.failure("The recorder's process identity was never verified; no stop signal was sent.");
-    const expected = `${state.argv.join(" ")} `;
-    const identity = `if [ ! -e /proc/${state.pid} ]; then echo EXITED; ` +
-      `elif [ "$(tr '\\000' ' ' < /proc/${state.pid}/cmdline)" = '${expected}' ]; `;
-    const stopped = await probe(identity + `then kill -INT ${state.pid} && echo STOPPED; else echo MISMATCH; fi`, true);
-    if (!["STOPPED", "EXITED"].includes(stopped) && !state.exited) {
-      throw new MobileUseError("RECORDING_STOP_FAILED", "The recording process no longer matches; no stop was confirmed.", "Do not signal another process or replay automatically. Check status; unlimited capture has no fallback deadline.", false, true);
-    }
-    if (stopped === "EXITED") state.exited = true;
-    while (!state.exited || !state.commandSettled) {
+    const controller = new AbortController();
+    const waitSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    try {
+      await Promise.race([
+        state.completion,
+        delay(10_000, undefined, { signal: waitSignal }).then(() => {
+          throw new MobileUseError("RECORDING_STOP_FAILED", "The recorder did not finish within ten seconds of the stop command.",
+            "Check status before deciding whether to retry stop. The device recording has not been exported.", false, true);
+        }),
+      ]);
       checkCancelled(signal);
-      if (Date.now() >= deadline) {
-        throw new MobileUseError("RECORDING_STOP_FAILED", "The recorder did not confirm finalization within ten seconds.", "Check status before another stop request. Do not copy an unfinalized recording.", false, true);
-      }
-      await delay(50);
-      if (!state.exited) {
-        const status = await probe(identity + "then echo RUNNING; else echo MISMATCH; fi");
-        if (state.exited) continue;
-        if (status === "EXITED") state.exited = true;
-        else if (status !== "RUNNING") throw this.failure("The owned recorder's exit could not be confirmed.");
-      }
+    } catch (error) {
+      checkCancelled(signal);
+      throw error;
+    } finally {
+      controller.abort();
     }
-    await state.completion;
-    confirmed();
   }
 
   async stop(recordingId: string, readUser: () => Promise<number>, signal?: AbortSignal): Promise<ScreenRecording> {
@@ -642,23 +596,13 @@ export class ScreenRecorder {
     }
   }
 
-  private async verifyExportUser(state: RecordingState, readUser: () => Promise<number>): Promise<void> {
-    if (state.exportFailure) throw state.exportFailure;
-    try {
-      if (state.result.userId !== await readUser()) {
-        throw this.failure("The Android user changed; recording was stopped and this clip can never be exported.");
-      }
-    } catch (error) {
-      state.exportFailure = publicError(error);
-      throw state.exportFailure;
-    }
-  }
-
   private async stopRecording(state: RecordingState, readUser: () => Promise<number>, signal?: AbortSignal): Promise<ScreenRecording> {
     await this.finish(state, signal);
     if (state.failure) throw state.failure;
     if (state.result.status !== "saved") {
-      await this.verifyExportUser(state, readUser);
+      if (state.result.userId !== await readUser()) {
+        throw this.failure("The current Android user does not match the recording's user; no export was attempted.");
+      }
       const remote = `${state.directory}/capture.mp4`;
       const size = (await this.command(["shell", "stat", "-c", "%s", remote], signal ? { signal } : {})).toString("utf8").trim();
       if (!/^[1-9]\d{0,15}$/.test(size) || !Number.isSafeInteger(Number(size))) throw this.failure("The recording file is empty, unavailable, or its size cannot be represented safely.");
@@ -670,7 +614,6 @@ export class ScreenRecorder {
         await pullRecording(this.command, remote, local, signal);
         const sizeBytes = await validateRecordingFile(local, signal);
         if (sizeBytes !== Number(size)) throw this.failure("The recording size changed during export.");
-        await this.verifyExportUser(state, readUser);
         checkCancelled(signal);
         await copyRecording(local, destination, signal);
         if (signal?.aborted) {

@@ -75,14 +75,16 @@ export const onboardingInstructions =
   "never navigate to credentials/authentication or other sensitive content while recording or bypass protected capture. " +
   "Recording is supervised: keep the same approved Android user throughout. Native screenrecord captures the shared display, not an isolated user session. " +
   "User checks are snapshots, not continuous monitoring; switching away and back between checks can go undetected. Do not use recording for user-switching workflows or guaranteed cross-user isolation. " +
-  "Start returns a recordingId; UI actions can continue while capture runs. Status returns metadata only, with timeLimitSeconds: null for unlimited. " +
-  "A short clip may return completed at start; use its ID for explicit stop/save. " +
+  "Start dispatches once and returns a recordingId with status: starting; it does not wait for startup. The caller decides when to check status. " +
+  "Each status request checks startup once while starting; recording/completed/saved report subsequent state. timeLimitSeconds: null means unlimited. " +
   "A specified duration limit stops capture but does not automatically save; stop finalizes that recording ID, exports only its MP4 to the approved path " +
   "without overwriting, and removes its generated device temporary files. No audio, streaming, or video bytes are returned to the model. " +
   "Start/stop invalidate observations. One active/unsaved recording per selection. Never automatically restart uncertain recording or export. " +
   "Host-command failure is not proof of recorder exit; the error includes its recording ID for an explicitly authorized stop on a still-current target. " +
-  "After confirmed native exit, failure/status errors explicitly say capture is stopped. Stop/status need the pinned transport, not fresh build/TLS metadata; full identity revalidation gates unsaved export after stopping. " +
-  "Failed clips cannot be exported. A detected user mismatch or failed user lookup permanently blocks unsaved export, even after switching back; saved cleanup remains possible. " +
+  "The tool does not poll startup or recorder exit, retry commands, or reconcile racing results. Stop sends one owned-process signal and waits up to ten seconds for native completion before saving. " +
+  "Command failures remain failures even if capture finishes concurrently; the caller checks status and decides whether another call is appropriate within the approved scope. " +
+  "Stop/status need the pinned transport, not repeated build/TLS metadata. One current-user check gates unsaved export after stopping; caller supervision ensures user continuity. Failed native clips cannot be exported. " +
+  "Choose an appropriately restricted Windows destination: staging and final files inherit its folder permissions without additional per-user isolation. " +
   "Saved cleanup accepts an already-absent owned directory. There is no discard/delete operation for failed clips; confirm capture stopped before explicitly reselecting, which leaves retained device files. " +
   "Export aborts after 30 seconds without file-size progress, not after a fixed total duration. Cancellation removes partial final-copy output. " +
   "Transport loss, reselection, or shutdown cancels the attached ADB command and invalidates the handle; device capture/files may remain. " +

@@ -404,7 +404,7 @@ export class MobileUseService {
     }
     const recovery = parsed.data.kind === "stop" || parsed.data.kind === "status";
     return this.appOperation(targetToken, action.kind === "start" || action.kind === "stop",
-      (backend) => backend.screenRecording(parsed.data, signal, () => this.ensureIdentity(this.target(targetToken), signal)), signal, !recovery);
+      (backend) => backend.screenRecording(parsed.data, signal), signal, !recovery);
   }
 
   prepareGestures(targetToken: string, signal?: AbortSignal): Promise<PreparedGestures> {

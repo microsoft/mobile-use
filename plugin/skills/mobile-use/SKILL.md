@@ -354,8 +354,8 @@ All operations require `targetToken`, not `observationId`:
 | `action.kind` | Input and behavior |
 | --- | --- |
 | `capabilities` | No other action fields. Returns `status: available`, `source: device-help`, `unlimitedSupported`, `maxTimeLimitSeconds` and `nativeDefaultTimeLimitSeconds`. Read-only metadata; neither creates nor stops a recording. |
-| `start` | `action.filePath`: new absolute local Windows `.mp4` path with an existing writable parent. Optional `action.timeLimitSeconds`: positive integer seconds, up to 4294967295 and further restricted by live device capabilities. Omit it for unlimited recording until stopped where supported; never substitute a finite default. Returns `recordingId`, `status: recording`, destination and metadata after native process verification, or `completed` if a short clip already finished successfully. |
-| `status` | No other action fields. Returns `idle`, or recording metadata with `starting`, `recording`, `completed` or `saved`; `timeLimitSeconds: null` means unlimited. Failures remain errors. Does not export or capture a screenshot. |
+| `start` | `action.filePath`: new absolute local Windows `.mp4` path with an existing writable parent. Optional `action.timeLimitSeconds`: positive integer seconds, up to 4294967295 and further restricted by live device capabilities. Omit it for unlimited recording until stopped where supported; never substitute a finite default. Dispatches once and returns `recordingId`, `status: starting`, destination and metadata without waiting for startup. |
+| `status` | No other action fields. Returns `idle`, or recording metadata with `starting`, `recording`, `completed` or `saved`; `timeLimitSeconds: null` means unlimited. While `starting`, checks startup once per caller request. Failures remain errors. Does not export or capture a screenshot. |
 | `stop` | `action.recordingId`: the ID from this selection's start/status. Finalizes capture, saves the silent MP4 to the original approved path without overwriting, and removes only its generated device temporary files. Returns `saved`, `filePath` and `sizeBytes`. Also saves a recording that already completed at its deadline. |
 
 Only one active/unsaved recording is allowed per selection. Other UI tools
@@ -364,8 +364,13 @@ invalidate old observations even on failure. A specified duration stops native
 recording at its deadline; omitted duration records until stopped. Neither mode
 exports automatically; call stop to save. Unlimited capture can exhaust device
 storage, and export needs local space for a temporary download and final copy.
-Start rechecks native help and, after local preflight, the original user and
-unlocked state before launching capture. No audio,
+Start checks native help, the destination, and the unlocked state before
+dispatching capture. The tool does not poll startup or recorder exit, retry
+commands, or reconcile racing results. The AI caller decides when to request
+status and how to sequence or recover operations. Stop-and-save waits up to ten
+seconds for native completion before exporting; it does not retry the signal.
+Choose a destination with appropriate Windows folder permissions: staging and
+final files inherit them, without additional per-user isolation. No audio,
 streaming, helper installation or generic file transfer is provided.
 Responses contain metadata and the local path, never video bytes.
 
@@ -429,14 +434,14 @@ another explicit stop retries cleanup only.
 Host-command failure does not prove native capture stopped. Its error includes
 the recording ID: on a still-current target, obtain an explicit stop request to
 verify and signal only the owned process. Failed clips cannot be exported.
-Once native exit is confirmed, the failure/status error explicitly says capture
-is stopped; do not keep requesting stop to end a confirmed-stopped recorder.
-Stop and status do not require fresh build/TLS metadata. Full identity and user
-validation gate export only after capture stops. A detected user mismatch or failed user
-lookup permanently blocks that unsaved clip's export, even after switching back;
-cleanup of an already saved clip remains possible.
+Command errors are returned without being replaced by inferred success, even if
+the recorder completes concurrently. Check status before deciding whether a
+further stop/save is appropriate within the approved task; never blindly replay.
+Stop and status do not repeat build/TLS checks. Stop occurs before one current-
+user check for export; the caller owns user continuity and recovery decisions.
+Cleanup of an already saved clip needs no user check.
 Saved cleanup also succeeds when the owned directory is already absent.
-Failed or permanently export-blocked clips retain their device files and block
+Failed or unsaved clips retain their device files and block
 another start. There is no discard/delete operation; confirm capture stopped
 before explicitly reselecting, which does not clean those retained files.
 An export with no local file-size progress for 30 seconds fails explicitly;
@@ -451,8 +456,8 @@ capture has none: the user must verify capture stopped on the phone.
 Unexported temporary files can remain
 under `/data/local/tmp/mobile-use-recording-*`. Never silently reconnect,
 switch endpoints, or automatically export/recover through a new selection.
-An Android-user change permits stopping but permanently blocks the unsaved
-clip's export when detected.
+An Android-user mismatch at the export check permits stopping but rejects that
+export attempt. Do not treat switching back as evidence that the clip is safe.
 Protected content may be blank or unavailable; report it without bypasses.
 
 ## App management

@@ -451,12 +451,12 @@ for (const mode of ["legacy", "auto"] as const) {
     });
     assert.equal(started.isError, undefined);
     const metadata = payload(started);
-    assert.equal(metadata.status, "recording");
+    assert.equal(metadata.status, "starting");
     assert.equal(metadata.filePath, filePath);
     assert.equal(metadata.timeLimitSeconds, null);
     assert.equal(typeof metadata.recordingId, "string");
     const status = await client.callTool({ name: "mobile_screen_recording", arguments: { targetToken, action: { kind: "status" } } });
-    assert.deepEqual(payload(status), metadata);
+    assert.deepEqual(payload(status), { ...metadata, status: "recording" });
     const stopped = await client.callTool({
       name: "mobile_screen_recording", arguments: { targetToken, action: { kind: "stop", recordingId: metadata.recordingId } },
     });
