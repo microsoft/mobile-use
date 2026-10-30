@@ -893,12 +893,50 @@ test("sync-sample tables may be absent or empty but must have valid ordered samp
   }
 });
 
-for (const kind of ["avcC", "stss"] as const) {
+test("composition-time tables validate optional versions, entry lengths, sample counts and uniqueness", async (t) => {
+  const { directory } = await fixture(t);
+  const file = path.join(directory, "composition.mp4");
+  const valid = mp4();
+  const table = Buffer.alloc(16);
+  table.writeUInt32BE(1, 4);
+  table.writeUInt32BE(1, 8);
+  for (const [version, offset] of [[0, 0], [0, 0xffff_ffff], [1, 1], [1, -1]] as const) {
+    const data = Buffer.from(table);
+    data[0] = version;
+    if (version === 1) data.writeInt32BE(offset, 12);
+    else data.writeUInt32BE(offset, 12);
+    const bytes = replaceMetadataBox(valid, "stss", box("ctts", data));
+    await writeFile(file, bytes);
+    assert.equal(await validateRecordingFile(file), bytes.length);
+  }
+  const corruptions = [
+    box("ctts", table.subarray(0, 3)),
+    box("ctts", table.subarray(0, 8)),
+    box("ctts", Buffer.alloc(8)),
+    box("ctts", Buffer.concat([table, Buffer.alloc(1)])),
+    Buffer.concat([box("ctts", table), box("ctts", table)]),
+  ];
+  for (const [offset, value] of [[0, 0x0200_0000], [0, 1], [0, 0x0100_0001], [4, 2], [8, 0], [8, 2]] as const) {
+    const data = Buffer.from(table);
+    data.writeUInt32BE(value, offset);
+    corruptions.push(box("ctts", data));
+  }
+  for (const replacement of corruptions) {
+    await writeFile(file, replaceMetadataBox(valid, "stss", replacement));
+    await assert.rejects(validateRecordingFile(file), hasCode("RECORDING_EXPORT_FAILED"));
+  }
+});
+
+for (const kind of ["avcC", "stss", "ctts"] as const) {
   test(`invalid ${kind} metadata never reports saved or removes the device capture`, async (t) => {
     const { directory, adb, service, targetToken, start } = await fixture(t);
     const started = recording(await start());
-    const bytes = mp4();
-    if (kind === "avcC") bytes[bytes.indexOf(kind) + 4] = 0;
+    let bytes = mp4();
+    if (kind === "ctts") {
+      const truncated = Buffer.alloc(8);
+      truncated.writeUInt32BE(1, 4);
+      bytes = replaceMetadataBox(bytes, "stss", box("ctts", truncated));
+    } else if (kind === "avcC") bytes[bytes.indexOf(kind) + 4] = 0;
     else bytes.writeUInt32BE(2, bytes.indexOf(kind) + 12);
     adb.recordingBytes = bytes;
     await assert.rejects(service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId }), hasCode("RECORDING_EXPORT_FAILED"));

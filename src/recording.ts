@@ -228,10 +228,10 @@ export async function validateRecordingFile(filePath: string, signal?: AbortSign
       if (value.readUInt32BE(version === 1 ? 20 : 12) === 0 || duration === 0n ||
         duration === (version === 1 ? 0xffffffffffffffffn : 0xffffffffn)) return invalid();
     };
-    const rows = async (box: Box, width: number, visit: (bytes: Buffer, offset: number, index: number) => void | Promise<void>, allowEmpty = false): Promise<number> => {
+    const rows = async (box: Box, width: number, visit: (bytes: Buffer, offset: number, index: number) => void | Promise<void>, allowEmpty = false, version = 0): Promise<number> => {
       const header = await payload(box, 8);
       const entries = header.readUInt32BE(4);
-      if (header.readUInt32BE(0) !== 0 || (!allowEmpty && !entries) || box.end - box.data !== 8 + entries * width) return invalid();
+      if (header.readUInt32BE(0) !== version * 0x0100_0000 || (!allowEmpty && !entries) || box.end - box.data !== 8 + entries * width) return invalid();
       for (let index = 0; index < entries;) {
         const length = Math.min(1024, entries - index);
         const bytes = await read(box.data + 8 + index * width, length * width);
@@ -318,6 +318,19 @@ export async function validateRecordingFile(filePath: string, signal?: AbortSign
         timedSamples += count;
       });
       if (timedSamples !== samples) return invalid();
+      const compositionTables = tables.filter((box) => box.kind === "ctts");
+      if (compositionTables.length > 1) return invalid();
+      if (compositionTables[0]) {
+        const compositionVersion = (await payload(compositionTables[0], 4)).readUInt8(0);
+        if (compositionVersion !== 0 && compositionVersion !== 1) return invalid();
+        let compositionSamples = 0;
+        await rows(compositionTables[0], 8, (bytes, offset) => {
+          const count = bytes.readUInt32BE(offset);
+          if (!count || count > samples - compositionSamples) return invalid();
+          compositionSamples += count;
+        }, false, compositionVersion);
+        if (compositionSamples !== samples) return invalid();
+      }
       const offsets = tables.filter((box) => box.kind === "stco" || box.kind === "co64");
       if (offsets.length !== 1 || !offsets[0]) return invalid();
       const offsetsBox = offsets[0];

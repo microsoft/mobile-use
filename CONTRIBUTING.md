@@ -225,7 +225,7 @@ file-size progress so a stalled pull releases the serialized operation queue.
 Request cancellation and selection-lifetime abort still apply. Validation checks
 movie and video-track headers, nested box boundaries, local data references,
 AVC/HEVC configuration records and MPEG-4 descriptor lengths, sample-table
-counts, optional sync-sample references, and media ranges using bounded reads;
+counts, optional composition-time and sync-sample tables, and media ranges using bounded reads;
 it is structural validation, not a decoder or proof of playback. The exclusive
 streaming copy from the randomly named local temporary directory is also abortable.
 Cancellation removes only the partial destination created by that copy.
