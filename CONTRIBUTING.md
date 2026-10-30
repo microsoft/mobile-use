@@ -192,25 +192,45 @@ on the native limit rather than overflowing the host timer. Unsupported older
 recorders fail explicitly, without falling back to a shorter capture.
 
 The adapter creates a private, randomly named device directory and keeps the
-recorder's ADB shell attached to the selection lifetime. Startup verifies the
+recorder's ADB shell attached to the selection lifetime. After native-help and
+local-file preflight, it rechecks the original Android user and unlocked state
+immediately before the shell creates the directory and launches capture.
+Startup verifies the
 native PID's exact NUL-delimited command line, including this recording's unique
 output path, and requires the output file to exist so a rejected duration
-cannot be reported as a running recorder before argument parsing. Stop checks
+cannot be reported as a running recorder before argument parsing. A successful
+short recording that finishes during startup returns `completed` metadata and
+its recording ID; it still needs explicit stop/export validation. Stop checks
 that identity again in the signaling shell and sends
 SIGINT only to that PID; it never uses killall/pkill or another endpoint.
-Finalization is bounded to ten seconds. An Android-user change permits stopping
-capture but blocks export under the wrong user.
+Finalization is bounded to ten seconds. A failed attached host command is not
+proof that the native recorder exited: an explicit stop on a still-current
+target can verify and stop its owned PID, but the failed clip cannot be exported.
+The error remediation includes its recording ID.
+
+Stop finalizes capture before reading the active Android user, so a failed user
+lookup cannot prevent the stop signal. Export checks the user after finalization
+and again before the final copy. A detected mismatch or failed lookup permanently
+blocks this clip's export, even after switching back. An already saved clip can
+still have its temporary files cleaned without checking the active user.
 
 Export checks that device size is a positive, safely representable integer,
-pulls without a fixed deadline (request cancellation and selection-lifetime
-abort still apply), validates a finalized MP4 container with `ftyp`, `mdat`
-and `moov` boxes using small header reads, then exclusively copies from a
-private local temporary directory. There is no fixed video-size cap and the
-video is not buffered in server memory. Unlimited capture can exhaust device
+pulls without a fixed total deadline, but aborts after 30 seconds without local
+file-size progress so a stalled pull releases the serialized operation queue.
+Request cancellation and selection-lifetime abort still apply. Validation checks
+movie and video-track headers, nested box boundaries, local data references,
+codec metadata, sample-table counts and media ranges using bounded reads;
+it is structural validation, not a decoder or proof of playback. The exclusive
+streaming copy from the private local temporary directory is also abortable.
+Cancellation removes only the partial destination created by that copy.
+There is no fixed video-size cap and the video is not buffered in server memory.
+Unlimited capture can exhaust device
 storage; export requires enough local space for both the temporary download
 and final copy.
 Destination validation rejects UNC/device paths, alternate streams, reserved
-names and existing files. An exclusive copy also prevents races from
+names and existing files. It verifies Windows write permission by creating and
+removing a unique temporary file, not just `fs.access(W_OK)`, without reserving
+the requested evidence path. An exclusive copy also prevents races from
 overwriting another writer. Failed exports retain the device capture; local
 temporary files are cleaned. Cleanup errors after saving are explicit;
 status still exposes the saved path, and another explicit stop retries only

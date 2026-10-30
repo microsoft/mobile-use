@@ -24,14 +24,28 @@ export function chunk(type: string, data: Buffer): Buffer {
 }
 
 export function mp4(): Buffer {
-  const box = (kind: string, data: string): Buffer => {
-    const bytes = Buffer.alloc(8 + data.length);
-    bytes.writeUInt32BE(bytes.length);
-    bytes.write(kind, 4, "ascii");
-    bytes.write(data, 8, "ascii");
-    return bytes;
-  };
-  return Buffer.concat([box("ftyp", "isom0000"), box("mdat", "fixture-only"), box("moov", "fixture-only")]);
+  // Synthetic one-frame, 16x16 black AVC video; no phone content.
+  return Buffer.from(
+    "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAGRbWRhdAAAAYVluEhoEBAQEBAQEBAQEBAQ" +
+    "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ" +
+    "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ" +
+    "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ" +
+    "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ" +
+    "EBAQEICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA" +
+    "gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA" +
+    "gICAgICAgICAgICAgAAAAmhtb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAD6AABAAABAAAAAAAA" +
+    "AAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAACAAAB9HRyYWsAAABcdGtoZAAAAAcAAAAAAAAAAAAAAAEAAAAAAAAD6AAAAAAAAAAAAAAA" +
+    "AAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAEAAAABAAAAAAAZBtZGlhAAAA" +
+    "IG1kaGQAAAAAAAAAAAAAAAAAAAPoAAAD6FXEAAAAAAAtaGRscgAAAAAAAAAAdmlkZQAAAAAAAAAAAAAA" +
+    "AFZpZGVvSGFuZGxlcgAAAAE7bWluZgAAABR2bWhkAAAAAQAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAA" +
+    "AAAAAAABAAAADHVybCAAAAABAAAA+3N0YmwAAACDc3RzZAAAAAAAAAABAAAAc2F2YzEAAAAAAAAAAQAA" +
+    "AAAAAAAAAAAAAAAAAAAAEAAQAEgAAABIAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAY//8AAAAdYXZjQwFCAAr/4QAGZ0IACt3kAQAEaM44gAAAABhzdHRzAAAAAAAAAAEAAAABAAAD" +
+    "6AAAABxzdHNjAAAAAAAAAAEAAAABAAAAAQAAAAEAAAAUc3RzegAAAAAAAAGJAAAAAQAAABRzdGNvAAAA" +
+    "AAAAAAEAAAAoAAAAFHN0c3MAAAAAAAAAAQAAAAE=",
+    "base64",
+  );
 }
 
 export function recorderHelp(unlimited: boolean, defaultSeconds = 180): string {
@@ -180,6 +194,7 @@ export class FakeAdb implements AdbConnection {
   recordingHelp = recorderHelp(true);
   recordingArgv: string[] | undefined;
   recordingExit: ((error?: MobileUseError) => void) | undefined;
+  recordingRunning = false;
 
   executable(): string { return "C:\\fixture-only\\adb.exe"; }
 
@@ -208,8 +223,9 @@ export class FakeAdb implements AdbConnection {
     const command = args.slice(2).join(" ");
     if (command === "shell /system/bin/screenrecord --help 2>&1") return Buffer.from(this.recordingHelp);
     if (command.startsWith("shell mkdir -m 700 /data/local/tmp/mobile-use-recording-")) return Buffer.alloc(0);
-    if (command.startsWith("shell umask 077; echo $$ > /data/local/tmp/mobile-use-recording-")) {
+    if (command.startsWith("shell umask 077; mkdir -m 700 /data/local/tmp/mobile-use-recording-")) {
       this.recordingArgv = (command.split("; exec ")[1] ?? "").split(" ");
+      this.recordingRunning = true;
       return new Promise<Buffer>((resolve, reject) => {
         const abort = (): void => {
           this.recordingExit?.(new MobileUseError("CANCELLED", "Fixture recording interrupted.", "Do not replay.", false, true));
@@ -217,6 +233,7 @@ export class FakeAdb implements AdbConnection {
         this.recordingExit = (error) => {
           options.signal?.removeEventListener("abort", abort);
           this.recordingExit = undefined;
+          if (!error) this.recordingRunning = false;
           if (error) reject(error);
           else resolve(Buffer.alloc(0));
         };
@@ -229,8 +246,12 @@ export class FakeAdb implements AdbConnection {
       return Buffer.from(`${this.recordingArgv?.join("\0")}\0`);
     }
     if (command.startsWith("shell if [ ! -e /proc/12345 ];")) {
-      this.recordingExit?.();
-      return Buffer.from("STOPPED\n");
+      if (command.includes("kill -INT")) {
+        this.recordingRunning = false;
+        this.recordingExit?.();
+        return Buffer.from("STOPPED\n");
+      }
+      return Buffer.from(this.recordingRunning ? "RUNNING\n" : "EXITED\n");
     }
     if (command.startsWith("shell stat -c %s /data/local/tmp/mobile-use-recording-")) {
       return Buffer.from(`${this.recordingBytes.length}\n`);

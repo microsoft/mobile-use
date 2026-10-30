@@ -349,7 +349,7 @@ All operations require `targetToken`, not `observationId`:
 | `action.kind` | Input and behavior |
 | --- | --- |
 | `capabilities` | No other action fields. Returns `status: available`, `source: device-help`, `unlimitedSupported`, `maxTimeLimitSeconds` and `nativeDefaultTimeLimitSeconds`. Read-only metadata; neither creates nor stops a recording. |
-| `start` | `action.filePath`: new absolute local Windows `.mp4` path with an existing writable parent. Optional `action.timeLimitSeconds`: positive integer seconds, up to 4294967295 and further restricted by live device capabilities. Omit it for unlimited recording until stopped where supported; never substitute a finite default. Returns `recordingId`, `status: recording`, destination and metadata after native process verification. |
+| `start` | `action.filePath`: new absolute local Windows `.mp4` path with an existing writable parent. Optional `action.timeLimitSeconds`: positive integer seconds, up to 4294967295 and further restricted by live device capabilities. Omit it for unlimited recording until stopped where supported; never substitute a finite default. Returns `recordingId`, `status: recording`, destination and metadata after native process verification, or `completed` if a short clip already finished successfully. |
 | `status` | No other action fields. Returns `idle`, or recording metadata with `starting`, `recording`, `completed` or `saved`; `timeLimitSeconds: null` means unlimited. Failures remain errors. Does not export or capture a screenshot. |
 | `stop` | `action.recordingId`: the ID from this selection's start/status. Finalizes capture, saves the silent MP4 to the original approved path without overwriting, and removes only its generated device temporary files. Returns `saved`, `filePath` and `sizeBytes`. Also saves a recording that already completed at its deadline. |
 
@@ -359,7 +359,8 @@ invalidate old observations even on failure. A specified duration stops native
 recording at its deadline; omitted duration records until stopped. Neither mode
 exports automatically; call stop to save. Unlimited capture can exhaust device
 storage, and export needs local space for a temporary download and final copy.
-Start rechecks native help before any recording mutation. No audio,
+Start rechecks native help and, after local preflight, the original user and
+unlocked state before launching capture. No audio,
 streaming, helper installation or generic file transfer is provided.
 Responses contain metadata and the local path, never video bytes.
 
@@ -420,6 +421,17 @@ only for an explicitly authorized stop. Export failures retain the device
 capture. If cleanup fails after a save, status still reports the saved path;
 another explicit stop retries cleanup only.
 
+Host-command failure does not prove native capture stopped. Its error includes
+the recording ID: on a still-current target, obtain an explicit stop request to
+verify and signal only the owned process. Failed clips cannot be exported.
+Stop occurs before user validation. A detected user mismatch or failed user
+lookup permanently blocks that unsaved clip's export, even after switching back;
+cleanup of an already saved clip remains possible.
+An export with no local file-size progress for 30 seconds fails explicitly;
+healthy progressing transfers have no fixed total deadline. Cancellation during
+the final copy removes its partial local destination. Never automatically retry
+an uncertain export.
+
 Transport loss, reselection, server restart or shutdown cancels the attached
 ADB command and invalidates the recording ID. Android capture may continue;
 only an explicitly specified duration supplies a fallback deadline. Unlimited
@@ -427,7 +439,8 @@ capture has none: the user must verify capture stopped on the phone.
 Unexported temporary files can remain
 under `/data/local/tmp/mobile-use-recording-*`. Never silently reconnect,
 switch endpoints, or automatically export/recover through a new selection.
-An Android-user change permits stopping but blocks export under the wrong user.
+An Android-user change permits stopping but permanently blocks the unsaved
+clip's export when detected.
 Protected content may be blank or unavailable; report it without bypasses.
 
 ## App management

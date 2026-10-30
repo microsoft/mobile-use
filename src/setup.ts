@@ -74,9 +74,13 @@ export const onboardingInstructions =
   "Screenshot-free observation consent never authorizes recording. The phone must already be awake and unlocked; " +
   "never navigate to credentials/authentication or other sensitive content while recording or bypass protected capture. " +
   "Start returns a recordingId; UI actions can continue while capture runs. Status returns metadata only, with timeLimitSeconds: null for unlimited. " +
+  "A short clip may return completed at start; use its ID for explicit stop/save. " +
   "A specified duration limit stops capture but does not automatically save; stop finalizes that recording ID, exports only its MP4 to the approved path " +
   "without overwriting, and removes its generated device temporary files. No audio, streaming, or video bytes are returned to the model. " +
   "Start/stop invalidate observations. One active/unsaved recording per selection. Never automatically restart uncertain recording or export. " +
+  "Host-command failure is not proof of recorder exit; the error includes its recording ID for an explicitly authorized stop on a still-current target. " +
+  "Failed clips cannot be exported. A detected user mismatch or failed user lookup permanently blocks unsaved export, even after switching back; saved cleanup remains possible. " +
+  "Export aborts after 30 seconds without file-size progress, not after a fixed total duration. Cancellation removes partial final-copy output. " +
   "Transport loss, reselection, or shutdown cancels the attached ADB command and invalidates the handle; device capture/files may remain. " +
   "Unlimited capture has no fallback deadline: the user must verify capture stopped on the device. Never reconnect/fallback or export automatically.";
 
