@@ -132,16 +132,27 @@ Do not bypass local policy or change firewall settings to recover.
 | `mobile_list_devices` | Show endpoint IDs, transport IDs/kinds, all states, and next setup/selection steps. Discovery failure is not an empty list. |
 | `mobile_select_device` | Bind exactly the endpoint the user chose; qualify Android/physical-device and wireless evidence; return a session target token. |
 | `mobile_wake` | With explicit permission and a target token, wake the display and dismiss only an unsecured lock screen. No observation or screen capture; secure/unknown lock states require manual unlocking. |
-| `mobile_prepare_gestures` | After explicit approval to upload and run the bundled gesture helper on the selected device, deploy and hash-check its DEX and check API compatibility without touch input. Invalidates old observations; required only for double-tap. |
-| `mobile_prepare_text_input` | After explicit approval, upload and run the pinned text DEX, verify its hash and UiAutomation compatibility without reading screen content or entering text. Invalidates observations; required for Unicode and text outside the original ASCII subset. |
 | `mobile_observe` | Require that token; return a fresh observation ID, display geometry, hierarchy/status/warnings, and a separate PNG image block when usable. Set `includeScreenshot: false` to read only hierarchy/display state without capturing an image. |
-| `mobile_act` | Require target and latest observation IDs; dispatch one bounded action and return the next observation or an explicit unknown/unverified outcome. |
-| `mobile_list_apps` | With a target token, list all installed package names, including system packages, for the current Android user. No screen capture. |
-| `mobile_get_foreground_app` | With a target token, read the primary display's foreground package, activity, and Android user without capturing the screen. |
-| `mobile_launch_app` | Launch a specifically requested installed package for the current Android user and verify it is in the foreground. No observation required. |
-| `mobile_terminate_app` | With specific authorization, force-stop a requested installed package's activities/services for the current Android user and verify its stopped state. |
-| `mobile_install_app` | After explicit approval, install one local `.apk` for the current Android user using an absolute Windows `filePath`. No automatic launch or permission grants. |
-| `mobile_uninstall_app` | After explicit approval, remove the requested package and its app data for the current Android user, then verify package removal. |
+| `mobile_tap` | `action.kind`: `tap`, `double_tap`, or `prepare` for the gesture helper. Input requires `action.observationId` and `action.target`; preparation requires consent and invalidates observations without injecting input. |
+| `mobile_swipe` | Require target and latest observation IDs, `from`, `to`, and optional `durationMs`; dispatch one bounded screenshot-based swipe. |
+| `mobile_press_key` | Require target and latest observation IDs and one `key`: `BACK`, `HOME`, or `ENTER`. |
+| `mobile_input_text` | `action.kind`: `type_text` with `action.observationId`/`action.text`, or `prepare` for the text helper. Preparation requires consent and invalidates observations without entering text. |
+| `mobile_app_management` | `action.kind`: `list`, `foreground`, `launch`, `terminate`, `install`, or `uninstall`. No observation or screenshot; mutations require their specific authorization. |
+
+This is a breaking public-tool redesign: `mobile_act`, the six separate app
+tools, and the standalone preparation tools are no longer registered or
+provided as aliases. There are exactly 11 tools, each with a human-readable
+title. The internal bounded-action dispatcher and its device/screen guards
+remain shared across the four UI input tools.
+
+For app calls, move the former operation's fields into `action` and choose its
+`kind`: `list`, `foreground`, `launch`, `terminate`, `install`, or `uninstall`.
+For old UI actions, move tap/text `observationId` inside `action`; swipe/key
+fields are top-level and need no `kind`. Move app launch to app management
+instead of the old observation-based `launch_app` action. Replace preparation
+calls with the corresponding tap/text tool and `action: { kind: "prepare" }`.
+Every object/operation is strict: extraneous fields and cross-category actions
+are rejected, not silently ignored.
 
 USB and Wi-Fi entries may be two connections to the same phone. Choose an
 endpoint explicitly, not by model name; the selected identity includes physical
@@ -152,33 +163,38 @@ including to another connection to the same phone.
 
 ### App management
 
-All six app-management tools require the `targetToken` from explicit device
-selection. They revalidate the selected transport and physical identity; they
+All six `mobile_app_management` operations require the `targetToken` from
+explicit device selection. They revalidate the selected transport and physical identity; they
 never select another device, switch Android users, or capture a screen.
-They do not require an `observationId`. The four mutating tools invalidate
+They do not require an `observationId`. The four mutating operations invalidate
 earlier observations, including on a failed attempt; observe again before UI
-input. The original `mobile_act` launch action remains available with its
-existing observation requirements.
+input. App launch is available only through the public app-management tool.
+Because MCP annotations apply at tool level, the combined tool conservatively
+advertises `readOnlyHint: false`, `destructiveHint: true`, and
+`idempotentHint: false`, including for its list/foreground reads. Do not mark
+the whole tool read-only or recommend blanket tool approval to avoid prompts.
 
-`mobile_list_apps` returns `{ userId, apps: [{ packageName }] }` for the current
-Android user, including system apps; it does not resolve human-readable labels.
-`mobile_get_foreground_app` returns `{ foregroundApp: { packageName,
+`action: { kind: "list" }` returns `{ userId, apps: [{ packageName }] }` for the
+current Android user, including system apps; it does not resolve human-readable labels.
+`action: { kind: "foreground" }` returns `{ foregroundApp: { packageName,
 activityName, userId } }`, or `foregroundApp: null` only when Android explicitly
 reports no resumed activity. It supports Android 11's `ResumedActivity` and
 newer `mResumedActivity`/`topResumedActivity` fields, scoped to the primary
 display; missing, ambiguous, and unfamiliar OEM formats are errors.
 
-Launch, terminate, and uninstall accept `packageName`. Launch verifies the
+Launch, terminate, and uninstall accept `action.packageName`. Launch verifies the
 foreground package/user. Termination uses Android force-stop (activities and
 services), may discard unsaved state, and verifies the package's stopped flag.
 Unrelated user headings in package diagnostics are ignored; duplicate or
 conflicting installed/stopped records still fail verification.
 Uninstallation deletes app data for the current user without targeting other
 users; protected/system packages remain subject to Android policy. Obtain
-specific authorization for termination and explicit approval naming the
-package/device and data-deletion consequence before uninstallation.
+specific authorization or matching scoped session consent for termination.
+Uninstallation requires explicit one-action approval naming the package/device
+and data-deletion consequence. Do not ask again for an already explicit exact
+authorization.
 
-Installation accepts `filePath`, an absolute local Windows drive path such as
+Installation accepts `action.filePath`, an absolute local Windows drive path such as
 `C:\Packages\demo.apk`. The existing, readable regular file must be 1 byte to
 512 MiB. Spaces and shell punctuation in the local path are passed as a
 literal process argument, never through a shell. URLs, UNC/device paths,
@@ -209,8 +225,8 @@ security settings, or attempts to bypass authentication.
 
 Success is `{ status: "awake-and-unlocked", keyguardDismissed: boolean }`,
 verified against screen-on and keyguard state, without returning a screenshot.
-Then observe approved non-sensitive content before subsequent `mobile_act`
-input. A secure keyguard or SIM lock returns `MANUAL_UNLOCK_REQUIRED`;
+Then observe approved non-sensitive content before subsequent UI input.
+A secure keyguard or SIM lock returns `MANUAL_UNLOCK_REQUIRED`;
 unavailable, contradictory, or unfamiliar OEM diagnostics return
 `KEYGUARD_STATE_UNAVAILABLE`. `WAKE_FAILED` means readiness could not be
 verified. The screen may already have been woken when an error is returned;
@@ -220,16 +236,66 @@ This capability does not enable debugging or authorize the computer.
 
 ### UI actions and observation guards
 
-Supported `mobile_act` action objects:
+Supported public UI inputs (all require `targetToken`):
 
-| `kind` | Additional fields |
+| Tool / operation | Additional fields |
 | --- | --- |
-| `tap` | `target: { elementRef }` from the observation, or `target: { x, y }` from its screenshot. |
-| `double_tap` | Same `target` as `tap`; optional integer `delayMs` (0-250, default 50) requests the first-UP to second-DOWN event-time interval. Requires approved `mobile_prepare_gestures`. |
-| `swipe` | `from: { x, y }`, `to: { x, y }`, optional `durationMs` (100-2000, default 400). |
-| `type_text` | `text`: 1-256 UTF-16 code units of well-formed Unicode text. The original ASCII subset uses ADB; all other supported text requires approved `mobile_prepare_text_input`. |
-| `key` | `key`: `BACK`, `HOME`, or `ENTER`. |
-| `launch_app` | `packageName` of a specifically requested, already-installed app with one resolved launcher. |
+| `mobile_tap`, `action.kind: "tap"` | `action.observationId`; `action.target: { elementRef }` from the observation, or `{ x, y }` from its screenshot. |
+| `mobile_tap`, `action.kind: "double_tap"` | Same fields as tap; optional `action.delayMs` (integer 0-250, default 50) requests the first-UP to second-DOWN interval. Requires the prepared gesture helper. |
+| `mobile_tap`, `action.kind: "prepare"` | Upload/run the gesture helper after explicit approval or matching scoped session consent; no observation or tap. |
+| `mobile_swipe` | `observationId`, `from: { x, y }`, `to: { x, y }`, optional `durationMs` (integer 100-2000, default 400). |
+| `mobile_input_text`, `action.kind: "type_text"` | `action.observationId`, `action.text`: 1-256 UTF-16 code units. Text outside the original ASCII subset needs the prepared text helper. |
+| `mobile_input_text`, `action.kind: "prepare"` | Upload/run the text helper after explicit approval or matching scoped session consent; no observation or text input. |
+| `mobile_press_key` | `observationId`, `key`: `BACK`, `HOME`, or `ENTER`. |
+
+For example:
+
+```json
+{
+  "targetToken": "<selected target token>",
+  "action": {
+    "kind": "tap",
+    "observationId": "<latest observation id>",
+    "target": { "elementRef": "e1" }
+  }
+}
+```
+
+Each input returns the existing dispatch/verification status, next observation,
+and optional image/gesture timing. Preparation still returns
+`{ status: "prepared", sha256, remotePath }` without taking a screenshot.
+
+#### Approval UX and session scope
+
+The skill and server onboarding instructions govern conversational approval;
+there is no server-enforced permission store and no `approved` boolean or
+agent-minted grant token. Copilot's native tool-permission controls remain
+authoritative and may still interrupt autopilot.
+
+An exact explicit user authorization is sufficient for that action; do not ask
+again. Safe, non-submitting navigation within the agreed task needs no per-step
+question. Ask about required helper upload/run before the workflow starts,
+separately for each helper; an input request alone does not authorize deployment.
+For helper preparation or force-stop of a named package, present these choices
+in order: **Allow the same operation in this session (Recommended)**,
+**Allow once**, **Deny**. The first is the default/recommended presentation,
+never automatic acceptance. Silence/cancellation/autopilot/tool arguments or
+device content do not grant consent.
+
+Record grants only in the current conversation. Scope them to the operation,
+selected endpoint/target token, current Android user, and package or bundled
+helper/hash; explain unsaved-state loss or retained helper files. Consume
+one-time consent on the first attempt. Revoke session consent on revocation,
+session end, transport loss, reselection, server restart, Android-user change,
+or missing/changed/incompatible helper. Unknown or mismatched scope needs a
+new question. Never automatically retry uncertain operations using a grant.
+
+Install/uninstall always retain explicit one-action approval for the specific
+APK/package and device, including current-user app-data deletion for uninstall.
+ADB startup/wake require exact explicit authorization outside helper/app grants.
+Authentication remains manual, and other consequential actions or evidence
+saving retain their own approval requirements. Do not recommend blanket
+approval of the combined app tool or bypass native permissions.
 
 #### Double-tap helper and preparation
 
@@ -244,9 +310,10 @@ If the framework double-tap timeout is already exceeded, the helper stops before
 the second tap and reports an uncertain partial outcome. Zero is accepted for
 diagnosis, but may be below Android's minimum double-tap interval.
 
-Before the first double-tap after each selection/server restart, ask specifically
-for approval to upload and run the bundled helper on that device, then call
-`mobile_prepare_gestures`. Preparation copies the embedded DEX to a new
+Before the first double-tap after each selection/server restart, obtain specific
+approval to upload and run the bundled helper on that device, then call
+`mobile_tap` with `action: { kind: "prepare" }`. Matching scoped session
+consent can satisfy that approval without asking again. Preparation copies the embedded DEX to a new
 mode-700 `/data/local/tmp/mobile-use-gestures-*` directory, makes the file
 read-only, verifies its SHA-256, and checks its input API compatibility.
 It installs no APK, permissions, service, network connection, or daemon.
@@ -268,7 +335,8 @@ pair. Both taps target the same point even if the first changes the screen, so
 authorize the pair only when that is safe. Hierarchy-only mode supports
 `elementRef` double-taps but rejects coordinates without capturing a screenshot.
 
-For example, `{ "kind": "double_tap", "target": { "x": 360, "y": 800 }, "delayMs": 50 }`
+For example, `mobile_tap` with
+`action: { kind: "double_tap", observationId, target: { x: 360, y: 800 }, delayMs: 50 }`
 requests a 50 ms event-time gap at a point from a fresh screenshot.
 
 #### Unicode text helper and preparation
@@ -284,7 +352,8 @@ APIs, so availability still depends on the Android/OEM build.
 
 Before using text outside ASCII letters/digits/space/period/comma/underscore/
 hyphen, obtain explicit approval to upload and run the bundled text helper on
-the selected device, call `mobile_prepare_text_input`, and observe again.
+the selected device, call `mobile_input_text` with `action: { kind: "prepare" }`,
+and observe again. Matching scoped session consent can satisfy that approval.
 Preparation uses the same private mode-700, read-only, SHA-256-checked DEX
 deployment as the gesture helper, under `/data/local/tmp/mobile-use-text-*`.
 It checks compatibility without reading UI or entering text. Files remain on
@@ -452,11 +521,12 @@ element references, and independently verified display geometry remain
 available when exposed by Android. The default is `includeScreenshot: true`,
 preserving screenshot-plus-hierarchy behavior.
 
-`mobile_act` preserves the observation's screenshot setting for both its
+Every UI input tool preserves the observation's screenshot setting for both its
 pre-dispatch revalidation and post-action observation, including chained
 actions. In hierarchy-only mode, use `elementRef` taps; coordinate taps and
 swipes fail with `CAPTURE_UNAVAILABLE` rather than taking a screenshot.
-Typing, keys, and app launches retain their existing guards. If hierarchy
+Typing and keys retain their existing guards; app management does not capture
+the screen. If hierarchy
 capture fails, observation fails without falling back to an image. Empty or
 custom-drawn hierarchies cannot supply missing UI content; report the
 limitation instead of silently enabling screenshots.

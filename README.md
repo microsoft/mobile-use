@@ -109,6 +109,25 @@ screenshots, logs, or issues.
 
 ## Use with Copilot
 
+### Tools
+
+| Category | Tool |
+| --- | --- |
+| App management | `mobile_app_management` - list, foreground, launch, terminate, install, uninstall |
+| Taps | `mobile_tap` - single tap, double-tap, gesture-helper preparation |
+| Swipes | `mobile_swipe` |
+| Back/Home/Enter | `mobile_press_key` |
+| Input text | `mobile_input_text` - text entry and text-helper preparation |
+| Devices | `mobile_list_devices`, `mobile_select_device` |
+| Setup | `mobile_doctor`, `mobile_start_adb_server` |
+| Wake | `mobile_wake` |
+| Observation | `mobile_observe` |
+
+These 11 tools replace the generic `mobile_act`, the six separate app tools,
+and the two standalone helper-preparation tools. Each has a readable display
+title. See the [tool contracts](CONTRIBUTING.md#tool-reference-and-device-selection)
+for arguments and migration details.
+
 Name the selected device and the safe task you want performed. For example:
 
 > On the selected USB phone, describe the current screen.
@@ -137,8 +156,10 @@ an unsecured lock screen; you must handle secure authentication yourself.
 Text entry requires one unchanged, focused, enabled, non-password native field.
 ASCII letters, digits, spaces, periods, commas, underscores, and hyphens use
 the existing ADB path without a helper. For Chinese and other Unicode text,
-emoji, or additional punctuation, Copilot first asks for explicit approval to
-upload and run the bundled text helper, then calls `mobile_prepare_text_input`.
+emoji, or additional punctuation, Copilot first obtains explicit approval or
+reuses matching scoped session consent to upload and run the bundled text
+helper, then calls `mobile_input_text` with
+`action: { kind: "prepare" }`.
 It installs no APK, changes no keyboard, and uses no clipboard or daemon;
 the read-only helper files remain under `/data/local/tmp/mobile-use-text-*`.
 Preparation is required again after device reselection/server restart.

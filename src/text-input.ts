@@ -26,7 +26,7 @@ export function validateText(text: string): void {
 function helperError(actionMayHaveRun = false): MobileUseError {
   return new MobileUseError(
     "TEXT_HELPER_UNAVAILABLE", "The approved text helper is missing, changed, or incompatible with this Android build.",
-    "Stop input. Ask for approval to prepare the bundled text helper again. Never fall back to clipboard, keyboard changes, or replay uncertain input.",
+    "Stop input and revoke this helper's session consent. Ask for fresh approval before mobile_input_text with action.kind prepare. Never fall back to clipboard, keyboard changes, or replay uncertain input.",
     false, actionMayHaveRun,
   );
 }
@@ -70,7 +70,7 @@ export async function appendUnicodeText(
   if (!remotePath) {
     throw new MobileUseError(
       "TEXT_HELPER_NOT_PREPARED", "Unicode and extended punctuation input require explicit preparation of the bundled text helper.",
-      "Ask for approval to upload and run the text helper on the selected device, then call mobile_prepare_text_input and observe again.",
+      "Obtain explicit approval or use matching scoped session consent to upload and run the text helper, then call mobile_input_text with action.kind prepare and observe again.",
     );
   }
   if (!field.textHash || !/^[0-9a-f]{64}$/.test(field.textHash)) {

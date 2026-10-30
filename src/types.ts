@@ -126,34 +126,42 @@ export const packageNameSchema = z.string().max(255).regex(
   /^(?:android|[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+)(?![\s\S])/,
 );
 
+export const tapActionSchema = z.strictObject({
+  kind: z.literal("tap"),
+  target: tapTargetSchema,
+});
+
+export const doubleTapActionSchema = z.strictObject({
+  kind: z.literal("double_tap"),
+  target: tapTargetSchema,
+  delayMs: z.number().int().min(0).max(250).default(50),
+});
+
+export const swipeActionSchema = z.strictObject({
+  kind: z.literal("swipe"),
+  from: pointSchema,
+  to: pointSchema,
+  durationMs: z.number().int().min(100).max(2000).default(400),
+});
+
+export const textActionSchema = z.strictObject({
+  kind: z.literal("type_text"),
+  text: z.string().min(1).max(256),
+});
+
+export const keyActionSchema = z.strictObject({
+  kind: z.literal("key"),
+  key: z.enum(["BACK", "HOME", "ENTER"]),
+});
+
+export const launchAppActionSchema = z.strictObject({
+  kind: z.literal("launch_app"),
+  packageName: packageNameSchema,
+});
+
 export const actionSchema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    kind: z.literal("tap"),
-    target: tapTargetSchema,
-  }),
-  z.strictObject({
-    kind: z.literal("double_tap"),
-    target: tapTargetSchema,
-    delayMs: z.number().int().min(0).max(250).default(50),
-  }),
-  z.strictObject({
-    kind: z.literal("swipe"),
-    from: pointSchema,
-    to: pointSchema,
-    durationMs: z.number().int().min(100).max(2000).default(400),
-  }),
-  z.strictObject({
-    kind: z.literal("type_text"),
-    text: z.string().min(1).max(256),
-  }),
-  z.strictObject({
-    kind: z.literal("key"),
-    key: z.enum(["BACK", "HOME", "ENTER"]),
-  }),
-  z.strictObject({
-    kind: z.literal("launch_app"),
-    packageName: packageNameSchema,
-  }),
+  tapActionSchema, doubleTapActionSchema, swipeActionSchema,
+  textActionSchema, keyActionSchema, launchAppActionSchema,
 ]);
 
 export type MobileAction = z.infer<typeof actionSchema>;
