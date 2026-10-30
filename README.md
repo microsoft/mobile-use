@@ -122,8 +122,9 @@ screenshots, logs, or issues.
 | Setup | `mobile_doctor`, `mobile_start_adb_server` |
 | Wake | `mobile_wake` |
 | Observation | `mobile_observe` |
+| Screen recording | `mobile_screen_recording` - capabilities, start, status, stop/save |
 
-These 11 tools replace the generic `mobile_act`, the six separate app tools,
+These 12 tools replace the generic `mobile_act`, the six separate app tools,
 and the two standalone helper-preparation tools. Each has a readable display
 title. See the [tool contracts](CONTRIBUTING.md#tool-reference-and-device-selection)
 for arguments and migration details.
@@ -138,6 +139,37 @@ Name the selected device and the safe task you want performed. For example:
 > Do not submit it.
 
 > List installed app package names on the selected phone.
+
+Screen recording uses Android's built-in recorder: silent primary-display MP4,
+with optional `timeLimitSeconds`. Supply a positive integer for timed recording,
+or **omit it for unlimited recording until stopped, where supported**.
+Copilot first checks `action: { kind: "capabilities" }`, which reads the
+selected phone's native recorder help without capturing the screen:
+
+| AOSP Android release | Native recording duration support |
+| --- | --- |
+| 11, 12, 12L, 13 (API 30-33) | 1-180 seconds only; unlimited is not supported. |
+| 14, 15, 16 (API 34-36) | Longer durations and `--time-limit 0` for unlimited; native default remains 180 seconds. |
+
+OEM builds and backports may differ; live capability results take precedence
+over this release baseline. Start rechecks the device's limits and rejects
+unsupported requests **before starting capture**. Copilot asks for approval of
+a supported duration rather than silently shortening, segmenting or retrying.
+Unrecognized recorder help is an explicit error, not assumed compatibility.
+The plugin has no implicit duration: omission means unlimited, never the
+native default. This is not the phone's Quick Settings screen recorder;
+its audio/features do not imply support in the ADB recorder. Source links
+and details are in the [compatibility guide](CONTRIBUTING.md#android-recorder-compatibility).
+
+Supply an explicit local Windows `.mp4` path in an existing
+folder; existing files are never overwritten. Start returns
+a recording ID, and other tools can operate while recording. Status reports
+metadata only (`timeLimitSeconds: null` means unlimited). Stop finalizes and
+saves the video; reaching a specified time limit stops
+capture but still requires stop to export. Only one active/unsaved recording is
+allowed per device selection. No video bytes are sent to the model by this tool.
+Unlimited capture can fill device storage; saving also requires enough local
+disk space for the temporary download and final MP4.
 
 Copilot observes before UI input and checks the resulting state after each
 action. Screenshot-free mode uses exposed UI elements; coordinate taps and
@@ -190,6 +222,12 @@ Copilot may be processed by its configured model service. Local device access
 does not mean on-device inference. Images and UI dumps stay in server memory
 by default, but Copilot/model-side retention follows the host's policies.
 Save evidence only with explicit approval of its content and destination.
+Screen recording needs its own explicit approval of the device, content,
+duration or unlimited capture, and destination; screenshot-free observation
+permission does not authorize recording. Start only with an already awake
+and unlocked phone.
+Do not open authentication or sensitive screens while recording. Protected
+content may be blank or unavailable; the plugin never bypasses protection.
 Screenshot-free mode still exposes potentially sensitive UI text; password
 redaction is not a guarantee that the rest of a screen contains no secrets.
 
@@ -198,9 +236,17 @@ uncertain, inspect fresh device state before trying again; do not blindly
 replay input. A disconnect requires rediscovery and explicit device selection.
 Unloading the plugin does not stop the shared ADB server or revoke the phone's
 debugging trust.
+Disconnecting, reselecting a device, or unloading the plugin cancels the
+attached recording command and invalidates its handle. If Android continues
+capture after a connection loss, only an explicitly specified time limit still
+applies. **Unlimited capture has no fallback deadline**; verify it stopped on
+the phone rather than assuming a disconnect stopped it. Unexported
+temporary files may remain under `/data/local/tmp/mobile-use-recording-*`;
+there is no automatic reconnection, recovery export, or cross-selection access.
+After a successful save, only that recording's device temporary files are removed.
 
 Only the primary display and default local ADB server are supported. There is
-no iOS, emulator, cloud-device, remote-server, recording, streaming, or
+no iOS, emulator, cloud-device, remote-server, audio recording, streaming, or
 general-purpose file-transfer support.
 
 ## Help and contributing

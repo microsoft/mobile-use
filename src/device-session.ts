@@ -5,11 +5,11 @@ import { AndroidBackend, validateText } from "./android.js";
 import type { Hierarchy, Screenshot } from "./android.js";
 import { checkCancelled, MobileUseError, publicError } from "./errors.js";
 import { compareScreens, interactionBand, MAX_CHANGED_SCREEN_FRACTION } from "./screen-guard.js";
-import { actionSchema } from "./types.js";
+import { actionSchema, recordingActionSchema } from "./types.js";
 import { isAdbText } from "./text-input.js";
 import type {
   ActionResult, AdbServerResult, AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, MobileAction, Observation,
-  ObservedScreen, PreparedGestures, PreparedTextInput, ReadStatus, ScreenElement, SelectedTarget, WakeResult,
+  ObservedScreen, PreparedGestures, PreparedTextInput, ReadStatus, RecordingAction, RecordingResult, ScreenElement, SelectedTarget, WakeResult,
 } from "./types.js";
 
 const OBSERVATION_MAX_AGE_MS = 30_000;
@@ -393,6 +393,14 @@ export class MobileUseService {
 
   uninstallApp(targetToken: string, packageName: string, signal?: AbortSignal): Promise<AppOperationResult> {
     return this.appOperation(targetToken, true, (backend) => backend.uninstallApp(packageName, signal), signal);
+  }
+
+  screenRecording(targetToken: string, action: RecordingAction, signal?: AbortSignal): Promise<RecordingResult> {
+    const parsed = recordingActionSchema.safeParse(action);
+    if (!parsed.success) {
+      return Promise.reject(new MobileUseError("INVALID_INPUT", "The screen recording action is invalid.", "Use capabilities to inspect native limits, start with a local .mp4 path and an optional positive integer timeLimitSeconds (omit for unlimited where supported), status, or stop with the recording ID."));
+    }
+    return this.appOperation(targetToken, action.kind === "start" || action.kind === "stop", (backend) => backend.screenRecording(parsed.data, signal), signal);
   }
 
   prepareGestures(targetToken: string, signal?: AbortSignal): Promise<PreparedGestures> {

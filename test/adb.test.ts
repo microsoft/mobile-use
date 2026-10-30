@@ -173,6 +173,13 @@ test("bounded process execution is binary-safe and sanitizes failures", async ()
   await assert.rejects(executeCommand(process.execPath, ["-e", "process.stdout.write(Buffer.alloc(17*1024*1024))"], { env }), hasCode("ADB_OUTPUT_LIMIT"));
 });
 
+test("an explicit zero process timeout allows recording commands beyond the default fifteen seconds", { timeout: 25_000 }, async () => {
+  const result = await executeCommand(process.execPath, ["-e", "setTimeout(() => process.stdout.write('completed'), 16000)"], {
+    env: { ...process.env }, timeoutMs: 0,
+  });
+  assert.equal(result.toString("utf8"), "completed");
+});
+
 test("app rejection diagnostics preserve operation-specific errors without leaking details or implying transport loss", async () => {
   for (const [diagnostic, code] of [
     ["Failure [INSTALL_FAILED_INVALID_APK: private file not found]", "APP_INSTALL_FAILED"],

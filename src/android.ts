@@ -6,8 +6,9 @@ import { localApkFile, parseAndroidUser, parseForegroundApp, parseInstalledApps,
 import { checkCancelled, isRecord, MobileUseError, publicError } from "./errors.js";
 import { doubleTap, prepareGestures } from "./gestures.js";
 import { appendUnicodeText, isAdbText, prepareTextInput, unicodeHierarchy, validateText } from "./text-input.js";
+import { ScreenRecorder } from "./recording.js";
 export { validateText } from "./text-input.js";
-import type { AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, PreparedGestures, PreparedTextInput, Rect, ScreenElement, WakeResult } from "./types.js";
+import type { AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, PreparedGestures, PreparedTextInput, RecordingAction, RecordingResult, Rect, ScreenElement, WakeResult } from "./types.js";
 
 export interface Hierarchy {
   rotation: number;
@@ -363,6 +364,7 @@ export function parseHierarchy(output: string): Hierarchy {
 export class AndroidBackend {
   private gestureHelperPath: string | undefined;
   private textHelperPath: string | undefined;
+  private readonly recorder = new ScreenRecorder((args, options) => this.command(args, options));
 
   constructor(
     private readonly adb: AdbConnection,
@@ -387,6 +389,18 @@ export class AndroidBackend {
       throw new MobileUseError("DEVICE_METADATA_UNAVAILABLE", "A device property is malformed or exceeds the POC's limit.", "Check the selected device's build and authorization.");
     }
     return value;
+  }
+
+  async screenRecording(action: RecordingAction, signal?: AbortSignal): Promise<RecordingResult> {
+    if (action.kind === "capabilities") return this.recorder.capabilities(signal);
+    if (action.kind === "status") return this.recorder.status();
+    const userId = await this.currentUser(signal);
+    if (action.kind === "stop") return this.recorder.stop(action.recordingId, userId, signal);
+    const lock = parseKeyguardState((await this.command(["shell", "dumpsys", "window", "policy"], signal ? { signal } : {})).toString("utf8"));
+    if (lock.showing || lock.inputRestricted || !lock.screenOn || lock.userId !== userId) {
+      throw new MobileUseError("MANUAL_UNLOCK_REQUIRED", "Recording requires an already awake and unlocked phone for the current Android user.", "Wake and unlock manually; never record authentication screens.");
+    }
+    return this.recorder.start(action.filePath, action.timeLimitSeconds, userId, signal);
   }
 
   async identity(signal?: AbortSignal): Promise<DeviceIdentity> {

@@ -58,7 +58,27 @@ export const onboardingInstructions =
   "Require explicit one-action approval before installing a specified local APK or uninstalling a specified package and its current-user data; " +
   "do not ask again when that exact action and consequence are already explicitly authorized. " +
   "Installation supports Android .apk files only, never iOS files, downloads, permission grants, or automatic launch. " +
-  "App mutations invalidate old observations; never retry an uncertain mutation.";
+  "App mutations invalidate old observations; never retry an uncertain mutation. " +
+  "Use mobile_screen_recording with action: { kind: 'capabilities' } after selecting the device and before recording approval. " +
+  "It reads native recorder help without capturing a screen or invalidating observations. " +
+  "Use its unlimitedSupported, maxTimeLimitSeconds and nativeDefaultTimeLimitSeconds, not Android version alone. " +
+  "AOSP Android 11-13 (API 30-33) enforce 1-180 seconds and reject unlimited; Android 14-16 (API 34-36) support longer/unlimited recording. " +
+  "OEM builds/backports can differ. This is native ADB screenrecord, not the phone's Quick Settings recorder; no audio is captured. " +
+  "Before start of a silent primary-display MP4, obtain explicit consent " +
+  "for the selected device, approved non-sensitive screen content, duration or unlimited capture, and absolute local Windows .mp4 destination. " +
+  "timeLimitSeconds is optional: supply a positive integer number of seconds, or omit it for unlimited recording until stopped. " +
+  "The plugin has no implicit duration, but device limits still apply. Android's native default is 180 seconds, not unlimited. " +
+  "Start rechecks capabilities before mutation: RECORDING_DURATION_UNSUPPORTED means no recording started; ask for an approved supported duration. " +
+  "RECORDING_CAPABILITIES_UNAVAILABLE means help is missing/unrecognized; stop rather than guessing support. " +
+  "Never silently shorten, segment or retry unsupported recording. Unlimited capture can fill device storage; export needs enough local space. " +
+  "Screenshot-free observation consent never authorizes recording. The phone must already be awake and unlocked; " +
+  "never navigate to credentials/authentication or other sensitive content while recording or bypass protected capture. " +
+  "Start returns a recordingId; UI actions can continue while capture runs. Status returns metadata only, with timeLimitSeconds: null for unlimited. " +
+  "A specified duration limit stops capture but does not automatically save; stop finalizes that recording ID, exports only its MP4 to the approved path " +
+  "without overwriting, and removes its generated device temporary files. No audio, streaming, or video bytes are returned to the model. " +
+  "Start/stop invalidate observations. One active/unsaved recording per selection. Never automatically restart uncertain recording or export. " +
+  "Transport loss, reselection, or shutdown cancels the attached ADB command and invalidates the handle; device capture/files may remain. " +
+  "Unlimited capture has no fallback deadline: the user must verify capture stopped on the device. Never reconnect/fallback or export automatically.";
 
 const platformToolsSetup: SetupGuidance = {
   stage: "platform-tools",

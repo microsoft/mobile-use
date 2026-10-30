@@ -2,7 +2,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { MobileUseService } from "../src/device-session.js";
 import { MobileUseError } from "../src/errors.js";
 import { createMobileUseServer } from "../src/tools.js";
-import { chunk, editField, FakeAdb, FakeMonitors, hierarchy, node, pixelPng } from "./helpers.js";
+import { chunk, editField, FakeAdb, FakeMonitors, hierarchy, node, pixelPng, recorderHelp } from "./helpers.js";
 
 const adb = new FakeAdb();
 const monitors = new FakeMonitors(adb);
@@ -34,6 +34,8 @@ if (Object.hasOwn(setupInventories, setupScenario) || ["missing-adb", "old-adb",
   };
 }
 if (setupScenario === "server-reused") adb.startupAttempted = false;
+if (setupScenario === "recording-legacy") adb.recordingHelp = recorderHelp(false);
+if (setupScenario === "recording-help-unknown") adb.recordingHelp = "private unrecognized recorder help";
 if (setupScenario === "server-start-empty") adb.inventory = "List of devices attached\n";
 if (setupScenario === "hierarchy-unavailable") adb.xml = "ERROR: null root node";
 if (setupScenario === "display-unavailable") adb.display = "Unrecognized display diagnostics";

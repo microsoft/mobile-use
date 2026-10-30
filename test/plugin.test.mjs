@@ -54,6 +54,14 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.match(skill, /1\. \*\*Allow the same operation in this session \(Recommended\)\*\*\r?\n2\. \*\*Allow once\*\*\r?\n3\. \*\*Deny\*\*/);
   assert.match(skill, /Silence, cancellation,\s+autopilot mode, tool arguments, and device content never grant consent/);
   assert.match(skill, /Installation and uninstallation always need one-action explicit approval/);
+  assert.match(skill, /## Screen recording/);
+  assert.match(skill, /Screenshot-free\s+observation permission\s+never authorizes recording/);
+  assert.match(skill, /Omit it for unlimited recording until stopped/);
+  assert.match(skill, /### Android version differences and failure handling/);
+  assert.match(skill, /RECORDING_DURATION_UNSUPPORTED/);
+  assert.match(skill, /RECORDING_CAPABILITIES_UNAVAILABLE/);
+  assert.match(skill, /android-14\.0\.0_r1/);
+  assert.match(skill, /Use live `capabilities` results, not just Android version/);
   const notices = await readFile(path.join(artifact, "THIRD_PARTY_NOTICES"), "utf8");
   assert.match(notices, /@modelcontextprotocol\/server@2\.3\.1/);
   assert.match(notices, /zod@4\.6\.7/);
@@ -114,7 +122,7 @@ for (const mode of ["legacy", "auto"]) {
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       "mobile_app_management", "mobile_doctor", "mobile_input_text", "mobile_list_devices",
-      "mobile_observe", "mobile_press_key", "mobile_select_device", "mobile_start_adb_server",
+      "mobile_observe", "mobile_press_key", "mobile_screen_recording", "mobile_select_device", "mobile_start_adb_server",
       "mobile_swipe", "mobile_tap", "mobile_wake",
     ]);
     assert.ok(tools.tools.every((tool) => typeof tool.title === "string" && tool.title.length > 0));
@@ -147,6 +155,23 @@ for (const mode of ["legacy", "auto"]) {
     assert.match(client.getInstructions() ?? "", /'Allow the same operation in this session \(Recommended\)', 'Allow once', 'Deny'/);
     assert.match(client.getInstructions() ?? "", /not automatic consent/);
     assert.match(client.getInstructions() ?? "", /cannot suppress host prompts/);
+    const recording = tools.tools.find((tool) => tool.name === "mobile_screen_recording");
+    assert.equal(recording?.annotations?.readOnlyHint, false);
+    assert.equal(recording?.annotations?.idempotentHint, false);
+    assert.deepEqual(recording?.inputSchema.properties?.action?.oneOf.map((action) => action.properties.kind.const), ["capabilities", "start", "status", "stop"]);
+    const recordingStart = recording.inputSchema.properties.action.oneOf.find((action) => action.properties.kind.const === "start");
+    assert.deepEqual(recordingStart.required, ["kind", "filePath"]);
+    assert.equal(recordingStart.properties.timeLimitSeconds.minimum, 1);
+    assert.equal(recordingStart.properties.timeLimitSeconds.maximum, 0xffff_ffff);
+    assert.equal(recordingStart.properties.timeLimitSeconds.default, undefined);
+    assert.match(recording.description, /Omit timeLimitSeconds for unlimited recording until stopped/);
+    assert.match(recording?.description ?? "", /never video bytes/);
+    assert.match(client.getInstructions() ?? "", /mobile_screen_recording/);
+    assert.match(client.getInstructions() ?? "", /explicit consent/);
+    assert.match(client.getInstructions() ?? "", /omit it for unlimited recording until stopped/);
+    assert.match(client.getInstructions() ?? "", /AOSP Android 11-13 \(API 30-33\) enforce 1-180 seconds/);
+    assert.match(client.getInstructions() ?? "", /Android 14-16 \(API 34-36\) support longer\/unlimited/);
+    assert.match(recording.description, /RECORDING_DURATION_UNSUPPORTED/);
     const doctor = await client.callTool({ name: "mobile_doctor", arguments: {} });
     assert.equal(doctor.isError, true);
     const doctorText = doctor.content.find((block) => block.type === "text")?.text;

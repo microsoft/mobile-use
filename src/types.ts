@@ -81,6 +81,41 @@ export interface AppOperationResult {
   packageName: string | null;
 }
 
+export interface ScreenRecording {
+  recordingId: string;
+  status: "starting" | "recording" | "completed" | "saved";
+  startedAt: string;
+  timeLimitSeconds: number | null;
+  userId: number;
+  filePath: string;
+  sizeBytes?: number;
+}
+
+export interface RecordingCapabilities {
+  status: "available";
+  source: "device-help";
+  unlimitedSupported: boolean;
+  maxTimeLimitSeconds: number;
+  nativeDefaultTimeLimitSeconds: number;
+}
+
+export const MAX_RECORDING_TIME_SECONDS = 0xffff_ffff;
+
+export const recordingActionSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("capabilities") }),
+  z.strictObject({
+    kind: z.literal("start"),
+    filePath: z.string().min(1).max(32_767),
+    timeLimitSeconds: z.number().int().min(1).max(MAX_RECORDING_TIME_SECONDS).optional(),
+  }),
+  z.strictObject({ kind: z.literal("status") }),
+  z.strictObject({ kind: z.literal("stop"), recordingId: z.string().uuid() }),
+]);
+
+export type RecordingAction = z.infer<typeof recordingActionSchema>;
+export type RecordingStatus = ScreenRecording | { status: "idle" };
+export type RecordingResult = RecordingStatus | RecordingCapabilities;
+
 export interface ReadStatus {
   status: "ok" | "unavailable";
   error: ErrorInfo | null;
