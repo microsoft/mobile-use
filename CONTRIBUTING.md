@@ -133,7 +133,7 @@ Do not bypass local policy or change firewall settings to recover.
 | `mobile_select_device` | Bind exactly the endpoint the user chose; qualify Android/physical-device and wireless evidence; return a session target token. |
 | `mobile_wake` | With explicit permission and a target token, wake the display and dismiss only an unsecured lock screen. No observation or screen capture; secure/unknown lock states require manual unlocking. |
 | `mobile_observe` | Require that token; return a fresh observation ID, display geometry, hierarchy/status/warnings, and a separate PNG image block when usable. Set `includeScreenshot: false` to read only hierarchy/display state without capturing an image. |
-| `mobile_tap` | `action.kind`: `tap`, `double_tap`, or `prepare` for the gesture helper. Input requires `action.observationId` and `action.target`; preparation requires consent and invalidates observations without injecting input. |
+| `mobile_tap` | `action.kind`: `tap`, `long_press`, `double_tap`, or `prepare` for the double-tap helper. Input requires `action.observationId` and `action.target`; preparation requires consent and invalidates observations without injecting input. |
 | `mobile_swipe` | Require target and latest observation IDs, `from`, `to`, and optional `durationMs`; dispatch one bounded screenshot-based swipe. |
 | `mobile_press_key` | Require target and latest observation IDs and one `key`: `BACK`, `HOME`, or `ENTER`. |
 | `mobile_input_text` | `action.kind`: `type_text` with `action.observationId`/`action.text`, or `prepare` for the text helper. Preparation requires consent and invalidates observations without entering text. |
@@ -385,6 +385,7 @@ Supported public UI inputs (all require `targetToken`):
 | Tool / operation | Additional fields |
 | --- | --- |
 | `mobile_tap`, `action.kind: "tap"` | `action.observationId`; `action.target: { elementRef }` from the observation, or `{ x, y }` from its screenshot. |
+| `mobile_tap`, `action.kind: "long_press"` | Same fields as tap; one stationary native system-duration long press. No helper or configurable duration. |
 | `mobile_tap`, `action.kind: "double_tap"` | Same fields as tap; optional `action.delayMs` (integer 0-250, default 50) requests the first-UP to second-DOWN interval. Requires the prepared gesture helper. |
 | `mobile_tap`, `action.kind: "prepare"` | Upload/run the gesture helper after explicit approval or matching scoped session consent; no observation or tap. |
 | `mobile_swipe` | `observationId`, `from: { x, y }`, `to: { x, y }`, optional `durationMs` (integer 100-2000, default 400). |
@@ -440,6 +441,25 @@ ADB startup/wake require exact explicit authorization outside helper/app grants.
 Authentication remains manual, and other consequential actions or evidence
 saving retain their own approval requirements. Do not recommend blanket
 approval of the combined app tool or bypass native permissions.
+
+#### Native long press
+
+`long_press` uses one primary-display `input touchscreen -d 0 draganddrop x y x y 0`
+command. In the checked AOSP Android 11 and 16 implementations, zero movement
+duration retains the platform long-press wait but skips MOVE events, producing
+DOWN/UP at one point with the same downTime. A stationary `swipe` with a positive
+duration is not equivalent: it emits MOVE events.
+
+The duration comes from the device's system long-press timeout; it is not measured
+or configurable by this API. OEM recognition is not guaranteed. Nonempty native
+diagnostics fail explicitly with uncertain delivery and are never exposed raw.
+There is no helper deployment, fallback gesture, or automatic retry.
+Use only the authorized gesture; a long press may open a context menu rather
+than activate the target. Revalidation and screenshot settings are identical
+to tap, including the full-width pixel guard for coordinate targets.
+
+Sources: AOSP [Android 11 Input.java](https://android.googlesource.com/platform/frameworks/base/+/android-11.0.0_r1/cmds/input/src/com/android/commands/input/Input.java)
+and [Android 16 InputShellCommand.java](https://android.googlesource.com/platform/frameworks/base/+/android-16.0.0_r1/services/core/java/com/android/server/input/InputShellCommand.java).
 
 #### Double-tap helper and preparation
 
@@ -549,7 +569,8 @@ numeric OEM metadata before the user marker, ignores opaque window titles, and
 rejects missing, malformed, ambiguous, or wrong-user records. Raw diagnostics
 and titles are not returned.
 
-The root must be a focused, active, primary-display application window. Stable
+Text-write authorization requires a focused, active, primary-display application
+root; other interactive windows can be observed without that authorization. Stable
 identity is checked before and after hierarchy serialization, on append entry,
 before the final pre-write field refresh, and during readback. Host revalidation
 still rejects an identical editor in a replacement window. Request protocol 4
@@ -604,8 +625,65 @@ consumes its observation; obtain a fresh observation rather than replaying it.
 
 #### Shared observation guards
 
+Hierarchy capture requests UI Automator's `dump --windows` and exposes only
+display 0. `hierarchyScope` distinguishes interactive-window coverage from an
+active-only OEM response. Observations include window bounds, type, layer,
+active/focused state and root availability; elements retain their package and
+owning `windowId`. Raw window titles and other displays' content are not returned.
+Nested repeated windows are deduplicated only when their records agree. The
+prepared text helper also enumerates interactive windows without suppressing
+existing accessibility services, preserving exact Unicode and password redaction.
+Its focused-application text-writing checks remain unchanged.
+
+Window IDs are capture-local accessibility registrations, not durable identities.
+Reference revalidation uniquely matches the unchanged element and owning-window
+metadata, excluding reassigned registration IDs. Windowed targets also require
+matching foreground app/activity/user and reject other interactive windows whose
+bounds and layer could cover the tap point. These checks are conservative:
+window bounds are not proof of the exact touchable region, and a visually
+identical replacement is not distinguished by metadata alone. Unicode writes
+retain their separate stable WindowManager-instance identity check.
+
+Native `clickable` flags are never rewritten. An enabled native
+`android.widget.Button` or `android.widget.ImageButton` with an observed package,
+resource ID and owning window additionally exposes `pointerTarget: true` when
+not natively clickable. Explicit `tap`, `long_press` and `double_tap` actions may
+use that eligibility; arbitrary non-clickable views remain ineligible.
+Double-tap still requires the explicitly prepared pinned helper and uses the
+same point for both taps, even if the first changes the UI. Authorize the pair
+only when both taps are safe; never substitute it for tap automatically.
+This makes touch-listener buttons targetable without weakening the raw-coordinate
+pixel guard. An exposed button and an acknowledged pointer command do not
+prove gesture recognition. Verify the app's resulting state.
+
+On the tested Xiaomi Android 11 phone, stock capture exposed the built-in
+recorder's floating controls and Start produced an advancing timer. In earlier
+tests, quick taps and a native stationary long press did not stop that recording.
+Pixel comparison confirmed that a tap restored the dimmed toolbar's opacity
+while recording continued; it was dim again by the next observation. Separately
+revalidated taps also failed to complete Stop before the toolbar dimmed again.
+
+After explicit gesture-helper deployment approval, three consecutive short
+home-screen recordings completed Start, Stop and return to idle using an
+explicit `double_tap` on the observed Stop reference. Each pair reported a
+50 ms gap; the native Start label returned and the recording timer disappeared
+after every pair. A separate final observation confirmed idle. These were
+screenshot-free stock multi-window captures through the updated MCP server on
+the same USB phone. This verifies that workflow on the tested device, not that
+a double-tap is universally required or that long press cannot work on other
+recorders. Keep the pair explicit and separately authorized; the first tap can
+change which control occupies the second tap's point. These results establish
+no OEM security restriction.
+
 Text appends to one unchanged, focused, enabled, non-password native EditText;
-it does not clear or submit the field. Extended text requires the explicitly
+it does not clear or submit the field. With interactive-window observations,
+only an editor in the active, focused application window is eligible. A
+background window can retain node focus without being the keyboard target;
+its editors neither authorize typing nor make a valid foreground editor
+ambiguous. ASCII and Unicode both require matching editor package, unique
+owning-window context, and foreground app/activity/user. Capture-local window
+IDs may change, but window metadata and the observed field must match.
+Extended text requires the explicitly
 prepared Unicode helper described above. Clipboard fallback and arbitrary
 shell are rejected.
 

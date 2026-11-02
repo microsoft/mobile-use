@@ -134,6 +134,9 @@ test("Unicode text validation preserves multilingual data and rejects malformed 
 test("the bounded action union rejects unsupported operations and target shapes", () => {
   assert.equal(actionSchema.parse({ kind: "swipe", from: { x: 0, y: 0 }, to: { x: 1, y: 1 } }).kind, "swipe");
   for (const target of [{ elementRef: "e1" }, { x: 0, y: 20 }]) {
+    assert.deepEqual(actionSchema.parse({ kind: "tap", target }), { kind: "tap", target });
+    assert.deepEqual(actionSchema.parse({ kind: "long_press", target }), { kind: "long_press", target });
+    assert.equal(actionSchema.safeParse({ kind: "long_press", target, durationMs: 500 }).success, false);
     assert.deepEqual(actionSchema.parse({ kind: "double_tap", target }), { kind: "double_tap", target, delayMs: 50 });
     for (const delayMs of [0, 1, 50, 250]) {
       assert.deepEqual(actionSchema.parse({ kind: "double_tap", target, delayMs }), { kind: "double_tap", target, delayMs });
@@ -148,6 +151,9 @@ test("the bounded action union rejects unsupported operations and target shapes"
     { kind: "tap", target: { x: 1, y: 1, elementRef: "e1" } },
     { kind: "tap", target: { x: -1, y: 0 } },
     { kind: "tap", target: { x: 1.5, y: 0 } },
+    { kind: "long_press", target: { x: 1, y: 1, elementRef: "e1" } },
+    { kind: "long_press", target: { x: -1, y: 0 } },
+    { kind: "long_press", target: { x: 1.5, y: 0 } },
     { kind: "double_tap", target: { x: 1, y: 1, elementRef: "e1" } },
     { kind: "double_tap", target: { x: -1, y: 0 } },
     { kind: "double_tap", target: { x: 1.5, y: 0 } },
@@ -454,7 +460,7 @@ test("hierarchy capture forces a remote terminal while PNG capture remains binar
   const capture = await android.screenshot();
   assert.deepEqual(capture.image, adb.image);
   assert.deepEqual(adb.calls.map((call) => call.args), [
-    ["-t", "7", "shell", "-tt", "uiautomator", "dump", "/dev/tty"],
+    ["-t", "7", "shell", "-tt", "uiautomator", "dump", "--windows", "/dev/tty"],
     ["-t", "7", "exec-out", "screencap", "-p"],
   ]);
 });

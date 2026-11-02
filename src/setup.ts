@@ -41,8 +41,9 @@ export const onboardingInstructions =
   "and ask which exact endpoint to select. Do not repeat setup steps already verified by current diagnostics. " +
   "No screen observation or control until an explicit target and safe task are authorized. " +
   approvalInstructions +
-  "Use mobile_tap for tap/double_tap, mobile_swipe for swipes, mobile_press_key for BACK/HOME/ENTER, " +
+  "Use mobile_tap for tap/long_press/double_tap, mobile_swipe for swipes, mobile_press_key for BACK/HOME/ENTER, " +
   "mobile_input_text for text, and mobile_app_management for list/foreground/launch/terminate/install/uninstall. " +
+  "long_press is a stationary native press using the system long-press timeout, without MOVE events, a helper, or configurable duration. Never substitute it for tap automatically. " +
   "Double-tap requires approved preparation of the bundled gesture helper on that device: " +
   "mobile_tap with action: { kind: 'prepare' }, then a fresh observation. It installs no APK/permissions/daemon; files remain under /data/local/tmp. " +
   "Unicode and text outside the original ASCII subset require approved preparation of the bundled text helper: " +
@@ -52,6 +53,9 @@ export const onboardingInstructions =
   "When the user requests no screenshots, call mobile_observe with includeScreenshot: false. " +
   "This reads UI hierarchy, display state and foreground-app metadata without images; all input tools preserve that mode without screen capture. " +
   "Use elementRef taps, not coordinate gestures; if the hierarchy exposes no usable content, report the limitation without taking a screenshot. " +
+  "Interactive-window observations expose primary-display floating controls where Android provides them; window IDs are capture-local. " +
+  "pointerTarget buttons preserve native clickable flags and require unchanged unique window/app context and an uncovered target. " +
+  "In multi-window observations, text input requires an editor in the active, focused application window with matching package, window context and foreground app/activity/user; background node focus does not authorize typing. " +
   "App management requires the selected target token but no screen observation. " +
   "List/foreground reads may expose sensitive app metadata. Launch only the requested installed package. " +
   "Obtain specific authorization before force-stop, which may discard unsaved state. " +

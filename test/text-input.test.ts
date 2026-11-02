@@ -112,9 +112,9 @@ test("prepared observations preserve Unicode through the pinned helper, with geo
   assert.equal(observed?.text, text);
   assert.equal(observed?.windowIdentity, "abc:u0");
   assert.equal(adb.calls.slice(start).some((call) => call.args.includes("uiautomator")), false);
-  assert.ok(adb.calls.slice(start).some((call) => call.args[7] === "--dump" && !call.options.mutating));
+  assert.ok(adb.calls.slice(start).some((call) => call.args[7] === "--dump-windows" && !call.options.mutating));
   adb.handler = (call) => {
-    if (call.args[7] === "--dump") adb.display = displayDiagnostics(1, 160, 80);
+    if (call.args[7] === "--dump-windows") adb.display = displayDiagnostics(1, 160, 80);
     return undefined;
   };
   await assert.rejects(android.hierarchy(), hasCode("STALE_OBSERVATION"));
@@ -129,7 +129,7 @@ test("helper failures expose only allowlisted phases and never turn a failed rea
   const android = backend(adb);
   await android.prepareTextInput();
   for (const phase of ["ROOT", "WINDOW", "WINDOW_FOCUS", "WINDOW_OWNER", "WINDOW_READ", "HIERARCHY", "CONNECT", "CONFIGURE", "DISCONNECT"]) {
-    adb.handler = (call) => call.args[7] === "--dump"
+    adb.handler = (call) => call.args[7] === "--dump-windows"
       ? Buffer.from(`MOBILE_USE_TEXT_V1_ERROR_${phase}\n`) : undefined;
     await assert.rejects(android.hierarchy(), (error: unknown) => {
       assert.ok(error instanceof MobileUseError);
@@ -140,7 +140,7 @@ test("helper failures expose only allowlisted phases and never turn a failed rea
     });
   }
   assert.equal(adb.inputs.length, 0);
-  adb.handler = (call) => call.args[7] === "--dump"
+  adb.handler = (call) => call.args[7] === "--dump-windows"
     ? Buffer.from("MOBILE_USE_TEXT_V1_ERROR_private-device-content\n") : undefined;
   await assert.rejects(android.hierarchy(), (error: unknown) => {
     assert.ok(error instanceof MobileUseError);
