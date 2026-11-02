@@ -343,11 +343,10 @@ screen content, duration or unlimited capture, and local destination.
 Screenshot-free observation permission never authorizes recording. Require an
 already awake/unlocked phone; never wake implicitly, record authentication,
 navigate to sensitive content during capture, or bypass protected capture.
-Recording is supervised: keep the same approved Android user throughout.
-Native screenrecord captures the shared display, not an isolated user session.
-The user checks are snapshots, not continuous monitoring; switching away and
-back between checks can go undetected. Do not use this tool for workflows that
-switch Android users or require guaranteed cross-user isolation.
+Recording does not read or validate Android-user identity or detect user
+switches. Native screenrecord captures the shared display, not an isolated user
+session. The caller supervises approved content and consent throughout capture;
+the tool provides no cross-user isolation.
 
 All operations require `targetToken`, not `observationId`:
 
@@ -437,9 +436,7 @@ verify and signal only the owned process. Failed clips cannot be exported.
 Command errors are returned without being replaced by inferred success, even if
 the recorder completes concurrently. Check status before deciding whether a
 further stop/save is appropriate within the approved task; never blindly replay.
-Stop and status do not repeat build/TLS checks. Stop occurs before one current-
-user check for export; the caller owns user continuity and recovery decisions.
-Cleanup of an already saved clip needs no user check.
+Stop and status do not repeat build/TLS checks.
 Saved cleanup also succeeds when the owned directory is already absent.
 Failed or unsaved clips retain their device files and block
 another start. There is no discard/delete operation; confirm capture stopped
@@ -456,8 +453,6 @@ capture has none: the user must verify capture stopped on the phone.
 Unexported temporary files can remain
 under `/data/local/tmp/mobile-use-recording-*`. Never silently reconnect,
 switch endpoints, or automatically export/recover through a new selection.
-An Android-user mismatch at the export check permits stopping but rejects that
-export attempt. Do not treat switching back as evidence that the clip is safe.
 Protected content may be blank or unavailable; report it without bypasses.
 
 ## App management

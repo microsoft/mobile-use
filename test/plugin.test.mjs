@@ -62,8 +62,8 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.match(skill, /RECORDING_CAPABILITIES_UNAVAILABLE/);
   assert.match(skill, /android-14\.0\.0_r1/);
   assert.match(skill, /Use live `capabilities` results, not just Android version/);
-  assert.match(skill, /snapshots, not continuous monitoring/);
-  assert.match(skill, /Do not use this tool for workflows that\s+switch Android users/);
+  assert.match(skill, /does not read or validate Android-user identity/);
+  assert.match(skill, /caller supervises approved content and consent/);
   assert.match(skill, /status: starting/);
   assert.match(skill, /does not poll startup or recorder exit, retry\s+commands, or reconcile racing results/);
   assert.match(skill, /The AI caller decides when to request\s+status/);
@@ -170,12 +170,12 @@ for (const mode of ["legacy", "auto"]) {
     assert.equal(recordingStart.properties.timeLimitSeconds.maximum, 0xffff_ffff);
     assert.equal(recordingStart.properties.timeLimitSeconds.default, undefined);
     assert.match(recording.description, /Omit timeLimitSeconds for unlimited recording until stopped/);
-    assert.match(recording.description, /snapshots, not continuous monitoring/);
+    assert.match(recording.description, /does not read or validate Android-user identity/);
     assert.match(recording.description, /start returns starting with recordingId after dispatch/);
     assert.match(recording.description, /No startup\/exit polling, automatic retries or race reconciliation/);
     assert.match(recording?.description ?? "", /never video bytes/);
     assert.match(client.getInstructions() ?? "", /mobile_screen_recording/);
-    assert.match(client.getInstructions() ?? "", /snapshots, not continuous monitoring/);
+    assert.match(client.getInstructions() ?? "", /does not read or validate Android-user identity/);
     assert.match(client.getInstructions() ?? "", /The caller decides when to check status/);
     assert.match(client.getInstructions() ?? "", /does not poll startup or recorder exit, retry commands, or reconcile racing results/);
     assert.match(client.getInstructions() ?? "", /explicit consent/);

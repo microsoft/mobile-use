@@ -488,7 +488,7 @@ export class ScreenRecorder {
     );
   }
 
-  async start(filePath: string, timeLimitSeconds: number | undefined, ready: () => Promise<number>, signal?: AbortSignal): Promise<ScreenRecording> {
+  async start(filePath: string, timeLimitSeconds: number | undefined, ready: () => Promise<void>, signal?: AbortSignal): Promise<ScreenRecording> {
     if (timeLimitSeconds !== undefined && (!Number.isInteger(timeLimitSeconds) || timeLimitSeconds < 1 || timeLimitSeconds > MAX_RECORDING_TIME_SECONDS)) {
       throw new MobileUseError("INVALID_INPUT", `Recording timeLimitSeconds must be a positive integer no greater than ${MAX_RECORDING_TIME_SECONDS}.`, "Provide a supported duration in seconds, or omit it for unlimited recording.");
     }
@@ -505,13 +505,13 @@ export class ScreenRecorder {
       );
     }
     const destination = await recordingDestination(filePath, signal);
-    const userId = await ready();
+    await ready();
     checkCancelled(signal);
     const id = randomUUID();
     const directory = `/data/local/tmp/mobile-use-recording-${id}`;
     const argv = ["/system/bin/screenrecord", "--bit-rate", String(BIT_RATE), "--time-limit", String(timeLimitSeconds ?? 0), `${directory}/capture.mp4`];
     const state: RecordingState = {
-      result: { recordingId: id, status: "starting", startedAt: new Date().toISOString(), timeLimitSeconds: timeLimitSeconds ?? null, userId, filePath: destination },
+      result: { recordingId: id, status: "starting", startedAt: new Date().toISOString(), timeLimitSeconds: timeLimitSeconds ?? null, filePath: destination },
       directory, argv, pid: undefined, completion: Promise.resolve(), settled: false,
       failure: undefined, cleaned: false,
     };
@@ -596,26 +596,23 @@ export class ScreenRecorder {
     }
   }
 
-  async stop(recordingId: string, readUser: () => Promise<number>, signal?: AbortSignal): Promise<ScreenRecording> {
+  async stop(recordingId: string, signal?: AbortSignal): Promise<ScreenRecording> {
     const state = this.state;
     if (!state || state.result.recordingId !== recordingId) {
       throw new MobileUseError("RECORDING_NOT_FOUND", "That recording does not belong to this selection.", "Use the recording ID returned by start on the same target token.");
     }
     try {
-      return await this.stopRecording(state, readUser, signal);
+      return await this.stopRecording(state, signal);
     } catch (error) {
       const failure = publicError(error);
       throw new MobileUseError(failure.code, failure.message, failure.remediation, false, true);
     }
   }
 
-  private async stopRecording(state: RecordingState, readUser: () => Promise<number>, signal?: AbortSignal): Promise<ScreenRecording> {
+  private async stopRecording(state: RecordingState, signal?: AbortSignal): Promise<ScreenRecording> {
     await this.finish(state, signal);
     if (state.failure) throw state.failure;
     if (state.result.status !== "saved") {
-      if (state.result.userId !== await readUser()) {
-        throw this.failure("The current Android user does not match the recording's user; no export was attempted.");
-      }
       const remote = `${state.directory}/capture.mp4`;
       const size = (await this.command(["shell", "stat", "-c", "%s", remote], signal ? { signal } : {})).toString("utf8").trim();
       if (!/^[1-9]\d{0,15}$/.test(size) || !Number.isSafeInteger(Number(size))) throw this.failure("The recording file is empty, unavailable, or its size cannot be represented safely.");

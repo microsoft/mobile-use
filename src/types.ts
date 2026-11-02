@@ -86,7 +86,6 @@ export interface ScreenRecording {
   status: "starting" | "recording" | "completed" | "saved";
   startedAt: string;
   timeLimitSeconds: number | null;
-  userId: number;
   filePath: string;
   sizeBytes?: number;
 }

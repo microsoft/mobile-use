@@ -12,7 +12,7 @@ import { MobileUseError } from "../src/errors.js";
 import { parseRecordingCapabilities, pullRecording, recordingDestination, validateRecordingFile } from "../src/recording.js";
 import { MAX_RECORDING_TIME_SECONDS, recordingActionSchema } from "../src/types.js";
 import type { RecordingResult, ScreenRecording } from "../src/types.js";
-import { FakeAdb, FakeMonitors, hasCode, mp4, recorderHelp, USB, WIFI } from "./helpers.js";
+import { FakeAdb, FakeMonitors, hasCode, keyguardPolicy, mp4, recorderHelp, USB, WIFI } from "./helpers.js";
 
 async function fixture(t: TestContext) {
   const directory = await mkdtemp(path.join(tmpdir(), "mobile-use recording "));
@@ -245,7 +245,7 @@ test("start/status/stop allow intervening UI input and export only the owned fin
   const started = recording(await start());
   assert.equal(started.status, "starting");
   assert.equal(started.filePath, destination);
-  assert.equal(started.userId, 0);
+  assert.equal("userId" in started, false);
   assert.equal(started.timeLimitSeconds, 180);
   assert.deepEqual(await readdir(directory), [], "start must not export or reserve an empty evidence file");
   await assert.rejects(service.act(targetToken, before.observation.observationId, { kind: "key", key: "HOME" }), hasCode("STALE_OBSERVATION"));
@@ -343,32 +343,50 @@ test("status returns a query failure without reconciliation when capture complet
   assert.equal(adb.calls.some((call) => call.options.mutating && !call.args.join(" ").includes("; exec /system/bin/screenrecord")), false);
 });
 
-for (const change of ["lock", "user"] as const) {
-  test(`a ${change} change during preflight blocks the first device mutation`, async (t) => {
-    const { adb, start } = await fixture(t);
+test("a lock change during preflight blocks the first device mutation", async (t) => {
+  const { adb, start } = await fixture(t);
+  adb.handler = (call) => {
+    if (call.args.at(-1) === "/system/bin/screenrecord --help 2>&1") adb.keyguard.showing = true;
+    return undefined;
+  };
+  await assert.rejects(start(), hasCode("MANUAL_UNLOCK_REQUIRED"));
+  assert.equal(adb.calls.some((call) => call.options.mutating), false);
+  assert.equal(adb.recordingRunning, false);
+});
+
+test("start checks unlocked state once, without querying Android-user identity", async (t) => {
+  const { adb, start } = await fixture(t);
+  await start();
+  assert.equal(adb.calls.filter((call) => call.args.slice(2).join(" ") === "shell dumpsys window policy").length, 1);
+  assert.equal(adb.calls.some((call) => call.args.slice(2).join(" ") === "shell am get-current-user"), false);
+});
+
+for (const diagnostics of ["missing", "malformed", "inconsistent"] as const) {
+  test(`recording start/status/stop/save do not require ${diagnostics} Android-user diagnostics`, async (t) => {
+    const { filePath, adb, service, targetToken, start } = await fixture(t);
     adb.handler = (call) => {
-      if (call.args.at(-1) === "/system/bin/screenrecord --help 2>&1") {
-        if (change === "lock") adb.keyguard.showing = true;
-        else {
-          adb.userId = 10;
-          adb.keyguard.userId = 10;
-        }
+      const command = call.args.slice(2).join(" ");
+      if (command === "shell am get-current-user") assert.fail("recording must not query Android-user identity");
+      if (command === "shell dumpsys window policy") {
+        return Buffer.from(diagnostics === "missing"
+          ? keyguardPolicy().split("\n").filter((line) => !/^\s*(?:currentUser|mCurrentUserId)=/.test(line)).join("\n")
+          : keyguardPolicy(diagnostics === "malformed"
+            ? { currentUser: "-1", mCurrentUserId: "unknown" }
+            : { currentUser: "10", mCurrentUserId: "0" }));
       }
       return undefined;
     };
-    await assert.rejects(start(), hasCode("MANUAL_UNLOCK_REQUIRED"));
-    assert.equal(adb.calls.some((call) => call.options.mutating), false);
-    assert.equal(adb.recordingRunning, false);
+    const started = recording(await start());
+    assert.equal(started.status, "starting");
+    assert.equal("userId" in started, false);
+    assert.equal((await service.screenRecording(targetToken, { kind: "status" })).status, "recording");
+    const saved = await service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId });
+    assert.equal(saved.status, "saved");
+    assert.equal("userId" in saved, false);
+    assert.deepEqual(await readFile(filePath), mp4());
+    assert.equal(adb.calls.some((call) => call.args.slice(2).join(" ") === "shell am get-current-user"), false);
   });
 }
-
-test("start checks user and unlocked state once, without repeated race guards", async (t) => {
-  const { adb, start } = await fixture(t);
-  await start();
-  for (const command of ["shell am get-current-user", "shell dumpsys window policy"]) {
-    assert.equal(adb.calls.filter((call) => call.args.slice(2).join(" ") === command).length, 1);
-  }
-});
 
 test("a cancelled startup retains an identifiable recording for an explicit stop, without replay", async (t) => {
   const { filePath, adb, service, targetToken } = await fixture(t);
@@ -587,36 +605,27 @@ for (const property of ["ro.build.version.release", "service.adb.tls.port"] as c
   });
 }
 
-test("a user switch stops capture but prevents exporting content under a different Android user", async (t) => {
-  const { directory, adb, service, targetToken, start } = await fixture(t);
-  const started = recording(await start());
-  adb.userId = 10;
-  await assert.rejects(service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId }), hasCode("RECORDING_FAILED"));
-  assert.equal(adb.recordingExit, undefined);
-  assert.equal((await service.screenRecording(targetToken, { kind: "status" })).status, "completed");
-  assert.equal(adb.calls.some((call) => call.args[2] === "pull"), false);
-  assert.deepEqual(await readdir(directory), []);
-});
-
-test("an unreadable user ID cannot prevent an explicit owned-process stop", async (t) => {
-  const { adb, service, targetToken, start } = await fixture(t);
-  const started = recording(await start());
+test("Android-user changes do not gate recording start or stop-and-save", async (t) => {
+  const { filePath, adb, service, targetToken, start } = await fixture(t);
   adb.handler = (call) => {
-    if (call.args.slice(2).join(" ") === "shell am get-current-user") {
-      assert.equal(adb.recordingRunning, false);
-      throw new MobileUseError("DEVICE_METADATA_UNAVAILABLE", "Fixture user lookup failed.", "Inspect the phone.");
+    if (call.args.at(-1) === "/system/bin/screenrecord --help 2>&1") {
+      adb.userId = 10;
+      adb.keyguard.userId = 10;
     }
     return undefined;
   };
-  await assert.rejects(service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId }), hasCode("DEVICE_METADATA_UNAVAILABLE"));
-  assert.equal(adb.recordingRunning, false);
-  assert.equal(adb.calls.some((call) => call.args[2] === "pull"), false);
-  assert.equal((await service.screenRecording(targetToken, { kind: "status" })).status, "completed");
-  adb.handler = undefined;
-  assert.equal((await service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId })).status, "saved");
+  const started = recording(await start());
+  adb.userId = 11;
+  adb.keyguard.userId = 11;
+  const saved = await service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId });
+  assert.equal(saved.status, "saved");
+  assert.equal(adb.recordingExit, undefined);
+  assert.equal((await service.screenRecording(targetToken, { kind: "status" })).status, "saved");
+  assert.deepEqual(await readFile(filePath), mp4());
+  assert.equal(adb.calls.some((call) => call.args.slice(2).join(" ") === "shell am get-current-user"), false);
 });
 
-test("stop sends one signal, waits for completion, and checks the export user once", async (t) => {
+test("stop sends one signal and waits for completion without checking Android-user identity", async (t) => {
   const { adb, service, targetToken, start } = await fixture(t);
   const started = recording(await start());
   const before = adb.calls.length;
@@ -628,7 +637,7 @@ test("stop sends one signal, waits for completion, and checks the export user on
   assert.equal((await service.screenRecording(targetToken, { kind: "stop", recordingId: started.recordingId })).status, "saved");
   const calls = adb.calls.slice(before);
   assert.equal(calls.filter((call) => call.args.join(" ").includes("kill -INT")).length, 1);
-  assert.equal(calls.filter((call) => call.args.slice(2).join(" ") === "shell am get-current-user").length, 1);
+  assert.equal(calls.some((call) => call.args.slice(2).join(" ") === "shell am get-current-user"), false);
   assert.equal(calls.some((call) => call.args.join(" ").includes("then echo RUNNING")), false);
 });
 

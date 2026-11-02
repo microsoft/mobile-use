@@ -454,6 +454,7 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.equal(metadata.status, "starting");
     assert.equal(metadata.filePath, filePath);
     assert.equal(metadata.timeLimitSeconds, null);
+    assert.equal("userId" in metadata, false);
     assert.equal(typeof metadata.recordingId, "string");
     const status = await client.callTool({ name: "mobile_screen_recording", arguments: { targetToken, action: { kind: "status" } } });
     assert.deepEqual(payload(status), { ...metadata, status: "recording" });

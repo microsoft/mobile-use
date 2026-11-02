@@ -207,17 +207,12 @@ The caller decides when to check status, how to sequence operations, and whether
 a retry is justified by the returned result and existing authorization.
 
 Stop and status require the pinned transport, not repeated build/TLS metadata.
-Stop occurs before one current-user check for export; there is no repeated
-identity/user race checking or permanent export-failure latch. The caller must
-keep the approved user unchanged and handle failures before continuing.
-An already saved clip can have its temporary files cleaned without a user check.
-
-Recording is supervised and restricted to the same approved Android user
-throughout capture. Native screenrecord captures the shared primary display,
-not an isolated user session. User checks are snapshots, not continuous
-monitoring: a switch away and back between checks cannot be detected. Do not
-switch Android users or use this tool for workflows that require user switching
-or guaranteed cross-user isolation.
+Recording does not read or validate Android-user identity, detect user switches,
+or gate export on the current user. Recording metadata has no `userId`.
+Native screenrecord captures the shared primary display, not an isolated user
+session. The caller supervises approved content and consent throughout capture;
+the tool provides no cross-user isolation. Other tools retain their own
+Android-user checks where required.
 
 Export checks that device size is a positive, safely representable integer,
 pulls without a fixed total deadline, but aborts after 30 seconds without local

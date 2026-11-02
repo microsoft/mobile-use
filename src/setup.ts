@@ -73,8 +73,8 @@ export const onboardingInstructions =
   "Never silently shorten, segment or retry unsupported recording. Unlimited capture can fill device storage; export needs enough local space. " +
   "Screenshot-free observation consent never authorizes recording. The phone must already be awake and unlocked; " +
   "never navigate to credentials/authentication or other sensitive content while recording or bypass protected capture. " +
-  "Recording is supervised: keep the same approved Android user throughout. Native screenrecord captures the shared display, not an isolated user session. " +
-  "User checks are snapshots, not continuous monitoring; switching away and back between checks can go undetected. Do not use recording for user-switching workflows or guaranteed cross-user isolation. " +
+  "Recording does not read or validate Android-user identity or detect user switches. Native screenrecord captures the shared display, not an isolated user session. " +
+  "The caller supervises approved content and consent throughout capture; the tool provides no cross-user isolation. " +
   "Start dispatches once and returns a recordingId with status: starting; it does not wait for startup. The caller decides when to check status. " +
   "Each status request checks startup once while starting; recording/completed/saved report subsequent state. timeLimitSeconds: null means unlimited. " +
   "A specified duration limit stops capture but does not automatically save; stop finalizes that recording ID, exports only its MP4 to the approved path " +
@@ -83,7 +83,7 @@ export const onboardingInstructions =
   "Host-command failure is not proof of recorder exit; the error includes its recording ID for an explicitly authorized stop on a still-current target. " +
   "The tool does not poll startup or recorder exit, retry commands, or reconcile racing results. Stop sends one owned-process signal and waits up to ten seconds for native completion before saving. " +
   "Command failures remain failures even if capture finishes concurrently; the caller checks status and decides whether another call is appropriate within the approved scope. " +
-  "Stop/status need the pinned transport, not repeated build/TLS metadata. One current-user check gates unsaved export after stopping; caller supervision ensures user continuity. Failed native clips cannot be exported. " +
+  "Stop/status need the pinned transport, not repeated build/TLS metadata. Failed native clips cannot be exported. " +
   "Choose an appropriately restricted Windows destination: staging and final files inherit its folder permissions without additional per-user isolation. " +
   "Saved cleanup accepts an already-absent owned directory. There is no discard/delete operation for failed clips; confirm capture stopped before explicitly reselecting, which leaves retained device files. " +
   "Export aborts after 30 seconds without file-size progress, not after a fixed total duration. Cancellation removes partial final-copy output. " +
