@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { crc32, deflateSync } from "node:zlib";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { parseDeviceList } from "../src/adb.js";
 import type { AdbConnection, MonitorFactory, RunOptions } from "../src/adb.js";
 import { checkCancelled, MobileUseError } from "../src/errors.js";
@@ -21,6 +21,39 @@ export function chunk(type: string, data: Buffer): Buffer {
   const checksum = Buffer.alloc(4);
   checksum.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type), data])));
   return Buffer.concat([header, data, checksum]);
+}
+
+export function mp4(): Buffer {
+  // Synthetic one-frame, 16x16 black AVC video; no phone content.
+  return Buffer.from(
+    "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAGRbWRhdAAAAYVluEhoEBAQEBAQEBAQEBAQ" +
+    "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ" +
+    "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ" +
+    "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ" +
+    "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ" +
+    "EBAQEICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA" +
+    "gICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA" +
+    "gICAgICAgICAgICAgAAAAmhtb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAD6AABAAABAAAAAAAA" +
+    "AAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAAAAACAAAB9HRyYWsAAABcdGtoZAAAAAcAAAAAAAAAAAAAAAEAAAAAAAAD6AAAAAAAAAAAAAAA" +
+    "AAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAEAAAABAAAAAAAZBtZGlhAAAA" +
+    "IG1kaGQAAAAAAAAAAAAAAAAAAAPoAAAD6FXEAAAAAAAtaGRscgAAAAAAAAAAdmlkZQAAAAAAAAAAAAAA" +
+    "AFZpZGVvSGFuZGxlcgAAAAE7bWluZgAAABR2bWhkAAAAAQAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAA" +
+    "AAAAAAABAAAADHVybCAAAAABAAAA+3N0YmwAAACDc3RzZAAAAAAAAAABAAAAc2F2YzEAAAAAAAAAAQAA" +
+    "AAAAAAAAAAAAAAAAAAAAEAAQAEgAAABIAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" +
+    "AAAAAAAY//8AAAAdYXZjQwFCAAr/4QAGZ0IACt3kAQAEaM44gAAAABhzdHRzAAAAAAAAAAEAAAABAAAD" +
+    "6AAAABxzdHNjAAAAAAAAAAEAAAABAAAAAQAAAAEAAAAUc3RzegAAAAAAAAGJAAAAAQAAABRzdGNvAAAA" +
+    "AAAAAAEAAAAoAAAAFHN0c3MAAAAAAAAAAQAAAAE=",
+    "base64",
+  );
+}
+
+export function recorderHelp(unlimited: boolean, defaultSeconds = 180): string {
+  return "Usage: screenrecord [options] <filename>\n\nAndroid screenrecord. Records the display to MP4.\n" +
+    "--time-limit TIME\n    Set the maximum recording time, in seconds. " +
+    (unlimited ? `Default is ${defaultSeconds}. Set to 0\n    to remove the time limit.\n`
+      : `Default / maximum is ${defaultSeconds}.\n`) +
+    "--verbose\n    Display information.\n";
 }
 
 export function png(width = 80, height = 160, shade = 8, filter = 0): Buffer {
@@ -157,6 +190,11 @@ export class FakeAdb implements AdbConnection {
   startupAttempted = true;
   startServerHandler: ((signal?: AbortSignal) => Promise<AdbServerResult>) | undefined;
   handler: ((call: AdbCall) => Promise<Buffer | undefined> | Buffer | undefined) | undefined;
+  recordingBytes = mp4();
+  recordingHelp = recorderHelp(true);
+  recordingArgv: string[] | undefined;
+  recordingExit: ((error?: MobileUseError) => void) | undefined;
+  recordingRunning = false;
 
   executable(): string { return "C:\\fixture-only\\adb.exe"; }
 
@@ -183,6 +221,46 @@ export class FakeAdb implements AdbConnection {
     assert.equal(args[0], "-t", "all device-bound fixture commands need an exact transport");
     assert.match(args[1] ?? "", /^\d+$/);
     const command = args.slice(2).join(" ");
+    if (command === "shell /system/bin/screenrecord --help 2>&1") return Buffer.from(this.recordingHelp);
+    if (command.startsWith("shell mkdir -m 700 /data/local/tmp/mobile-use-recording-")) return Buffer.alloc(0);
+    if (command.startsWith("shell umask 077; mkdir -m 700 /data/local/tmp/mobile-use-recording-")) {
+      this.recordingArgv = (command.split("; exec ")[1] ?? "").split(" ");
+      this.recordingRunning = true;
+      return new Promise<Buffer>((resolve, reject) => {
+        const abort = (): void => {
+          this.recordingExit?.(new MobileUseError("CANCELLED", "Fixture recording interrupted.", "Do not replay.", false, true));
+        };
+        this.recordingExit = (error) => {
+          options.signal?.removeEventListener("abort", abort);
+          this.recordingExit = undefined;
+          if (!error) this.recordingRunning = false;
+          if (error) reject(error);
+          else resolve(Buffer.alloc(0));
+        };
+        options.signal?.addEventListener("abort", abort, { once: true });
+        if (options.signal?.aborted) abort();
+      });
+    }
+    if (command.startsWith("shell if [ -f /data/local/tmp/mobile-use-recording-")) return Buffer.from("12345\n");
+    if (command.startsWith("shell if [ -r /proc/12345/cmdline ] && [ -f /data/local/tmp/mobile-use-recording-")) {
+      return Buffer.from(`${this.recordingArgv?.join("\0")}\0`);
+    }
+    if (command.startsWith("shell if [ ! -e /proc/12345 ];")) {
+      if (command.includes("kill -INT")) {
+        this.recordingRunning = false;
+        this.recordingExit?.();
+        return Buffer.from("STOPPED\n");
+      }
+      return Buffer.from(this.recordingRunning ? "RUNNING\n" : "EXITED\n");
+    }
+    if (command.startsWith("shell stat -c %s /data/local/tmp/mobile-use-recording-")) {
+      return Buffer.from(`${this.recordingBytes.length}\n`);
+    }
+    if (args[2] === "pull" && args[3]?.startsWith("/data/local/tmp/mobile-use-recording-")) {
+      await writeFile(args[4] ?? "", this.recordingBytes);
+      return Buffer.from("1 file pulled\n");
+    }
+    if (command.startsWith("shell rm -f /data/local/tmp/mobile-use-recording-")) return Buffer.alloc(0);
     if (args[2] === "push") {
       this.gestureFiles.set(args[4] ?? "", await readFile(args[3] ?? ""));
       return Buffer.from("1 file pushed\n");

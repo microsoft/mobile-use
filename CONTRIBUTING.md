@@ -54,7 +54,7 @@ The helper CI job checks both Java helpers and their rebuilt embedded artifacts.
 After reviewing and explicitly approving installation, follow the
 [local installation instructions](README.md#install-the-plugin). Use an
 absolute artifact path, not the source repository root. Confirm the plugin,
-skill, and fifteen tools appear in the actual Copilot App before hardware
+skill, and twelve tools appear in the actual Copilot App before hardware
 testing. If the App cannot load this format, record that incompatibility
 rather than substituting manual MCP registration.
 
@@ -138,10 +138,11 @@ Do not bypass local policy or change firewall settings to recover.
 | `mobile_press_key` | Require target and latest observation IDs and one `key`: `BACK`, `HOME`, or `ENTER`. |
 | `mobile_input_text` | `action.kind`: `type_text` with `action.observationId`/`action.text`, or `prepare` for the text helper. Preparation requires consent and invalidates observations without entering text. |
 | `mobile_app_management` | `action.kind`: `list`, `foreground`, `launch`, `terminate`, `install`, or `uninstall`. No observation or screenshot; mutations require their specific authorization. |
+| `mobile_screen_recording` | `action.kind`: read-only `capabilities`, `start` with `filePath`/optional `timeLimitSeconds`, `status`, or `stop` with `recordingId`. Silent primary-display MP4; omitted duration means unlimited where supported. Stop saves to the approved local destination without overwriting. |
 
 This is a breaking public-tool redesign: `mobile_act`, the six separate app
 tools, and the standalone preparation tools are no longer registered or
-provided as aliases. There are exactly 11 tools, each with a human-readable
+provided as aliases. There are exactly 12 tools, each with a human-readable
 title. The internal bounded-action dispatcher and its device/screen guards
 remain shared across the four UI input tools.
 
@@ -160,6 +161,149 @@ serial evidence when available, otherwise `null`. Every device command uses
 the selected ADB transport ID. A disconnect, observed server restart, or new
 selection invalidates tokens/references. There is **no endpoint fallback**,
 including to another connection to the same phone.
+
+### Screen recording
+
+`mobile_screen_recording` requires the current `targetToken`, but no
+`observationId`. The four strict `action` variants are:
+
+| Action | Contract |
+| --- | --- |
+| `{ kind: "capabilities" }` | Read the selected device's native help without capture or observation invalidation. Return `{ status: "available", source: "device-help", unlimitedSupported, maxTimeLimitSeconds, nativeDefaultTimeLimitSeconds }`. No recording consent or unlocked screen is needed for this read-only metadata check. |
+| `{ kind: "start", filePath, timeLimitSeconds? }` | Require an already awake/unlocked phone and explicit consent for the device, non-sensitive screen content, duration or unlimited capture, and destination. `filePath` is a new absolute local Windows `.mp4` path in an existing writable directory. Optional `timeLimitSeconds` is a positive integer up to 4294967295 (native unsigned 32-bit argument range), restricted further by live capabilities. Omit it for unlimited recording until stopped where supported; the plugin never substitutes a finite default. Dispatch once and return `status: starting` with `recordingId`, without waiting for startup. |
+| `{ kind: "status" }` | Return `status: idle` when no recording exists, otherwise metadata with `starting`, `recording`, `completed` or `saved`. For `starting`, perform one startup check per caller request. `timeLimitSeconds: null` means unlimited. Native recorder and query failures remain explicit errors. No screen capture or export. |
+| `{ kind: "stop", recordingId }` | Stop only this selection's matching recording, await native finalization, and export to the original destination. Also exports a recording that already reached its deadline. Return `status: saved`, `filePath` and `sizeBytes` only after a successful exclusive copy. Remove only this recording's generated device temporary files. |
+
+One active or unsaved recording is allowed per selection. Start and stop
+invalidate observations, including failed attempts. Recording uses the native
+`/system/bin/screenrecord` at 4 Mbps, with no audio, helper installation,
+streaming, or arbitrary shell/file-transfer interface. UI operations remain
+available during capture; a completed start request's cancellation does not
+cancel an authorized ongoing recording. A cancelled or uncertain start must
+not be replayed automatically; status can expose a `starting` recording ID
+for an explicitly requested stop.
+
+Omitted duration is explicitly passed to Android as `--time-limit 0`; omitting
+the native option would incorrectly use Android's own default duration.
+Unlimited capture has no host process timeout. Finite limits use the requested
+native duration and a host watchdog with 15 seconds of finalization allowance
+when the deadline fits Node's signed 32-bit timer range; longer durations rely
+on the native limit rather than overflowing the host timer. Unsupported older
+recorders fail explicitly, without falling back to a shorter capture.
+
+The adapter creates a private, randomly named device directory and keeps the
+recorder's ADB shell attached to the selection lifetime. Start checks native
+help, the local destination, and the unlocked state, then dispatches capture
+without startup polling. The caller requests status when it needs readiness:
+each request checks the owned PID/command line and output existence once while
+the recording is `starting`.
+
+Stop sends one SIGINT command guarded by the owned PID and unique output path,
+then waits up to ten seconds for the attached recorder command to finish before
+saving. It does not poll process exit, retry commands, reconcile racing results,
+or replace command failures with inferred success. A recorder that has already
+completed needs only export. Failed native commands are never exported.
+The caller decides when to check status, how to sequence operations, and whether
+a retry is justified by the returned result and existing authorization.
+
+Stop and status require the pinned transport, not repeated build/TLS metadata.
+Recording does not read or validate Android-user identity, detect user switches,
+or gate export on the current user. Recording metadata has no `userId`.
+Native screenrecord captures the shared primary display, not an isolated user
+session. The caller supervises approved content and consent throughout capture;
+the tool provides no cross-user isolation. Other tools retain their own
+Android-user checks where required.
+
+Export checks that device size is a positive, safely representable integer,
+pulls without a fixed total deadline, but aborts after 30 seconds without local
+file-size progress so a stalled pull releases the serialized operation queue.
+Request cancellation and selection-lifetime abort still apply. Validation checks
+movie and video-track headers, nested box boundaries, local data references,
+AVC/HEVC configuration records and MPEG-4 descriptor lengths, sample-table
+counts, optional composition-time and sync-sample tables, and media ranges using bounded reads;
+it is structural validation, not a decoder or proof of playback. The exclusive
+streaming copy from the randomly named local temporary directory is also abortable.
+Cancellation removes only the partial destination created by that copy.
+There is no fixed video-size cap and the video is not buffered in server memory.
+Unlimited capture can exhaust device
+storage; export requires enough local space for both the temporary download
+and final copy.
+Destination validation rejects UNC/device paths, alternate streams, reserved
+names and existing files. It verifies Windows write permission by creating and
+removing a unique temporary file, not just `fs.access(W_OK)`, without reserving
+the requested evidence path. An exclusive copy also prevents races from
+overwriting another writer. Failed exports retain the device capture; local
+temporary files are cleaned. Cleanup errors after saving are explicit;
+status still exposes the saved path, and another explicit stop retries only
+cleanup, not capture or export.
+Cleanup treats an already-absent owned directory as success, including after
+a lost response, but still reports other removal failures.
+The staging directory is beside the approved destination and inherits Windows
+folder permissions, as does the final file. The caller must choose an
+appropriately restricted destination; a random name does not provide isolation.
+Failed or unsaved recordings retain their device files and
+occupy the recording slot. There is no discard/delete operation: confirm capture
+stopped before explicitly reselecting; reselection does not remove those files.
+
+Reselection, transport loss, server restart and shutdown cancel the attached
+ADB command and invalidate recording handles. If Android continues capture
+after a disconnect, only an explicitly requested native time limit bounds it.
+Unlimited recording has no fallback deadline: the user must verify capture
+stopped on the phone. Device temporary files may remain; there is no silent
+reconnect, automatic export or recovery
+through a new selection. Successful saves remove only their own temporary
+capture/PID files and directory.
+
+Screenshot-free observation permission never grants recording consent. Never
+record authentication or navigate to sensitive content during capture.
+Protected or OEM-restricted capture can fail or contain blank content; do not
+bypass it. Tool responses contain metadata/path only, not video bytes.
+Real-device validation must separately confirm a playable saved clip, native
+timed/unlimited and early-stop behavior, and UI input during capture on
+approved content.
+
+#### Android recorder compatibility
+
+The release baseline below was checked against official AOSP `screenrecord.cpp`
+release tags on 2026-10-30. It describes the native ADB executable, **not** the
+phone's Quick Settings recorder, a MediaProjection-based app, or scrcpy.
+
+| AOSP releases | API | `--time-limit` | Other relevant differences |
+| --- | --- | --- | --- |
+| [11](https://android.googlesource.com/platform/frameworks/av/+/android-11.0.0_r1/cmds/screenrecord/screenrecord.cpp), [12](https://android.googlesource.com/platform/frameworks/av/+/android-12.0.0_r1/cmds/screenrecord/screenrecord.cpp), [12L](https://android.googlesource.com/platform/frameworks/av/+/android-12.1.0_r1/cmds/screenrecord/screenrecord.cpp), [13](https://android.googlesource.com/platform/frameworks/av/+/android-13.0.0_r1/cmds/screenrecord/screenrecord.cpp) | 30-33 | Only 1-180 seconds; 0 and values above 180 are rejected. Default is 180. | No `--version` option in these tags; use `--help` to inspect capabilities. |
+| [14](https://android.googlesource.com/platform/frameworks/av/+/android-14.0.0_r1/cmds/screenrecord/screenrecord.cpp), [15](https://android.googlesource.com/platform/frameworks/av/+/android-15.0.0_r1/cmds/screenrecord/screenrecord.cpp) | 34-35 | Accept 0 (unlimited) and positive durations up to unsigned 32-bit maximum. Default is still 180. | The duration parser, not the still-named `kMaxTimeLimitSec` constant, establishes the supported range. |
+| [16](https://android.googlesource.com/platform/frameworks/av/+/android-16.0.0_r1/cmds/screenrecord/screenrecord.cpp) | 36 | Same modern duration semantics as 14-15. | Adds `--version`; do not assume older devices support it. |
+
+All checked tags encode video without audio; the plugin exports silent MP4
+at 4 Mbps. Native `--size`, `--bit-rate` and `--display-id` exist across these
+releases, but this tool exposes neither size/bitrate overrides nor alternate
+displays. Encoder resolution, availability, orientation changes, storage and
+OEM/device policy can still affect capture. Avoid rotating mid-clip and verify
+the saved video; a capability response is not proof of a playable recording.
+Protected content may be blank or rejected; never use secure-capture flags,
+root, APK installation or a different recorder to bypass protection.
+
+Copilot must inspect `action: { kind: "capabilities" }` before recording approval.
+The adapter captures stderr for `/system/bin/screenrecord --help`, parses only
+the time-limit option's recognized help block (maximum 64 KiB), and returns
+structured metadata, never raw OEM help or instructions. The current native
+help is authoritative over API/version labels: OEMs can backport the modern
+recorder or ship a different limit. The plugin does not infer a runtime limit
+from API level, and does not rely on newer-only `--version`.
+
+Every start rechecks help before creating a device directory or launching a
+recorder. A recognized unsupported duration produces
+`RECORDING_DURATION_UNSUPPORTED` with `actionMayHaveRun: false`, an allowed
+range, and instructions to obtain approval for a supported duration.
+Missing or unrecognized help produces `RECORDING_CAPABILITIES_UNAVAILABLE`;
+do not guess, trial-record, shorten, segment, or silently fall back.
+Both preflight failures leave recording status idle and allow a later
+explicitly approved supported start without reselecting the device. Native
+startup/encoder failures remain distinct, potentially uncertain errors.
+
+Research and fixture coverage are not physical-device proof. The earlier
+Android 11 USB demonstration verified a playable timed clip, not unlimited
+recording or other Android versions.
 
 ### App management
 
@@ -549,8 +693,11 @@ first, and rediscover/reselect if the transport was lost.
 
 ### Resource bounds and lifecycle
 
-Commands have a 15-second deadline and 16 MiB output limit (APK installation
-alone allows 120 seconds). Primary-display diagnostics have a shorter
+Commands normally have a 15-second deadline and 16 MiB output limit (APK
+installation allows 120 seconds). Screen recording uses the native duration
+and, when representable, a finite-duration watchdog; unlimited capture and
+recording-file pulls have no fixed host deadline. Cancellation and target
+lifetime abort still apply. Primary-display diagnostics have a shorter
 two-second attempt deadline and retry transient read failures at most once.
 Display parsing is limited to 1 MiB; raw display diagnostics are not returned
 in tool results or saved to disk. Only these read-only metadata attempts are

@@ -3,14 +3,13 @@
 Use GitHub Copilot to observe and interact with a **real Android 11+ phone or
 tablet** from Windows, over USB or modern paired wireless ADB.
 
-The plugin lets Copilot read the screen or UI hierarchy, navigate visible
-controls, enter supported text, and manage apps on a device you explicitly
-select. It includes a local MCP server and a skill that guides setup and use.
+Read screens or UI text, tap and swipe, enter text, manage apps, and record
+silent screen videos on a device you explicitly select.
 
 **Experimental:** this is a proof of concept, not a released or
-production-supported capability. USB observation, navigation, waking, and app
-management have been verified on one Android 11 phone. Full paired-wireless
-acceptance remains **unverified**.
+production-supported product. USB workflows, including screen recording, have
+been tested on one Android 11 phone. Paired-wireless acceptance remains
+**unverified**.
 
 ## Requirements
 
@@ -20,115 +19,48 @@ acceptance remains **unverified**.
 - A real Android 11+ device exposing Wireless debugging, plus either a
   data-capable USB cable or a trusted, reachable local network for wireless.
 
-Node and Platform-Tools are not bundled. Android Studio, Java, Appium, an
-emulator, and a phone-side helper are not required. Windows may need the phone
-manufacturer's USB driver.
+Node and Platform-Tools are not bundled. Android Studio and Java are not
+required to use the plugin. Windows may need the phone manufacturer's
+[USB driver](https://developer.android.com/studio/run/oem-usb).
 
 ## Install the plugin
 
-The current installation route requires a local build; there is no marketplace
-or built-in Copilot distribution. Follow the
-[build instructions](CONTRIBUTING.md#build-and-check-the-plugin) to create
-`dist\mobile-use`. After reviewing and approving installation, run this from
-the repository directory in PowerShell:
+There is no marketplace package yet. Follow the
+[build instructions](CONTRIBUTING.md#build-and-check-the-plugin), then run this
+from the repository directory in PowerShell:
 
 ```powershell
 copilot plugin install (Resolve-Path .\dist\mobile-use).Path
 ```
 
-Use the absolute path produced by `Resolve-Path`; some Windows CLI versions do
-not recognize a relative plugin source. Do not install the repository root:
-it does not contain the compiled plugin. Confirm the plugin, skill, and tools
-appear in your Copilot App before using a phone.
+Install the built `dist\mobile-use` folder, not the repository root. Confirm
+the plugin and its tools appear in Copilot before using a phone. After rebuilding,
+update or reinstall the plugin to load your changes.
 
 ## Connect your device
 
-Ask Copilot: **"Help me set up mobile-use."** It checks host tools first, then
-connected devices, and guides you through the next missing step. A successful
-host check alone does not mean a phone is connected or authorized.
+Ask Copilot: **"Help me set up mobile-use."** It checks requirements and guides
+you through the next missing step.
 
-You must install prerequisites, change debugging settings, authorize your
-computer, and pair/connect devices yourself. Managed-device or network policy
-may prohibit debugging; do not bypass it. Setup is not permission to observe
-or control the phone.
+1. Extract Platform-Tools so ADB is at
+   `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe`, or add its folder to PATH.
+   For a custom location, you can also set `MOBILE_USE_ADB_PATH` to the full
+   `adb.exe` path. Reopen Copilot after environment changes.
+2. For USB, enable [Developer options and USB debugging](https://developer.android.com/studio/debug/dev-options),
+   connect a data-capable cable, unlock the phone, and authorize your trusted
+   computer on the phone.
+3. For wireless, enable **Wireless debugging** and follow
+   [Android's pairing instructions](https://developer.android.com/tools/adb#connect-to-a-device-over-wi-fi)
+   in your own terminal. Only modern paired wireless is supported.
+4. Ask Copilot to list devices and choose the exact USB or wireless endpoint.
 
-### Android Platform-Tools on Windows
-
-1. Download the current Windows package from the official
-   [Platform-Tools page](https://developer.android.com/tools/releases/platform-tools),
-   reviewing Google's download terms yourself.
-2. Extract it so ADB is at
-   `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe`, which the plugin
-   discovers automatically. For another location, add its directory to PATH
-   or set `MOBILE_USE_ADB_PATH` to the absolute `adb.exe` path.
-3. Fully quit and reopen Copilot after changing its environment, then ask it
-   to check setup again.
-
-If the local ADB server is missing, Copilot asks before starting it. The shared
-server may remain running after the plugin exits, and its first startup may
-initialize local ADB host keys. The plugin never kills or restarts an existing
-server; conflicts must be resolved without bypassing local policy.
-
-### USB
-
-1. Enable **Developer options** and **USB debugging** on the phone using
-   [Android's instructions](https://developer.android.com/studio/debug/dev-options).
-   Menu paths vary by manufacturer; do not enable OEM unlocking or unrelated
-   security options.
-2. Unlock the phone, connect a data-capable USB cable, and approve only the
-   intended trusted computer's RSA-debugging prompt. Enter any PIN/password
-   only on the phone, never in chat.
-3. Ask Copilot to list devices, then choose the exact USB endpoint. An
-   `unauthorized` entry needs on-phone approval; an `offline` entry needs its
-   connection restored. For an empty list, check the cable, port, and
-   [manufacturer's USB driver](https://developer.android.com/studio/run/oem-usb).
-
-### Modern paired wireless
-
-Enable **Wireless debugging** and open its pairing-code dialog on the phone.
-In your own terminal, use the addresses shown by Android:
-
-```powershell
-$pairingAddress = Read-Host "Pairing address (IP:pairing-port)"
-adb pair $pairingAddress
-# Enter the pairing code only at adb's interactive local prompt.
-$connectionAddress = Read-Host "Wireless debugging connection address (IP:connection-port)"
-adb connect $connectionAddress
-adb devices -l
-```
-
-If `adb` is not on PATH, use the full `adb.exe` path identified during setup.
-Pairing and connection ports are different. Discovery may connect automatically;
-an explicit connection address can help when mDNS is blocked. Only modern
-TLS-paired debugging is supported, not legacy `adb tcpip`.
-
-Ask Copilot to list devices and explicitly choose the wireless endpoint.
-USB and Wi-Fi entries may refer to the same phone; the plugin never silently
-switches connections. Never share pairing codes or private ADB keys in chat,
-screenshots, logs, or issues.
+You perform settings changes, debugging authorization, and pairing yourself.
+Enter passwords and pairing codes only on the phone or in the local ADB prompt,
+never in chat. Copilot asks before starting a missing local ADB server.
 
 ## Use with Copilot
 
-### Tools
-
-| Category | Tool |
-| --- | --- |
-| App management | `mobile_app_management` - list, foreground, launch, terminate, install, uninstall |
-| Taps | `mobile_tap` - single tap, double-tap, gesture-helper preparation |
-| Swipes | `mobile_swipe` |
-| Back/Home/Enter | `mobile_press_key` |
-| Input text | `mobile_input_text` - text entry and text-helper preparation |
-| Devices | `mobile_list_devices`, `mobile_select_device` |
-| Setup | `mobile_doctor`, `mobile_start_adb_server` |
-| Wake | `mobile_wake` |
-| Observation | `mobile_observe` |
-
-These 11 tools replace the generic `mobile_act`, the six separate app tools,
-and the two standalone helper-preparation tools. Each has a readable display
-title. See the [tool contracts](CONTRIBUTING.md#tool-reference-and-device-selection)
-for arguments and migration details.
-
-Name the selected device and the safe task you want performed. For example:
+Name the selected device and the non-sensitive task you want performed:
 
 > On the selected USB phone, describe the current screen.
 
@@ -139,69 +71,47 @@ Name the selected device and the safe task you want performed. For example:
 
 > List installed app package names on the selected phone.
 
-Copilot observes before UI input and checks the resulting state after each
-action. Screenshot-free mode uses exposed UI elements; coordinate taps and
-swipes are unavailable in that mode. Custom-drawn or protected screens may
-not expose enough information to continue.
+Copilot checks the screen before input and verifies the result. Some custom or
+protected screens may not support observation or input. Double-tap and Unicode
+text entry require separate approval to upload and run a bundled helper.
+Text entry appends without submitting.
 
-App management can launch or force-stop a named installed package, install a
-local `.apk`, or uninstall a package for the current Android user. Installation
-requires explicit approval of the APK and device; uninstallation requires
-approval of the package, device, and **app-data deletion**. Force-stop requires
-specific authorization and may discard unsaved state. Installation does not
-automatically launch the app.
+### Screen recording
 
-You can explicitly ask to wake the selected phone. Copilot can dismiss only
-an unsecured lock screen; you must handle secure authentication yourself.
-Text entry requires one unchanged, focused, enabled, non-password native field.
-ASCII letters, digits, spaces, periods, commas, underscores, and hyphens use
-the existing ADB path without a helper. For Chinese and other Unicode text,
-emoji, or additional punctuation, Copilot first obtains explicit approval or
-reuses matching scoped session consent to upload and run the bundled text
-helper, then calls `mobile_input_text` with
-`action: { kind: "prepare" }`.
-It installs no APK, changes no keyboard, and uses no clipboard or daemon;
-the read-only helper files remain under `/data/local/tmp/mobile-use-text-*`.
-Preparation is required again after device reselection/server restart.
+Start a recording, check its status, and stop/save a silent MP4 to a new local
+Windows path you approve. Other phone tools remain usable while recording.
 
-The Unicode path appends at the **end** of the actual value, excluding placeholder
-hints, using Android's `ACTION_SET_TEXT`. It never sends Enter or submits the field.
-It requires the original observed window and verifies entered text, not a
-matching placeholder.
-Each action accepts up to 256 UTF-16 code units; the helper's resulting value
-plus its exposed label/hint is limited to 4096. Prepared-helper observations
-also preserve exact Unicode and whitespace for subsequent guarded appends.
-
-Well-formed Unicode, combining marks, tabs and line breaks
-are supported; other control characters, unpaired surrogates, and U+FFFE/U+FFFF
-are rejected. Custom fields and input filters can reject text; an unverified
-write is reported as uncertain and is never automatically retried.
+Choose a duration, or omit the time limit to request unlimited recording where
+supported. Copilot checks the phone's limits first; Android 11-13 typically
+allows only 1-180 seconds. Timed recordings still need **stop** to save, and
+existing files are never overwritten. See the
+[recording guide](CONTRIBUTING.md#screen-recording) for details and Android
+compatibility.
 
 ## Safety and privacy
 
-Use only approved, non-sensitive demo content and a reversible, non-submitting
-journey. Installation and debugging trust are **not** blanket authorization.
-Respect Copilot's permission prompts. This POC must not send messages or forms,
-change settings or accounts, make purchases, grant permissions, or enter
-credentials. Never observe authentication screens or bypass device policy.
+Use approved, non-sensitive content and respect Copilot's permission prompts.
+Installation and debugging trust are **not** permission to control a phone.
+Do not use this POC to submit messages or forms, make purchases, change settings
+or accounts, grant permissions, or enter credentials. Authenticate manually;
+never expose authentication screens or bypass device policy.
 
-Screenshots, UI text, app inventories, and foreground-app metadata returned to
-Copilot may be processed by its configured model service. Local device access
-does not mean on-device inference. Images and UI dumps stay in server memory
-by default, but Copilot/model-side retention follows the host's policies.
-Save evidence only with explicit approval of its content and destination.
-Screenshot-free mode still exposes potentially sensitive UI text; password
-redaction is not a guarantee that the rest of a screen contains no secrets.
+Screenshots, UI text, and app metadata may be processed by Copilot's configured
+model service. Screenshot-free observation still exposes UI text. Saving
+evidence requires approval of its content and destination.
 
-Use one controller per phone. If the screen changes or an action's outcome is
-uncertain, inspect fresh device state before trying again; do not blindly
-replay input. A disconnect requires rediscovery and explicit device selection.
-Unloading the plugin does not stop the shared ADB server or revoke the phone's
-debugging trust.
+App installation and uninstallation need specific approval; uninstalling
+deletes app data, and force-stopping may lose unsaved work. Recording needs its
+own approval for the device, content, duration, and save location. Keep the
+phone unlocked and away from sensitive content during capture.
 
-Only the primary display and default local ADB server are supported. There is
-no iOS, emulator, cloud-device, remote-server, recording, streaming, or
-general-purpose file-transfer support.
+Unlimited recording can fill storage. After a disconnect or plugin exit,
+verify capture stopped on the phone; unsaved recordings may remain there.
+Use one controller per phone and reselect the device after disconnection.
+Exiting the plugin does not stop the shared ADB server or revoke debugging trust.
+
+Only real Android devices are supported, not iOS, emulators, or cloud devices.
+There is no audio recording, streaming, or general-purpose file transfer.
 
 ## Help and contributing
 

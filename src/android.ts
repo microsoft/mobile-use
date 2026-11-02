@@ -6,8 +6,9 @@ import { localApkFile, parseAndroidUser, parseForegroundApp, parseInstalledApps,
 import { checkCancelled, isRecord, MobileUseError, publicError } from "./errors.js";
 import { doubleTap, prepareGestures } from "./gestures.js";
 import { appendUnicodeText, isAdbText, prepareTextInput, unicodeHierarchy, validateText } from "./text-input.js";
+import { ScreenRecorder } from "./recording.js";
 export { validateText } from "./text-input.js";
-import type { AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, PreparedGestures, PreparedTextInput, Rect, ScreenElement, WakeResult } from "./types.js";
+import type { AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, PreparedGestures, PreparedTextInput, RecordingAction, RecordingResult, Rect, ScreenElement, WakeResult } from "./types.js";
 
 export interface Hierarchy {
   rotation: number;
@@ -87,15 +88,20 @@ export interface KeyguardState {
   userId: number;
 }
 
-export function parseKeyguardState(output: string): KeyguardState {
-  const unavailable = (): never => {
-    throw new MobileUseError(
-      "KEYGUARD_STATE_UNAVAILABLE",
-      "The device's lock-screen state could not be established.",
-      "Wake and unlock the phone manually. Unrecognized OEM lock-screen diagnostics are not safe to dismiss.",
-    );
-  };
-  if (Buffer.byteLength(output) > 128 * 1024) unavailable();
+function keyguardUnavailable(): never {
+  throw new MobileUseError(
+    "KEYGUARD_STATE_UNAVAILABLE",
+    "The device's lock-screen state could not be established.",
+    "Wake and unlock the phone manually. Unrecognized OEM lock-screen diagnostics are not safe to dismiss.",
+  );
+}
+
+function parseKeyguardPolicy(output: string): {
+  state: Omit<KeyguardState, "userId">;
+  delegate: Map<string, string>;
+  monitor: Map<string, string>;
+} {
+  if (Buffer.byteLength(output) > 128 * 1024) keyguardUnavailable();
   const fields = (lines: string[]): Map<string, string> => {
     const indentation = lines.reduce((minimum, line) => Math.min(minimum, line.search(/\S/)), Infinity);
     const values = new Map<string, string>();
@@ -103,35 +109,40 @@ export function parseKeyguardState(output: string): KeyguardState {
       if (line.search(/\S/) !== indentation) continue;
       const match = /^\s*(\w+)=(\S+)\s*$/.exec(line);
       if (match?.[1] && match[2]) {
-        if (values.has(match[1])) unavailable();
+        if (values.has(match[1])) keyguardUnavailable();
         values.set(match[1], match[2]);
       }
     }
     return values;
   };
-  const delegateSection = diagnosticSection(output.split(/\r?\n/), "KeyguardServiceDelegate", unavailable);
+  const delegateSection = diagnosticSection(output.split(/\r?\n/), "KeyguardServiceDelegate", keyguardUnavailable);
   const delegate = fields(delegateSection);
-  const monitor = fields(diagnosticSection(delegateSection, "KeyguardStateMonitor", unavailable));
+  const monitor = fields(diagnosticSection(delegateSection, "KeyguardStateMonitor", keyguardUnavailable));
   const flag = (values: Map<string, string>, name: string): boolean => {
     const value = values.get(name);
-    if (value !== "true" && value !== "false") unavailable();
+    if (value !== "true" && value !== "false") keyguardUnavailable();
     return value === "true";
   };
-  // Delegate caches can lag the live monitor, including USER_NULL before a user switch.
+  // Delegate caches can lag the live monitor.
   const showing = flag(monitor, "mIsShowing");
   const inputRestricted = flag(monitor, "mInputRestricted");
   const secure = flag(delegate, "secure");
   const simSecure = flag(monitor, "mSimSecure");
-  if (!flag(delegate, "systemIsReady") || !flag(delegate, "bootCompleted")) unavailable();
+  if (!flag(delegate, "systemIsReady") || !flag(delegate, "bootCompleted")) keyguardUnavailable();
+  const screen = delegate.get("screenState");
+  if (!["SCREEN_STATE_OFF", "SCREEN_STATE_TURNING_ON", "SCREEN_STATE_ON", "SCREEN_STATE_TURNING_OFF"].includes(screen ?? "")) keyguardUnavailable();
+  return { state: { showing, secure: secure || simSecure, inputRestricted, screenOn: screen === "SCREEN_STATE_ON" }, delegate, monitor };
+}
+
+export function parseKeyguardState(output: string): KeyguardState {
+  const { state, delegate, monitor } = parseKeyguardPolicy(output);
   const user = monitor.get("mCurrentUserId");
   const delegateUser = delegate.get("currentUser");
   if (!user || !/^(0|[1-9]\d*)$/.test(user) ||
     !Number.isSafeInteger(Number(user)) ||
     (delegateUser !== "-10000" && delegateUser !== user) ||
-    (delegate.has("mCurrentUserId") && delegate.get("mCurrentUserId") !== user)) unavailable();
-  const screen = delegate.get("screenState");
-  if (!["SCREEN_STATE_OFF", "SCREEN_STATE_TURNING_ON", "SCREEN_STATE_ON", "SCREEN_STATE_TURNING_OFF"].includes(screen ?? "")) unavailable();
-  return { showing, secure: secure || simSecure, inputRestricted, screenOn: screen === "SCREEN_STATE_ON", userId: Number(user) };
+    (delegate.has("mCurrentUserId") && delegate.get("mCurrentUserId") !== user)) keyguardUnavailable();
+  return { ...state, userId: Number(user) };
 }
 
 function invalidImage(): never {
@@ -363,6 +374,7 @@ export function parseHierarchy(output: string): Hierarchy {
 export class AndroidBackend {
   private gestureHelperPath: string | undefined;
   private textHelperPath: string | undefined;
+  private readonly recorder = new ScreenRecorder((args, options) => this.command(args, options));
 
   constructor(
     private readonly adb: AdbConnection,
@@ -387,6 +399,19 @@ export class AndroidBackend {
       throw new MobileUseError("DEVICE_METADATA_UNAVAILABLE", "A device property is malformed or exceeds the POC's limit.", "Check the selected device's build and authorization.");
     }
     return value;
+  }
+
+  async screenRecording(action: RecordingAction, requestSignal?: AbortSignal): Promise<RecordingResult> {
+    const signal = requestSignal ? AbortSignal.any([this.targetSignal, requestSignal]) : this.targetSignal;
+    if (action.kind === "capabilities") return this.recorder.capabilities(signal);
+    if (action.kind === "status") return this.recorder.status(signal);
+    if (action.kind === "stop") return this.recorder.stop(action.recordingId, signal);
+    return this.recorder.start(action.filePath, action.timeLimitSeconds, async () => {
+      const { state: lock } = parseKeyguardPolicy((await this.command(["shell", "dumpsys", "window", "policy"], { signal })).toString("utf8"));
+      if (lock.showing || lock.inputRestricted || !lock.screenOn) {
+        throw new MobileUseError("MANUAL_UNLOCK_REQUIRED", "Recording requires an already awake and unlocked phone.", "Wake and unlock manually. Never record authentication screens.");
+      }
+    }, signal);
   }
 
   async identity(signal?: AbortSignal): Promise<DeviceIdentity> {

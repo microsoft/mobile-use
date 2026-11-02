@@ -58,7 +58,37 @@ export const onboardingInstructions =
   "Require explicit one-action approval before installing a specified local APK or uninstalling a specified package and its current-user data; " +
   "do not ask again when that exact action and consequence are already explicitly authorized. " +
   "Installation supports Android .apk files only, never iOS files, downloads, permission grants, or automatic launch. " +
-  "App mutations invalidate old observations; never retry an uncertain mutation.";
+  "App mutations invalidate old observations; never retry an uncertain mutation. " +
+  "Use mobile_screen_recording with action: { kind: 'capabilities' } after selecting the device and before recording approval. " +
+  "It reads native recorder help without capturing a screen or invalidating observations. " +
+  "Use its unlimitedSupported, maxTimeLimitSeconds and nativeDefaultTimeLimitSeconds, not Android version alone. " +
+  "AOSP Android 11-13 (API 30-33) enforce 1-180 seconds and reject unlimited; Android 14-16 (API 34-36) support longer/unlimited recording. " +
+  "OEM builds/backports can differ. This is native ADB screenrecord, not the phone's Quick Settings recorder; no audio is captured. " +
+  "Before start of a silent primary-display MP4, obtain explicit consent " +
+  "for the selected device, approved non-sensitive screen content, duration or unlimited capture, and absolute local Windows .mp4 destination. " +
+  "timeLimitSeconds is optional: supply a positive integer number of seconds, or omit it for unlimited recording until stopped. " +
+  "The plugin has no implicit duration, but device limits still apply. Android's native default is 180 seconds, not unlimited. " +
+  "Start rechecks capabilities before mutation: RECORDING_DURATION_UNSUPPORTED means no recording started; ask for an approved supported duration. " +
+  "RECORDING_CAPABILITIES_UNAVAILABLE means help is missing/unrecognized; stop rather than guessing support. " +
+  "Never silently shorten, segment or retry unsupported recording. Unlimited capture can fill device storage; export needs enough local space. " +
+  "Screenshot-free observation consent never authorizes recording. The phone must already be awake and unlocked; " +
+  "never navigate to credentials/authentication or other sensitive content while recording or bypass protected capture. " +
+  "Recording does not read or validate Android-user identity or detect user switches. Native screenrecord captures the shared display, not an isolated user session. " +
+  "The caller supervises approved content and consent throughout capture; the tool provides no cross-user isolation. " +
+  "Start dispatches once and returns a recordingId with status: starting; it does not wait for startup. The caller decides when to check status. " +
+  "Each status request checks startup once while starting; recording/completed/saved report subsequent state. timeLimitSeconds: null means unlimited. " +
+  "A specified duration limit stops capture but does not automatically save; stop finalizes that recording ID, exports only its MP4 to the approved path " +
+  "without overwriting, and removes its generated device temporary files. No audio, streaming, or video bytes are returned to the model. " +
+  "Start/stop invalidate observations. One active/unsaved recording per selection. Never automatically restart uncertain recording or export. " +
+  "Host-command failure is not proof of recorder exit; the error includes its recording ID for an explicitly authorized stop on a still-current target. " +
+  "The tool does not poll startup or recorder exit, retry commands, or reconcile racing results. Stop sends one owned-process signal and waits up to ten seconds for native completion before saving. " +
+  "Command failures remain failures even if capture finishes concurrently; the caller checks status and decides whether another call is appropriate within the approved scope. " +
+  "Stop/status need the pinned transport, not repeated build/TLS metadata. Failed native clips cannot be exported. " +
+  "Choose an appropriately restricted Windows destination: staging and final files inherit its folder permissions without additional per-user isolation. " +
+  "Saved cleanup accepts an already-absent owned directory. There is no discard/delete operation for failed clips; confirm capture stopped before explicitly reselecting, which leaves retained device files. " +
+  "Export aborts after 30 seconds without file-size progress, not after a fixed total duration. Cancellation removes partial final-copy output. " +
+  "Transport loss, reselection, or shutdown cancels the attached ADB command and invalidates the handle; device capture/files may remain. " +
+  "Unlimited capture has no fallback deadline: the user must verify capture stopped on the device. Never reconnect/fallback or export automatically.";
 
 const platformToolsSetup: SetupGuidance = {
   stage: "platform-tools",

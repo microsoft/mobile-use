@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import type { TestContext } from "node:test";
@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { isRecord } from "../src/errors.js";
-import { USB } from "./helpers.js";
+import { mp4, USB } from "./helpers.js";
 
 async function fixture(t: TestContext, mode: "legacy" | "auto", scenario = "") {
   const transport = new StdioClientTransport({
@@ -93,6 +93,11 @@ for (const mode of ["legacy", "auto"] as const) {
       ["mobile_press_key", { observationId, key: "HOME", text: "demo" }],
       ["mobile_app_management", { action: { kind: "uninstall", packageName: "example.poc", approved: true } }],
       ["mobile_app_management", { action: { kind: "list" }, sessionApproval: true }],
+      ["mobile_screen_recording", { action: { kind: "start", filePath: "C:\\demo.mp4", timeLimitSeconds: 0 } }],
+      ["mobile_screen_recording", { action: { kind: "start", filePath: "C:\\demo.mp4", approved: true } }],
+      ["mobile_screen_recording", { action: { kind: "stop" } }],
+      ["mobile_screen_recording", { action: { kind: "status", filePath: "C:\\demo.mp4" } }],
+      ["mobile_screen_recording", { action: { kind: "capabilities", approved: true } }],
     ] as const) {
       const rejected = await client.callTool({ name, arguments: { targetToken, ...fields } });
       assert.equal(rejected.isError, true, `${name} must reject ${JSON.stringify(fields)}`);
@@ -405,6 +410,105 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.ok(isRecord(error) && error.code === "INVALID_APP_FILE" && error.actionMayHaveRun === false);
   });
 
+  test(`screen recording starts asynchronously, reports metadata and saves an MP4 over ${mode}`, async (t) => {
+    const base = path.resolve(".test-artifacts");
+    await mkdir(base, { recursive: true });
+    const directory = await mkdtemp(path.join(base, "mcp recording "));
+    t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+    const filePath = path.join(directory, "approved video.mp4");
+    const { client } = await fixture(t, mode);
+    const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+    const targetToken = selected.targetToken;
+    const tool = (await client.listTools()).tools.find((entry) => entry.name === "mobile_screen_recording");
+    assert.ok(tool);
+    assert.deepEqual(tool.inputSchema.required, ["targetToken", "action"]);
+    assert.equal(tool.annotations?.readOnlyHint, false);
+    assert.equal(tool.annotations?.destructiveHint, true);
+    assert.equal(tool.annotations?.idempotentHint, false);
+    const actions = tool.inputSchema.properties?.action;
+    assert.ok(isRecord(actions) && Array.isArray(actions.oneOf));
+    const startSchema: unknown = actions.oneOf.find((entry: unknown) =>
+      isRecord(entry) && isRecord(entry.properties) && isRecord(entry.properties.kind) && entry.properties.kind.const === "start");
+    assert.ok(isRecord(startSchema) && isRecord(startSchema.properties));
+    const duration = startSchema.properties.timeLimitSeconds;
+    assert.ok(isRecord(duration));
+    assert.equal(duration.minimum, 1);
+    assert.equal(duration.maximum, 0xffff_ffff);
+    assert.equal(duration.default, undefined);
+    assert.deepEqual(startSchema.required, ["kind", "filePath"]);
+    const capabilities = await client.callTool({
+      name: "mobile_screen_recording", arguments: { targetToken, action: { kind: "capabilities" } },
+    });
+    assert.equal(capabilities.isError, undefined);
+    assert.deepEqual(payload(capabilities), {
+      status: "available", source: "device-help", unlimitedSupported: true,
+      maxTimeLimitSeconds: 0xffff_ffff, nativeDefaultTimeLimitSeconds: 180,
+    });
+    const idle = await client.callTool({ name: "mobile_screen_recording", arguments: { targetToken, action: { kind: "status" } } });
+    assert.deepEqual(payload(idle), { status: "idle" });
+    const started = await client.callTool({
+      name: "mobile_screen_recording", arguments: { targetToken, action: { kind: "start", filePath } },
+    });
+    assert.equal(started.isError, undefined);
+    const metadata = payload(started);
+    assert.equal(metadata.status, "starting");
+    assert.equal(metadata.filePath, filePath);
+    assert.equal(metadata.timeLimitSeconds, null);
+    assert.equal("userId" in metadata, false);
+    assert.equal(typeof metadata.recordingId, "string");
+    const status = await client.callTool({ name: "mobile_screen_recording", arguments: { targetToken, action: { kind: "status" } } });
+    assert.deepEqual(payload(status), { ...metadata, status: "recording" });
+    const stopped = await client.callTool({
+      name: "mobile_screen_recording", arguments: { targetToken, action: { kind: "stop", recordingId: metadata.recordingId } },
+    });
+    assert.equal(stopped.isError, undefined);
+    assert.deepEqual(payload(stopped), { ...metadata, status: "saved", sizeBytes: mp4().length });
+    for (const result of [idle, started, status, stopped]) {
+      assert.ok(Array.isArray(result.content) && result.content.length === 1);
+      assert.equal(result.content[0]?.type, "text");
+    }
+    assert.deepEqual(await readFile(filePath), mp4());
+    const timedPath = path.join(directory, "approved timed video.mp4");
+    const timed = await client.callTool({
+      name: "mobile_screen_recording", arguments: { targetToken, action: { kind: "start", filePath: timedPath, timeLimitSeconds: 600 } },
+    });
+    assert.equal(timed.isError, undefined);
+    const timedMetadata = payload(timed);
+    assert.equal(timedMetadata.timeLimitSeconds, 600);
+    const timedStop = await client.callTool({
+      name: "mobile_screen_recording", arguments: { targetToken, action: { kind: "stop", recordingId: timedMetadata.recordingId } },
+    });
+    assert.equal(timedStop.isError, undefined);
+    assert.deepEqual(await readFile(timedPath), mp4());
+  });
+
+  for (const scenario of ["recording-legacy", "recording-help-unknown"]) {
+    test(`recording preflight reports actionable non-mutating errors for ${scenario} over ${mode}`, async (t) => {
+      const { client } = await fixture(t, mode, scenario);
+      const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+      const targetToken = selected.targetToken;
+      if (scenario === "recording-legacy") {
+        const capabilities = payload(await client.callTool({
+          name: "mobile_screen_recording", arguments: { targetToken, action: { kind: "capabilities" } },
+        }));
+        assert.equal(capabilities.unlimitedSupported, false);
+        assert.equal(capabilities.maxTimeLimitSeconds, 180);
+      }
+      const result = await client.callTool({
+        name: "mobile_screen_recording", arguments: { targetToken, action: { kind: "start", filePath: "C:\\not-used.mp4" } },
+      });
+      assert.equal(result.isError, true);
+      const error = payload(result).error;
+      assert.ok(isRecord(error));
+      assert.equal(error.code, scenario === "recording-legacy" ? "RECORDING_DURATION_UNSUPPORTED" : "RECORDING_CAPABILITIES_UNAVAILABLE");
+      assert.equal(error.actionMayHaveRun, false);
+      assert.doesNotMatch(JSON.stringify(result), /private unrecognized/);
+      const status = await client.callTool({ name: "mobile_screen_recording", arguments: { targetToken, action: { kind: "status" } } });
+      assert.deepEqual(payload(status), { status: "idle" });
+      assert.equal(result.content.length, 1);
+    });
+  }
+
   test(`approved Unicode text preparation and entry work over ${mode} without screenshots`, async (t) => {
     const { client } = await fixture(t, mode, "unicode-text");
     const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
@@ -431,7 +535,7 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.equal(entered.content.length, 1);
   });
 
-  test(`eleven categorized tools expose typed setup, wake, and input results over ${mode}`, async (t) => {
+  test(`twelve categorized tools expose typed setup, recording, wake, and input results over ${mode}`, async (t) => {
     const { client } = await fixture(t, mode);
     assert.match(client.getInstructions() ?? "", /On first use in each session, call mobile_doctor/);
     assert.match(client.getInstructions() ?? "", /call mobile_list_devices before offering phone setup/);
@@ -439,7 +543,7 @@ for (const mode of ["legacy", "auto"] as const) {
     const tools = await client.listTools();
     assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
       "mobile_app_management", "mobile_doctor", "mobile_input_text", "mobile_list_devices",
-      "mobile_observe", "mobile_press_key", "mobile_select_device", "mobile_start_adb_server",
+      "mobile_observe", "mobile_press_key", "mobile_screen_recording", "mobile_select_device", "mobile_start_adb_server",
       "mobile_swipe", "mobile_tap", "mobile_wake",
     ]);
     assert.ok(tools.tools.every((tool) => typeof tool.title === "string" && tool.title.length > 0));
