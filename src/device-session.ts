@@ -528,10 +528,11 @@ export class MobileUseService {
       }
       const start = swipeFrom ? pointRegion(swipeFrom) : region;
       const signatures = (observation: Observation): string => JSON.stringify(observation.elements
-        .filter((candidate) => pointerCandidate(candidate) && intersects(candidate.bounds, start))
+        .filter((candidate) => (pointerCandidate(candidate) || (swipeFrom !== undefined && candidate.scrollable === true)) &&
+          intersects(candidate.bounds, start))
         .map(elementSignature).sort());
       if (signatures(old) !== signatures(current)) {
-        throw new MobileUseError("ELEMENT_CHANGED", "Actionable controls overlapping the gesture's start point changed before input.", "Observe again and identify the intended uncovered control or surface.");
+        throw new MobileUseError("ELEMENT_CHANGED", "Controls or scrollable surfaces overlapping the gesture's start point changed before input.", "Observe again and identify the intended uncovered control or surface.");
       }
       return element;
     };

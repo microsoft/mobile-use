@@ -717,10 +717,13 @@ prepared Unicode helper. A swipe can specify top-level `elementRef` for an
 enabled scrollable surface or resolve one unique scrollable surface containing
 its start point. Both endpoints must lie in the same unchanged surface;
 child-content changes away from the initial touch are not surface changes.
-Actionable controls overlapping the starting point must remain unchanged.
-Nested scrollable surfaces need an explicit reference. A window that may cover any part of the path's bounding
-rectangle blocks the swipe. No scrollable metadata means visual fallback, not
-an inferred scrollability claim for a generic full-screen container.
+Actionable controls and competing scrollable surfaces overlapping the starting
+point must remain unchanged, even with an explicit reference. This includes
+non-clickable scrollable children that appear, move or change before input.
+Nested scrollable surfaces need an explicit reference. A window that may cover
+any part of the path's bounding rectangle blocks the swipe. No scrollable
+metadata means visual fallback, not an inferred scrollability claim for a
+generic full-screen container.
 
 When no actionable control/surface is exposed, visual fallback requires
 caller-supplied `{ x, y, width, height }` bounds around the **entire visible

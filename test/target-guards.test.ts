@@ -183,6 +183,96 @@ test("a newly exposed actionable child at swipe start cannot redirect a metadata
   assert.equal(adb.inputs.length, 0);
 });
 
+test("new competing scrollable surfaces at swipe start reject inferred and explicit-reference gestures", async (t) => {
+  for (const explicit of [false, true]) {
+    for (const change of ["added", "moved", "became-scrollable"]) {
+      const { adb, service } = harness(t);
+      const nested = { "resource-id": "example.poc:id/nested", bounds: "[4,100][44,140]" };
+      const before = change === "added" ? "" : surface({
+        ...nested, ...(change === "moved" ? { bounds: "[4,40][44,80]" } : { scrollable: "false" }),
+      });
+      adb.xml = hierarchy(surface({}, before));
+      const selected = await service.selectDevice(USB);
+      const observed = await service.observe(selected.targetToken);
+      adb.xml = hierarchy(surface({}, surface(nested)));
+      await assert.rejects(service.act(selected.targetToken, observed.observation.observationId, {
+        kind: "swipe", from: { x: 20, y: 120 }, to: { x: 20, y: 50 },
+        ...(explicit ? { elementRef: "e1" } : {}),
+      }), hasCode("ELEMENT_CHANGED"));
+      assert.equal(adb.inputs.length, 0, change);
+    }
+  }
+});
+
+test("changed or removed competing scrollable children reject an explicit outer-surface swipe", async (t) => {
+  const changes: (Record<string, string> | null)[] = [
+    { bounds: "[8,100][48,140]" }, { "resource-id": "example.poc:id/replacement" },
+    { enabled: "false" }, { scrollable: "false" }, null,
+  ];
+  for (const change of changes) {
+    const { adb, service } = harness(t);
+    const nested = { "resource-id": "example.poc:id/nested", bounds: "[4,100][44,140]" };
+    adb.xml = hierarchy(surface({}, surface(nested)));
+    const selected = await service.selectDevice(USB);
+    const observed = await service.observe(selected.targetToken);
+    adb.xml = hierarchy(surface({}, change === null ? "" : surface({ ...nested, ...change })));
+    await assert.rejects(service.act(selected.targetToken, observed.observation.observationId, {
+      kind: "swipe", from: { x: 20, y: 120 }, to: { x: 20, y: 50 }, elementRef: "e1",
+    }), hasCode("ELEMENT_CHANGED"));
+    assert.equal(adb.inputs.length, 0);
+  }
+});
+
+test("unchanged nested scrollable surfaces remain usable with explicit references", async (t) => {
+  for (const elementRef of ["e1", "e2"]) {
+    const { adb, service } = harness(t);
+    adb.xml = hierarchy(surface({}, surface({
+      "resource-id": "example.poc:id/nested", bounds: "[4,40][44,140]",
+    })));
+    const selected = await service.selectDevice(USB);
+    const observed = await service.observe(selected.targetToken);
+    adb.image = pixelPng(80, 160, () => [240, 240, 240, 255]);
+    const result = await service.act(selected.targetToken, observed.observation.observationId, {
+      kind: "swipe", from: { x: 20, y: 120 }, to: { x: 20, y: 50 }, elementRef,
+    });
+    assert.equal(result.dispatchStatus, "dispatched");
+    assert.equal(adb.inputs.length, 1);
+  }
+});
+
+test("scrollable changes away from swipe start do not veto metadata-backed gestures", async (t) => {
+  for (const explicit of [false, true]) {
+    for (const change of ["added", "changed", "removed"]) {
+      const { adb, service } = harness(t);
+      const nested = { "resource-id": "example.poc:id/nested", bounds: "[4,40][44,80]" };
+      adb.xml = hierarchy(surface({}, change === "added" ? "" : surface(nested)));
+      const selected = await service.selectDevice(USB);
+      const observed = await service.observe(selected.targetToken);
+      adb.xml = hierarchy(surface({}, change === "removed" ? "" : surface({
+        ...nested, "content-desc": "Updated nested list",
+      })));
+      const result = await service.act(selected.targetToken, observed.observation.observationId, {
+        kind: "swipe", from: { x: 20, y: 120 }, to: { x: 20, y: 50 },
+        ...(explicit ? { elementRef: "e1" } : {}),
+      });
+      assert.equal(result.dispatchStatus, "dispatched");
+      assert.equal(adb.inputs.length, 1, change);
+    }
+  }
+});
+
+test("scrollable parents do not make coordinate button targets ambiguous", async (t) => {
+  const { adb, service } = harness(t);
+  adb.xml = hierarchy(surface({}, node({ bounds: "[4,40][44,60]" })));
+  const selected = await service.selectDevice(USB);
+  const observed = await service.observe(selected.targetToken);
+  const result = await service.act(selected.targetToken, observed.observation.observationId, {
+    kind: "tap", target: { x: 24, y: 50 },
+  });
+  assert.equal(result.dispatchStatus, "dispatched");
+  assert.deepEqual(adb.inputs[0]?.args.slice(-2), ["24", "50"]);
+});
+
 test("visual swipes require surface bounds and guard the complete path and surrounding margin", async (t) => {
   const { adb, service } = harness(t);
   adb.xml = hierarchy("");

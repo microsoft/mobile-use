@@ -258,8 +258,9 @@ pause the blocked action when genuine authorization is missing.
    Swipes use an exposed enabled `scrollable: true` surface: specify top-level
    `elementRef` or let one unique surface containing `from` be identified.
    Both endpoints must remain inside that unchanged surface. Nested/ambiguous
-   surfaces need an explicit reference, and actionable controls at the swipe's
-   starting point must remain unchanged. If no scrollable surface is exposed,
+   surfaces need an explicit reference. Actionable controls and competing
+   scrollable surfaces at the swipe's starting point must remain unchanged,
+   even with an explicit reference. If no scrollable surface is exposed,
    supply top-level `bounds` around the complete visible swipe surface containing
    both endpoints; the same local visual fallback applies.
    Missing foreground context blocks pointer gestures even with identical images.
