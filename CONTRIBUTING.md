@@ -639,8 +639,10 @@ Its focused-application text-writing checks remain unchanged.
 
 Window IDs are capture-local accessibility registrations, not durable identities.
 Reference revalidation uniquely matches the unchanged element and owning-window
-metadata, excluding reassigned registration IDs. Windowed targets also require
-matching foreground app/activity/user and reject other interactive windows whose
+metadata, excluding reassigned registration IDs. Interception and visual-region
+comparisons preserve each element's owning-window context as well; equivalent
+element/window sets cannot hide a change in their associations. Windowed targets
+also require matching foreground app/activity/user and reject other interactive windows whose
 bounds and layer could cover the tap point. These checks are conservative:
 window bounds are not proof of the exact touchable region, and a visually
 identical replacement is not distinguished by metadata alone. Unicode writes

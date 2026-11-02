@@ -51,6 +51,14 @@ function windowSignature(window: ScreenWindow): string {
   return JSON.stringify(properties);
 }
 
+function observedElementSignature(element: ScreenElement, observation: Observation): string {
+  const owner = observation.windows.find((window) => window.id === element.windowId);
+  if (element.windowId !== undefined && !owner) {
+    throw new MobileUseError("ELEMENT_CHANGED", "An observed element's owning window could not be verified.", "Observe again and identify the intended control or surface in its owning window.");
+  }
+  return JSON.stringify([elementSignature(element), owner ? windowSignature(owner) : null]);
+}
+
 function requirePoint(point: { x: number; y: number }, display: Observation["display"]): void {
   if (!display || !Number.isSafeInteger(point.x) || !Number.isSafeInteger(point.y) ||
     point.x < 0 || point.y < 0 || point.x >= display.width || point.y >= display.height) {
@@ -456,13 +464,8 @@ export class MobileUseService {
       throw new MobileUseError("STALE_OBSERVATION", "Display geometry or rotation changed.", "Inspect a new observation before input.");
     }
     const display = current.display;
-    const sameObservedElement = (before: ScreenElement, after: ScreenElement, afterObservation = current): boolean => {
-      if (elementSignature(before) !== elementSignature(after)) return false;
-      if (before.windowId === undefined) return after.windowId === undefined;
-      const oldWindow = old.windows.find((window) => window.id === before.windowId);
-      const newWindow = afterObservation.windows.find((window) => window.id === after.windowId);
-      return !!oldWindow && !!newWindow && windowSignature(oldWindow) === windowSignature(newWindow);
-    };
+    const sameObservedElement = (before: ScreenElement, after: ScreenElement, afterObservation = current): boolean =>
+      observedElementSignature(before, old) === observedElementSignature(after, afterObservation);
     const verifyWindowContext = (before: ScreenElement, after: ScreenElement): ScreenWindow | undefined => {
       if (before.windowId === undefined && after.windowId === undefined) return undefined;
       const oldWindow = old.windows.find((window) => window.id === before.windowId);
@@ -530,7 +533,7 @@ export class MobileUseService {
       const signatures = (observation: Observation): string => JSON.stringify(observation.elements
         .filter((candidate) => (pointerCandidate(candidate) || (swipeFrom !== undefined && candidate.scrollable === true)) &&
           intersects(candidate.bounds, start))
-        .map(elementSignature).sort());
+        .map((candidate) => observedElementSignature(candidate, observation)).sort());
       if (signatures(old) !== signatures(current)) {
         throw new MobileUseError("ELEMENT_CHANGED", "Controls or scrollable surfaces overlapping the gesture's start point changed before input.", "Observe again and identify the intended uncovered control or surface.");
       }
@@ -567,7 +570,7 @@ export class MobileUseService {
       if (old.hierarchy.status === "ok" && current.hierarchy.status === "ok") {
         const signatures = (observation: Observation): string => JSON.stringify(observation.elements
           .filter((element) => intersects(element.bounds, region))
-          .map(elementSignature).sort());
+          .map((element) => observedElementSignature(element, observation)).sort());
         if (signatures(old) !== signatures(current)) {
           reject("UI elements in the visual target's protected region changed before input.");
         }

@@ -17,6 +17,10 @@ const surface = (attributes: Record<string, string> = {}, children = "") => node
   class: "android.widget.ScrollView", text: "", clickable: "false", scrollable: "true",
   "resource-id": "example.poc:id/surface", bounds: "[0,20][80,160]", ...attributes,
 }, children);
+const layeredScreen = (foreground: string, background: string, reassignIds = false) => windowsXml(
+  windowXml(foreground, { id: reassignIds ? "20" : "2", layer: "1" }) +
+  windowXml(background, { id: reassignIds ? "10" : "1", layer: "0", active: "false", focused: "false" }),
+);
 
 test("video playback and independent timer changes do not veto metadata-backed taps, holds or pairs", async (t) => {
   for (const kind of ["tap", "long_press", "double_tap"] as const) {
@@ -220,6 +224,66 @@ test("changed or removed competing scrollable children reject an explicit outer-
       kind: "swipe", from: { x: 20, y: 120 }, to: { x: 20, y: 50 }, elementRef: "e1",
     }), hasCode("ELEMENT_CHANGED"));
     assert.equal(adb.inputs.length, 0);
+  }
+});
+
+test("input interception compares candidate window context while tolerating registration-ID changes", async (t) => {
+  for (const kind of ["swipe", "tap", "long_press", "double_tap"] as const) {
+    for (const initiallyInTarget of [false, true]) {
+      for (const change of ["owner", "registration", "owner-and-registration"]) {
+        const { adb, service } = harness(t);
+        const competing = kind === "swipe"
+          ? surface({ "resource-id": "example.poc:id/competing", bounds: "[4,100][44,140]" })
+          : node({ "resource-id": "example.poc:id/competing" });
+        const foreground = (children: string) => kind === "swipe" ? surface({}, children) : node() + children;
+        adb.xml = layeredScreen(foreground(initiallyInTarget ? competing : ""), initiallyInTarget ? "" : competing);
+        const selected = await service.selectDevice(USB);
+        if (kind === "double_tap") await service.prepareGestures(selected.targetToken);
+        const observed = await service.observe(selected.targetToken, undefined, kind === "swipe");
+        const target = observed.observation.elements.find((element) =>
+          element.resourceId === `example.poc:id/${kind === "swipe" ? "surface" : "demo"}`);
+        assert.ok(target);
+        const ownerChanged = change !== "registration";
+        const nowInTarget = ownerChanged ? !initiallyInTarget : initiallyInTarget;
+        adb.xml = layeredScreen(foreground(nowInTarget ? competing : ""), nowInTarget ? "" : competing, change !== "owner");
+        const action = kind === "swipe"
+          ? { kind, from: { x: 20, y: 120 }, to: { x: 20, y: 50 }, elementRef: target.ref }
+          : { kind, target: { elementRef: target.ref } };
+        if (ownerChanged) {
+          await assert.rejects(service.act(selected.targetToken, observed.observation.observationId, action), hasCode("ELEMENT_CHANGED"));
+          assert.equal(adb.inputs.length, 0);
+        } else {
+          const result = await service.act(selected.targetToken, observed.observation.observationId, action);
+          assert.equal(result.dispatchStatus, "dispatched");
+          assert.equal(adb.inputs.length, 1);
+        }
+      }
+    }
+  }
+});
+
+test("visual fallback preserves element ownership without depending on capture-local window IDs", async (t) => {
+  for (const initiallyInTarget of [false, true]) {
+    for (const change of ["owner", "registration", "owner-and-registration"]) {
+      const { adb, service } = harness(t);
+      const element = node({
+        class: "android.widget.TextView", clickable: "false", bounds: "[36,72][44,88]",
+      });
+      adb.xml = layeredScreen(initiallyInTarget ? element : "", initiallyInTarget ? "" : element);
+      const selected = await service.selectDevice(USB);
+      const observed = await service.observe(selected.targetToken);
+      const ownerChanged = change !== "registration";
+      const nowInTarget = ownerChanged ? !initiallyInTarget : initiallyInTarget;
+      adb.xml = layeredScreen(nowInTarget ? element : "", nowInTarget ? "" : element, change !== "owner");
+      const action = service.act(selected.targetToken, observed.observation.observationId, { kind: "tap", target: visual });
+      if (ownerChanged) {
+        await assert.rejects(action, hasCode("STALE_OBSERVATION"));
+        assert.equal(adb.inputs.length, 0);
+      } else {
+        assert.equal((await action).dispatchStatus, "dispatched");
+        assert.equal(adb.inputs.length, 1);
+      }
+    }
   }
 });
 

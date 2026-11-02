@@ -260,9 +260,11 @@ pause the blocked action when genuine authorization is missing.
    Both endpoints must remain inside that unchanged surface. Nested/ambiguous
    surfaces need an explicit reference. Actionable controls and competing
    scrollable surfaces at the swipe's starting point must remain unchanged,
-   even with an explicit reference. If no scrollable surface is exposed,
-   supply top-level `bounds` around the complete visible swipe surface containing
-   both endpoints; the same local visual fallback applies.
+   including each one's owning-window context, even with an explicit reference.
+   Capture-local registration ID changes alone do not change that context.
+   If no scrollable surface is exposed, supply top-level `bounds` around the
+   complete visible swipe surface containing both endpoints; the same local
+   visual fallback applies.
    Missing foreground context blocks pointer gestures even with identical images.
    Visual fallback also requires consistent hierarchy availability and coverage;
    PNG encoding/metadata alone does not make an observation stale.
