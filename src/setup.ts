@@ -55,6 +55,14 @@ export const onboardingInstructions =
   "Use elementRef taps, not coordinate gestures; if the hierarchy exposes no usable content, report the limitation without taking a screenshot. " +
   "Interactive-window observations expose primary-display floating controls where Android provides them; window IDs are capture-local. " +
   "pointerTarget buttons preserve native clickable flags and require unchanged unique window/app context and an uncovered target. " +
+  "Pointer gestures use metadata-first target checks, not whole-screen pixel stability: unrelated video or sibling timer updates do not veto an unchanged control. " +
+  "Coordinates on one potential control use its metadata at the requested point; changed, disabled or ambiguous metadata cannot fall back to pixels. " +
+  "Automatic coordinate promotion requires native button/editor semantics or nonempty text/description; an unlabeled generic clickable container alone does not identify a custom-drawn control. " +
+  "When no actionable control is exposed, include target.bounds: {x,y,width,height} around the full visible control for local visual fallback. " +
+  "Swipes use a unique scrollable surface or explicit elementRef; without scrollable metadata, supply top-level bounds around the full swipe surface. " +
+  "Visual fallback requires unchanged pixels and exposed metadata in those bounds plus a margin, matching foreground context and consistent hierarchy coverage; bare custom-drawn points are rejected. " +
+  "Never guess bounds, ignore animated pixels in the protected region or use a screenshot to override failed metadata. " +
+  "Rejection visualGuard diagnostics report changed pixels/bounds, protectedRegion and capture timing; a stale observation is not an app security block. " +
   "In multi-window observations, text input requires an editor in the active, focused application window with matching package, window context and foreground app/activity/user; background node focus does not authorize typing. " +
   "App management requires the selected target token but no screen observation. " +
   "List/foreground reads may expose sensitive app metadata. Launch only the requested installed package. " +

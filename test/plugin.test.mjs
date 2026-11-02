@@ -45,7 +45,9 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.match(skill, /includeScreenshot: false/);
   assert.match(skill, /Hierarchy-only actions never\s+capture screenshots/);
   assert.match(skill, /kind: "double_tap"/);
-  assert.match(skill, /coordinate gestures also revalidate decoded screenshot pixels/);
+  assert.match(skill, /metadata-first/);
+  assert.match(skill, /target\.bounds/);
+  assert.match(skill, /visualGuard/);
   assert.match(skill, /not evidence that the app blocked/);
   assert.match(skill, /## Tool categories/);
   assert.match(skill, /### Scoped session approval/);
@@ -145,7 +147,14 @@ for (const mode of ["legacy", "auto"]) {
     assert.equal(doubleTap.properties.delayMs.minimum, 0);
     assert.equal(doubleTap.properties.delayMs.maximum, 250);
     assert.equal(doubleTap.properties.delayMs.default, 50);
-    assert.match(tap?.description ?? "", /unchanged full-width interaction band/);
+    assert.match(tap?.description ?? "", /Metadata-first guards/);
+    assert.match(tap?.description ?? "", /no whole-screen pixel-change threshold/);
+    const coordinateTarget = doubleTap.properties.target.anyOf.find((target) => target.properties?.x);
+    assert.ok(coordinateTarget?.properties.bounds);
+    assert.deepEqual(coordinateTarget.properties.bounds.required, ["x", "y", "width", "height"]);
+    const swipe = tools.tools.find((tool) => tool.name === "mobile_swipe");
+    assert.ok(swipe?.inputSchema.properties?.bounds);
+    assert.ok(swipe?.inputSchema.properties?.elementRef);
     assert.match(tap?.description ?? "", /not proof of an app security block/);
     const prepare = actions.find((action) => action.properties?.kind?.const === "prepare");
     assert.deepEqual(prepare?.required, ["kind"]);

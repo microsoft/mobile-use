@@ -325,8 +325,9 @@ function screenNode(attributes: Record<string, string>): Omit<ScreenElement, "re
     enabled: readFlag(attributes, "enabled"),
     focused: readFlag(attributes, "focused"),
     clickable: readFlag(attributes, "clickable"),
+    scrollable: readFlag(attributes, "scrollable"),
   };
-  const meaningful = node.text || node.label || node.resourceId || node.editable || node.clickable;
+  const meaningful = node.text || node.label || node.resourceId || node.editable || node.clickable || node.scrollable;
   return meaningful && bounds.width > 0 && bounds.height > 0 ? node : null;
 }
 

@@ -20,7 +20,7 @@ Android APK installation and app management are available after device selection
 | App management | `mobile_app_management`: `action.kind` is `list`, `foreground`, `launch`, `terminate`, `install`, or `uninstall`. |
 | Screen recording | `mobile_screen_recording`: `action.kind` is `capabilities`, `start`, `status`, or `stop`. |
 | Taps | `mobile_tap`: `action.kind` is `tap`, `long_press`, `double_tap`, or explicit double-tap helper `prepare`. |
-| Swipes | `mobile_swipe`: `from`, `to`, optional `durationMs`. |
+| Swipes | `mobile_swipe`: `from`, `to`, optional `durationMs` and scrollable `elementRef`; otherwise full-surface `bounds` for visual fallback. |
 | Back/Home/Enter | `mobile_press_key`: `key` is `BACK`, `HOME`, or `ENTER`. |
 | Input text | `mobile_input_text`: `action.kind` is `type_text` or explicit helper `prepare`. |
 | Device setup and observation | `mobile_doctor`, `mobile_start_adb_server`, `mobile_list_devices`, `mobile_select_device`, `mobile_wake`, `mobile_observe`. |
@@ -233,13 +233,41 @@ pause the blocked action when genuine authorization is missing.
    with that target token and latest observation ID for one justified action.
    Use an observed element reference when possible; screenshot
    coordinates require a usable screenshot. Do not guess invisible elements.
-   An observation expires after 30 seconds and is consumed on an action attempt;
-   coordinate gestures also revalidate decoded screenshot pixels. The full-width
-   band around a tap, or the entire swipe path plus padding, must be unchanged,
-   including exposed UI elements in that band. Changes outside it are allowed
-   only up to 20% of screen pixels, with matching foreground app/activity/user
-   and consistent hierarchy availability. PNG encoding/metadata alone does not
-   make an observation stale. Geometry changes and app switches still block input.
+   An observation expires after 30 seconds and is consumed on an action attempt.
+   Pointer gestures use metadata-first guards: one unchanged enabled actionable
+   target, matching foreground app/activity/user and window context, verified
+   geometry, and no newly exposed potentially covering control/window. Unrelated
+   video frames and sibling timer updates do not veto a metadata-backed target.
+   A coordinate tap on one potential control uses that control's metadata at the
+   exact requested point, without recentering. Ambiguous, disabled or changed
+   metadata is rejected; pixels never override it.
+   An unlabeled generic clickable container alone is not metadata evidence for
+   a custom-drawn button inside it. Automatic control identification requires
+   native button/editor semantics or nonempty text/description; use an explicit
+   reference only if that container itself is the intended target.
+   If no actionable control is exposed, include `action.target.bounds:
+   { x, y, width, height }` around the **complete visible control**, not only the
+   touch point. This visual fallback compares decoded screenshot pixels and
+   exposed metadata throughout those bounds plus a margin: 8% of the shorter
+   display dimension, rounded up, at least 8 pixels, clipped to the display.
+   Every protected pixel must remain unchanged, including timer/fading pixels;
+   never mask animation or guess incomplete control bounds. Changes outside this
+   local region have no whole-screen percentage limit. A translucent control over
+   changing video can still fail visual fallback; report this limitation rather
+   than relaxing the guard.
+   Swipes use an exposed enabled `scrollable: true` surface: specify top-level
+   `elementRef` or let one unique surface containing `from` be identified.
+   Both endpoints must remain inside that unchanged surface. Nested/ambiguous
+   surfaces need an explicit reference. Actionable controls and competing
+   scrollable surfaces at the swipe's starting point must remain unchanged,
+   including each one's owning-window context, even with an explicit reference.
+   Capture-local registration ID changes alone do not change that context.
+   If no scrollable surface is exposed, supply top-level `bounds` around the
+   complete visible swipe surface containing both endpoints; the same local
+   visual fallback applies.
+   Missing foreground context blocks pointer gestures even with identical images.
+   Visual fallback also requires consistent hierarchy availability and coverage;
+   PNG encoding/metadata alone does not make an observation stale.
    Every input tool preserves the observation's screenshot setting during
    revalidation and in its returned observation. Hierarchy-only actions never
    capture screenshots; coordinate taps and swipes fail with `CAPTURE_UNAVAILABLE`.
@@ -275,8 +303,8 @@ Use `mobile_tap` with `action.kind: "long_press"`, `action.observationId`, and
 `action.target: { elementRef }` or screenshot `{ x, y }` for one stationary
 native primary-display press. It uses the system long-press timeout and sends
 DOWN/UP without MOVE events; no helper or configurable duration is provided.
-It retains tap's target/window/app guards, screenshot mode and coordinate
-pixel checks. OEM recognition is not guaranteed, and a long press can open a
+It retains tap's metadata-first target/window/app guards, screenshot mode and
+bounded visual fallback. OEM recognition is not guaranteed, and a long press can open a
 context menu. Never silently substitute it for tap or replay uncertain input.
 An exposed recorder Stop button does not establish that either gesture stops
 recording: verify the resulting recorder state, not just dispatch.
@@ -540,8 +568,14 @@ If an action may have run but timed out, do not replay it. Observe the state and
 report uncertainty first. Stale references require another observation. If an
 element changed or became ambiguous, stop and re-observe.
 
-For `STALE_OBSERVATION`, report the actual failed check (interaction-region
-pixels/controls, large screen change, app context, geometry, or observation age).
+For `STALE_OBSERVATION`, report the actual failed check (protected-region
+pixels/metadata, hierarchy coverage, app context, geometry, or observation age).
+Visual fallback rejections include `error.visualGuard`: total and protected-region
+changed-pixel counts, their bounding rectangles (null for no changes), the
+`protectedRegion`, and previous/current capture timing. Observations include
+`captureTiming` with read start time, total duration, screenshot duration (null
+when skipped), and hierarchy duration. These readings remain non-atomic and do
+not identify the cause of a change by themselves.
 It is a local pre-input revalidation failure, not evidence that the app blocked
 automation. Do not attribute it to ads, price animations, or security measures
 without independent evidence. Inspect a fresh observation before retrying;

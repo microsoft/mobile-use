@@ -322,6 +322,7 @@ public final class TextMain {
                 attribute(xml, "bounds", boundsString(bounds));
                 attribute(xml, "enabled", Boolean.toString(node.isEnabled()));
                 attribute(xml, "clickable", Boolean.toString(node.isClickable()));
+                attribute(xml, "scrollable", Boolean.toString(node.isScrollable()));
                 attribute(xml, "focused", Boolean.toString(node.isFocused()));
                 attribute(xml, "password", Boolean.toString(node.isPassword()));
                 xml.append("/>");

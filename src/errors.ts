@@ -1,3 +1,5 @@
+import type { CaptureTiming, Rect } from "./types.js";
+
 export type ErrorCode =
   | "UNSUPPORTED_HOST" | "ADB_NOT_FOUND" | "ADB_CONFIG_UNSUPPORTED"
   | "ADB_VERSION_UNSUPPORTED" | "ADB_FAILED" | "ADB_TIMEOUT" | "ADB_OUTPUT_LIMIT"
@@ -25,6 +27,18 @@ export interface ErrorInfo {
   remediation: string;
   retryable: boolean;
   actionMayHaveRun: boolean;
+  visualGuard?: VisualGuardDiagnostics;
+}
+
+export interface VisualGuardDiagnostics {
+  protectedRegion: Rect;
+  changedPixels: number;
+  regionChangedPixels: number;
+  totalPixels: number;
+  changedBounds: Rect | null;
+  regionChangedBounds: Rect | null;
+  previousCapture: CaptureTiming;
+  currentCapture: CaptureTiming;
 }
 
 export class MobileUseError extends Error {
@@ -34,6 +48,7 @@ export class MobileUseError extends Error {
     readonly remediation: string,
     readonly retryable = false,
     readonly actionMayHaveRun = false,
+    readonly visualGuard?: VisualGuardDiagnostics,
   ) {
     super(message);
     this.name = "MobileUseError";
@@ -46,6 +61,7 @@ export class MobileUseError extends Error {
       remediation: this.remediation,
       retryable: this.retryable,
       actionMayHaveRun: this.actionMayHaveRun,
+      ...(this.visualGuard ? { visualGuard: this.visualGuard } : {}),
     };
   }
 }

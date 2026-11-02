@@ -163,7 +163,10 @@ for (const mode of ["legacy", "auto"] as const) {
     let screen = initial;
     const swiped = await client.callTool({
       name: "mobile_swipe",
-      arguments: { targetToken, observationId: screen.observationId, from: { x: 10, y: 100 }, to: { x: 10, y: 50 } },
+      arguments: {
+        targetToken, observationId: screen.observationId, from: { x: 10, y: 100 }, to: { x: 10, y: 50 },
+        bounds: { x: 4, y: 40, width: 30, height: 80 },
+      },
     });
     assert.equal(swiped.isError, undefined);
     const after = payload(swiped).after;
@@ -294,7 +297,10 @@ for (const mode of ["legacy", "auto"] as const) {
       assert.ok(isRecord(screen));
       const acted = await client.callTool({
         name: "mobile_tap",
-        arguments: { targetToken: selected.targetToken, action: { kind: "tap", observationId: screen.observationId, target: { x: 40, y: 120 } } },
+        arguments: { targetToken: selected.targetToken, action: {
+          kind: "tap", observationId: screen.observationId,
+          target: { x: 40, y: 120, bounds: { x: 32, y: 112, width: 16, height: 16 } },
+        } },
       });
       const result = payload(acted);
       if (scenario === "coordinate-animation") {
@@ -307,8 +313,39 @@ for (const mode of ["legacy", "auto"] as const) {
         assert.ok(isRecord(result.error));
         assert.equal(result.error.code, "STALE_OBSERVATION");
         assert.equal(result.error.actionMayHaveRun, false);
-        assert.match(String(result.error.message), /Pixels.*interaction region/);
+        assert.match(String(result.error.message), /Pixels.*protected region/);
+        const diagnostics = result.error.visualGuard;
+        assert.ok(isRecord(diagnostics));
+        assert.equal(diagnostics.changedPixels, 1);
+        assert.equal(diagnostics.regionChangedPixels, 1);
+        assert.deepEqual(diagnostics.changedBounds, { x: 40, y: 120, width: 1, height: 1 });
+        assert.deepEqual(diagnostics.protectedRegion, { x: 24, y: 104, width: 32, height: 32 });
+        assert.ok(isRecord(diagnostics.previousCapture) && isRecord(diagnostics.currentCapture));
       }
+    });
+  }
+
+  for (const scenario of ["video-metadata", "video-swipe"]) {
+    test(`metadata-backed input permits a fully changing video frame over ${mode}: ${scenario}`, async (t) => {
+      const { client } = await fixture(t, mode, scenario);
+      const selected = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+      const observation = payload(await client.callTool({
+        name: "mobile_observe", arguments: { targetToken: selected.targetToken },
+      })).observation;
+      assert.ok(isRecord(observation));
+      const result = await client.callTool(scenario === "video-metadata" ? {
+        name: "mobile_tap", arguments: {
+          targetToken: selected.targetToken,
+          action: { kind: "tap", observationId: observation.observationId, target: { x: 40, y: 120 } },
+        },
+      } : {
+        name: "mobile_swipe", arguments: {
+          targetToken: selected.targetToken, observationId: observation.observationId,
+          from: { x: 40, y: 120 }, to: { x: 40, y: 60 }, elementRef: "e1",
+        },
+      });
+      assert.equal(result.isError, undefined);
+      assert.equal(payload(result).dispatchStatus, "dispatched");
     });
   }
 
@@ -772,7 +809,10 @@ for (const mode of ["legacy", "auto"] as const) {
         name: "mobile_tap",
         arguments: {
           targetToken: selected.targetToken,
-          action: { kind: "tap", observationId: observation.observationId, target: { x: 10, y: 10 } },
+          action: {
+            kind: "tap", observationId: observation.observationId,
+            target: { x: 10, y: 10, bounds: { x: 4, y: 8, width: 40, height: 20 } },
+          },
         },
       });
       if (scenario === "display-unavailable") {

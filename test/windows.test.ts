@@ -107,17 +107,19 @@ test("an observed pointer button can receive a tap despite a changing timer, wit
   assert.equal(adb.inputs.length, 1);
 });
 
-test("coordinate pointer gestures still reject changed pixels beside an exposed recorder button", async (t) => {
+test("coordinates on an exposed recorder button use metadata despite changed nearby pixels", async (t) => {
   for (const kind of ["tap", "long_press", "double_tap"] as const) {
     const { adb, service } = harness(t);
     adb.image = pixelPng(80, 160, () => [255, 255, 255, 255]);
     const target = await service.selectDevice(USB);
+    if (kind === "double_tap") await service.prepareGestures(target.targetToken);
     const observed = await service.observe(target.targetToken);
     adb.image = pixelPng(80, 160, (x, y) => [x === 32 && y === 75 ? 0 : 255, 255, 255, 255]);
-    await assert.rejects(service.act(target.targetToken, observed.observation.observationId, {
+    const result = await service.act(target.targetToken, observed.observation.observationId, {
       kind, target: { x: 60, y: 75 },
-    }), hasCode("STALE_OBSERVATION"));
-    assert.equal(adb.inputs.length, 0);
+    });
+    assert.equal(result.dispatchStatus, "dispatched");
+    assert.equal(adb.inputs.length, 1);
   }
 });
 

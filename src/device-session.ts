@@ -4,12 +4,12 @@ import type { AdbConnection, MonitorFactory, TransportMonitor } from "./adb.js";
 import { AndroidBackend, isPointerButton, validateText } from "./android.js";
 import type { Hierarchy, Screenshot } from "./android.js";
 import { checkCancelled, MobileUseError, publicError } from "./errors.js";
-import { compareScreens, interactionBand, MAX_CHANGED_SCREEN_FRACTION } from "./screen-guard.js";
+import { compareScreens, containsPoint, interactionRegion, intersects } from "./screen-guard.js";
 import { actionSchema, recordingActionSchema } from "./types.js";
 import { isAdbText } from "./text-input.js";
 import type {
   ActionResult, AdbServerResult, AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, MobileAction, Observation,
-  ObservedScreen, PreparedGestures, PreparedTextInput, ReadStatus, RecordingAction, RecordingResult, ScreenElement, ScreenWindow, SelectedTarget, WakeResult,
+  ObservedScreen, PreparedGestures, PreparedTextInput, ReadStatus, RecordingAction, RecordingResult, Rect, ScreenElement, ScreenWindow, SelectedTarget, WakeResult,
 } from "./types.js";
 
 const OBSERVATION_MAX_AGE_MS = 30_000;
@@ -49,6 +49,14 @@ function elementSignature(element: ScreenElement): string {
 function windowSignature(window: ScreenWindow): string {
   const { id: _id, ...properties } = window;
   return JSON.stringify(properties);
+}
+
+function observedElementSignature(element: ScreenElement, observation: Observation): string {
+  const owner = observation.windows.find((window) => window.id === element.windowId);
+  if (element.windowId !== undefined && !owner) {
+    throw new MobileUseError("ELEMENT_CHANGED", "An observed element's owning window could not be verified.", "Observe again and identify the intended control or surface in its owning window.");
+  }
+  return JSON.stringify([elementSignature(element), owner ? windowSignature(owner) : null]);
 }
 
 function requirePoint(point: { x: number; y: number }, display: Observation["display"]): void {
@@ -235,9 +243,23 @@ export class MobileUseService {
   }
 
   private async capture(state: TargetState, signal?: AbortSignal, includeScreenshot = true): Promise<Snapshot> {
+    const startedAt = new Date(this.now()).toISOString();
+    const started = performance.now();
+    let screenshotDurationMs: number | null = null;
+    let hierarchyDurationMs = 0;
+    const timed = async <T>(operation: () => Promise<T>, finish: (durationMs: number) => void): Promise<T> => {
+      const start = performance.now();
+      try {
+        return await operation();
+      } finally {
+        finish(Math.round(performance.now() - start));
+      }
+    };
     const results = await Promise.allSettled([
-      includeScreenshot ? state.backend.screenshot(signal) : Promise.resolve(null),
-      state.backend.hierarchy(signal),
+      includeScreenshot
+        ? timed(() => state.backend.screenshot(signal), (ms) => { screenshotDurationMs = ms; })
+        : Promise.resolve(null),
+      timed(() => state.backend.hierarchy(signal), (ms) => { hierarchyDurationMs = ms; }),
       state.backend.displayState(signal),
       state.backend.getForegroundApp(signal),
     ]);
@@ -276,7 +298,7 @@ export class MobileUseService {
     const display = dimensions ? { width: dimensions.width, height: dimensions.height, rotation: verifiedDisplay?.rotation ?? null } : null;
     const warnings: string[] = [];
     if (!foregroundApp) {
-      warnings.push(`Foreground activity is unavailable (${foregroundStatus.error?.code ?? "no resumed activity"}); Unicode and windowed element/text input are blocked; coordinate input requires identical visible pixels.`);
+      warnings.push(`Foreground activity is unavailable (${foregroundStatus.error?.code ?? "no resumed activity"}); pointer gestures, Unicode and windowed element/text input are blocked.`);
     }
     if (!includeScreenshot) warnings.push("Screenshot capture skipped by request; no screenshot-coordinate actions are permitted.");
     else if (!screenshot) warnings.push("Image unavailable; no screenshot-coordinate actions are permitted.");
@@ -298,6 +320,7 @@ export class MobileUseService {
       observationId: randomUUID(),
       targetToken: state.token,
       capturedAt: new Date(now).toISOString(),
+      captureTiming: { startedAt, durationMs: Math.round(performance.now() - started), screenshotDurationMs, hierarchyDurationMs },
       nonAtomic: true,
       display,
       displayState: displayStatus,
@@ -441,13 +464,8 @@ export class MobileUseService {
       throw new MobileUseError("STALE_OBSERVATION", "Display geometry or rotation changed.", "Inspect a new observation before input.");
     }
     const display = current.display;
-    const sameObservedElement = (before: ScreenElement, after: ScreenElement): boolean => {
-      if (elementSignature(before) !== elementSignature(after)) return false;
-      if (before.windowId === undefined) return after.windowId === undefined;
-      const oldWindow = old.windows.find((window) => window.id === before.windowId);
-      const newWindow = current.windows.find((window) => window.id === after.windowId);
-      return !!oldWindow && !!newWindow && windowSignature(oldWindow) === windowSignature(newWindow);
-    };
+    const sameObservedElement = (before: ScreenElement, after: ScreenElement, afterObservation = current): boolean =>
+      observedElementSignature(before, old) === observedElementSignature(after, afterObservation);
     const verifyWindowContext = (before: ScreenElement, after: ScreenElement): ScreenWindow | undefined => {
       if (before.windowId === undefined && after.windowId === undefined) return undefined;
       const oldWindow = old.windows.find((window) => window.id === before.windowId);
@@ -463,7 +481,15 @@ export class MobileUseService {
       }
       return newWindow;
     };
-    const unchangedCoordinateContext = (from: { x: number; y: number }, to = from): void => {
+    const requireAppContext = (): void => {
+      const before = previous.foregroundApp;
+      const after = live.foregroundApp;
+      if (!before || !after || before.packageName !== after.packageName ||
+        before.activityName !== after.activityName || before.userId !== after.userId) {
+        throw new MobileUseError("STALE_OBSERVATION", "The foreground app, activity, or Android user is unavailable or changed before pointer input.", "Observe again with a verifiable matching foreground activity. Identical pixels cannot override missing or changed app context.");
+      }
+    };
+    const requireCoordinateCapture = (from: { x: number; y: number }, to = from): void => {
       requirePoint(from, display);
       requirePoint(to, display);
       if (old.screenshot.status === "skipped") {
@@ -473,42 +499,90 @@ export class MobileUseService {
           "Use a fresh hierarchy observation and an enabled clickable elementRef.",
         );
       }
+      if (!previous.screen.image || !live.screen.image) {
+        throw new MobileUseError("CAPTURE_UNAVAILABLE", "A usable screenshot is required before coordinate input.", "Observe again or use an enabled clickable elementRef.");
+      }
+    };
+    const pointerCandidate = (element: ScreenElement): boolean => element.clickable === true ||
+      ["android.widget.Button", "android.widget.ImageButton"].includes(element.className);
+    const identifiesControl = (element: ScreenElement): boolean => !!element.text || !!element.label || element.editable ||
+      ["android.widget.Button", "android.widget.ImageButton"].includes(element.className);
+    const pointRegion = (from: { x: number; y: number }, to = from): Rect => ({
+      x: Math.min(from.x, to.x), y: Math.min(from.y, to.y),
+      width: Math.abs(to.x - from.x) + 1, height: Math.abs(to.y - from.y) + 1,
+    });
+    const verifyTarget = (before: ScreenElement | undefined, region: Rect, swipeFrom?: { x: number; y: number }): ScreenElement => {
+      const matches = before ? current.elements.filter((element) => sameObservedElement(before, element)) : [];
+      const element = matches.length === 1 ? matches[0] : undefined;
+      if (!before || !element || old.elements.filter((candidate) => sameObservedElement(before, candidate, old)).length !== 1 ||
+        element.enabled !== true || (swipeFrom ? element.scrollable !== true : element.clickable !== true && !isPointerButton(element))) {
+        throw new MobileUseError("ELEMENT_CHANGED", "The actionable target is missing, changed, disabled, ambiguous, or ineligible for this gesture.", "Observe again and select one unchanged enabled control or scrollable surface. Pixel similarity cannot override failed target metadata.");
+      }
+      const window = verifyWindowContext(before, element);
+      requireAppContext();
+      if (window) {
+        if (region.x < window.bounds.x || region.y < window.bounds.y ||
+          region.x + region.width > window.bounds.x + window.bounds.width ||
+          region.y + region.height > window.bounds.y + window.bounds.height ||
+          [old, current].some((observation) => observation.windows.some((candidate) =>
+            windowSignature(candidate) !== windowSignature(window) && candidate.layer >= window.layer && intersects(candidate.bounds, region)))) {
+          throw new MobileUseError("ELEMENT_CHANGED", "Another interactive window may cover the target or gesture path.", "Observe again and use an uncovered target in its matching window.");
+        }
+      }
+      const start = swipeFrom ? pointRegion(swipeFrom) : region;
+      const signatures = (observation: Observation): string => JSON.stringify(observation.elements
+        .filter((candidate) => (pointerCandidate(candidate) || (swipeFrom !== undefined && candidate.scrollable === true)) &&
+          intersects(candidate.bounds, start))
+        .map((candidate) => observedElementSignature(candidate, observation)).sort());
+      if (signatures(old) !== signatures(current)) {
+        throw new MobileUseError("ELEMENT_CHANGED", "Controls or scrollable surfaces overlapping the gesture's start point changed before input.", "Observe again and identify the intended uncovered control or surface.");
+      }
+      return element;
+    };
+    const visualRegion = (bounds: Rect, from: { x: number; y: number }, to = from): Rect => {
+      const region = interactionRegion(display, bounds);
+      if (!containsPoint(bounds, from) || !containsPoint(bounds, to)) {
+        throw new MobileUseError("INVALID_INPUT", "The requested gesture is outside its visual target bounds.", "Supply complete control or swipe surface bounds containing all requested points.");
+      }
+      return region;
+    };
+    const visualFallback = (bounds: Rect | undefined, from: { x: number; y: number }, to = from): void => {
+      requireAppContext();
+      if (!bounds) {
+        throw new MobileUseError("INVALID_INPUT", "No unique actionable metadata target was identified; visual fallback requires explicit bounds.", "Observe again and provide the complete visible control or swipe surface bounds, not just a point. Prefer an actionable elementRef.");
+      }
+      const region = visualRegion(bounds, from, to);
       const before = previous.screen.image;
       const after = live.screen.image;
       if (!before || !after) {
-        throw new MobileUseError("CAPTURE_UNAVAILABLE", "A usable screenshot is required before coordinate input.", "Observe again or use an enabled clickable elementRef.");
+        throw new MobileUseError("CAPTURE_UNAVAILABLE", "Visual fallback requires two usable screenshots.", "Observe again or use an eligible elementRef.");
       }
-      const oldApp = previous.foregroundApp;
-      const newApp = live.foregroundApp;
-      if (oldApp && newApp && (oldApp.packageName !== newApp.packageName ||
-        oldApp.activityName !== newApp.activityName || oldApp.userId !== newApp.userId)) {
-        throw new MobileUseError("STALE_OBSERVATION", "The foreground app, activity, or Android user changed before coordinate input.", "Inspect a new observation before input.");
+      const difference = compareScreens(before, after, region);
+      const reject = (message: string): never => {
+        throw new MobileUseError("STALE_OBSERVATION", message, "Observe again and verify the whole target and surrounding margin. No input was sent.", false, false, {
+          ...difference, protectedRegion: region,
+          previousCapture: old.captureTiming, currentCapture: current.captureTiming,
+        });
+      };
+      if (old.hierarchy.status !== current.hierarchy.status || old.hierarchyScope !== current.hierarchyScope) {
+        reject("Hierarchy availability or coverage changed before visual input.");
       }
-      const region = interactionBand(display, from, to);
       if (old.hierarchy.status === "ok" && current.hierarchy.status === "ok") {
         const signatures = (observation: Observation): string => JSON.stringify(observation.elements
-          .filter(({ bounds }) => bounds.y < region.y + region.height && bounds.y + bounds.height > region.y)
-          .map(elementSignature).sort());
+          .filter((element) => intersects(element.bounds, region))
+          .map((element) => observedElementSignature(element, observation)).sort());
         if (signatures(old) !== signatures(current)) {
-          throw new MobileUseError("STALE_OBSERVATION", "UI elements in the coordinate action's interaction region changed before input.", "Inspect a new observation and prefer an enabled clickable elementRef.");
+          reject("UI elements in the visual target's protected region changed before input.");
         }
         const windowSignatures = (observation: Observation): string => JSON.stringify(observation.windows
-          .filter(({ bounds }) => bounds.y < region.y + region.height && bounds.y + bounds.height > region.y)
+          .filter((window) => intersects(window.bounds, region))
           .map(windowSignature).sort());
         if (windowSignatures(old) !== windowSignatures(current)) {
-          throw new MobileUseError("STALE_OBSERVATION", "Interactive windows in the coordinate action's interaction region changed before input.", "Inspect a new observation before input. No input was sent.");
+          reject("Interactive windows in the visual target's protected region changed before input.");
         }
       }
-      if (before.equals(after)) return;
-      const difference = compareScreens(before, after, region);
       if (difference.regionChangedPixels) {
-        throw new MobileUseError("STALE_OBSERVATION", "Pixels in the coordinate action's interaction region changed before input.", "Observe again and verify the target and nearby controls. No input was sent.");
-      }
-      if (difference.changedPixels > difference.totalPixels * MAX_CHANGED_SCREEN_FRACTION) {
-        throw new MobileUseError("STALE_OBSERVATION", "More than 20% of the screen changed before coordinate input.", "Inspect a new observation for a page transition, scrolling, or overlay. No input was sent.");
-      }
-      if (difference.changedPixels && (!oldApp || !newApp || old.hierarchy.status !== current.hierarchy.status)) {
-        throw new MobileUseError("STALE_OBSERVATION", "The screenshot changed and its app or hierarchy context could not be matched before coordinate input.", "Observe again with a verifiable foreground activity and consistent hierarchy availability. No input was sent.");
+        reject("Pixels in the visual target's protected region changed before input.");
       }
     };
     switch (action.kind) {
@@ -519,28 +593,26 @@ export class MobileUseService {
         if ("elementRef" in action.target) {
           const ref = action.target.elementRef;
           const oldElement = old.elements.find((element) => element.ref === ref);
-          const matches = oldElement ? current.elements.filter((element) => sameObservedElement(oldElement, element)) : [];
-          const element = matches.length === 1 ? matches[0] : undefined;
-          if (!oldElement || !element || element.enabled !== true || (element.clickable !== true && !isPointerButton(element))) {
-            throw new MobileUseError("ELEMENT_CHANGED", "The referenced actionable element is missing, changed, disabled, ambiguous, or not an eligible pointer button.", "Inspect a new hierarchy and choose one enabled clickable element or pointerTarget button. Double-tap still requires the prepared gesture helper.");
+          if (!oldElement) {
+            throw new MobileUseError("ELEMENT_CHANGED", "The referenced control was not exposed in the observation.", "Observe again and select an enabled actionable element.");
           }
           point = {
-            x: Math.floor(element.bounds.x + element.bounds.width / 2),
-            y: Math.floor(element.bounds.y + element.bounds.height / 2),
+            x: Math.floor(oldElement.bounds.x + oldElement.bounds.width / 2),
+            y: Math.floor(oldElement.bounds.y + oldElement.bounds.height / 2),
           };
-          const window = verifyWindowContext(oldElement, element);
-          if (window) {
-            const containsPoint = (bounds: typeof element.bounds): boolean =>
-              point.x >= bounds.x && point.x < bounds.x + bounds.width &&
-              point.y >= bounds.y && point.y < bounds.y + bounds.height;
-            if (!containsPoint(window.bounds) || current.windows.some((candidate) =>
-              candidate.id !== window.id && candidate.layer >= window.layer && containsPoint(candidate.bounds))) {
-              throw new MobileUseError("ELEMENT_CHANGED", "Another interactive window may cover the referenced control.", "Observe again and use an uncovered control in the topmost matching window.");
-            }
-          }
+          verifyTarget(oldElement, pointRegion(point));
         } else {
-          unchangedCoordinateContext(action.target);
-          point = action.target;
+          const target = action.target;
+          requireCoordinateCapture(target);
+          if (target.bounds) visualRegion(target.bounds, target);
+          const candidates = old.elements.filter((element) => pointerCandidate(element) && containsPoint(element.bounds, target));
+          if (candidates.length > 1) {
+            throw new MobileUseError("ELEMENT_CHANGED", "Multiple potential controls overlap the requested point.", "Observe again and select an explicit actionable elementRef. Visual bounds cannot resolve ambiguous metadata.");
+          }
+          const candidate = candidates[0];
+          if (candidate && (candidate.enabled !== true || identifiesControl(candidate))) verifyTarget(candidate, pointRegion(target));
+          else visualFallback(target.bounds, target);
+          point = target;
         }
         requirePoint(point, current.display);
         if (action.kind === "double_tap") return state.backend.doubleTap(point.x, point.y, action.delayMs, signal);
@@ -548,10 +620,26 @@ export class MobileUseService {
         else await state.backend.tap(point.x, point.y, signal);
         break;
       }
-      case "swipe":
-        unchangedCoordinateContext(action.from, action.to);
+      case "swipe": {
+        requireCoordinateCapture(action.from, action.to);
+        if (action.bounds) visualRegion(action.bounds, action.from, action.to);
+        const candidates = action.elementRef
+          ? old.elements.filter((element) => element.ref === action.elementRef)
+          : old.elements.filter((element) => element.scrollable === true &&
+            containsPoint(element.bounds, action.from));
+        if (candidates.length > 1) {
+          throw new MobileUseError("ELEMENT_CHANGED", "Multiple scrollable surfaces contain the requested swipe.", "Observe again and specify the intended scrollable elementRef.");
+        }
+        const surface = candidates[0];
+        if (surface || action.elementRef) {
+          const element = verifyTarget(surface, pointRegion(action.from, action.to), action.from);
+          if (!containsPoint(element.bounds, action.from) || !containsPoint(element.bounds, action.to)) {
+            throw new MobileUseError("INVALID_INPUT", "The swipe must remain within its observed scrollable surface.", "Choose in-bounds endpoints within the same surface.");
+          }
+        } else visualFallback(action.bounds, action.from, action.to);
         await state.backend.swipe(action.from, action.to, action.durationMs, signal);
         break;
+      }
       case "type_text": {
         const fields = current.elements.filter((element) => {
           if (!element.editable || element.focused !== true || element.enabled !== true || element.password !== false) return false;

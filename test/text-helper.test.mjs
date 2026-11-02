@@ -226,6 +226,7 @@ const stubs = {
       public boolean isFocused() { return field && !Boolean.getBoolean("unfocused") && !(written && Boolean.getBoolean("afterLostFocus")); }
       public boolean isEnabled() { return !Boolean.getBoolean("disabled"); }
       public boolean isClickable() { return field; }
+      public boolean isScrollable() { return Boolean.getBoolean("scrollable"); }
       public boolean isPassword() { return Boolean.getBoolean("password"); }
       public void getBoundsInScreen(Rect b) {
         b.left=Integer.getInteger("x",4); b.top=32; b.right=76;
@@ -326,6 +327,10 @@ test("prepared helper observations preserve exact Unicode, whitespace, XML escap
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /^<hierarchy rotation="2">/);
   assert.match(result.stdout, /window-identity="abc:u0"/);
+  assert.match(result.stdout, /scrollable="false"/);
+  const scrollable = run(["--dump-windows", "0"], { scrollable: true, forbidWrite: true });
+  assert.equal(scrollable.status, 0, scrollable.stderr);
+  assert.match(scrollable.stdout, /scrollable="true"/);
   assert.doesNotMatch(result.stdout, /window-id=/);
   assert.ok(result.stdout.includes('text="  中文 👩‍💻😀 e\u0301 &amp; &quot; &lt;&#10;&#9;&#13; "'), result.stdout);
   assert.doesNotMatch(result.stderr, /WRITE /);

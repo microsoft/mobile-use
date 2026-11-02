@@ -134,7 +134,7 @@ Do not bypass local policy or change firewall settings to recover.
 | `mobile_wake` | With explicit permission and a target token, wake the display and dismiss only an unsecured lock screen. No observation or screen capture; secure/unknown lock states require manual unlocking. |
 | `mobile_observe` | Require that token; return a fresh observation ID, display geometry, hierarchy/status/warnings, and a separate PNG image block when usable. Set `includeScreenshot: false` to read only hierarchy/display state without capturing an image. |
 | `mobile_tap` | `action.kind`: `tap`, `long_press`, `double_tap`, or `prepare` for the double-tap helper. Input requires `action.observationId` and `action.target`; preparation requires consent and invalidates observations without injecting input. |
-| `mobile_swipe` | Require target and latest observation IDs, `from`, `to`, and optional `durationMs`; dispatch one bounded screenshot-based swipe. |
+| `mobile_swipe` | Require target and latest observation IDs, screenshot `from`/`to`, and optional `durationMs`; validate a unique scrollable surface or explicit `elementRef`, otherwise require full-surface `bounds` for visual fallback. |
 | `mobile_press_key` | Require target and latest observation IDs and one `key`: `BACK`, `HOME`, or `ENTER`. |
 | `mobile_input_text` | `action.kind`: `type_text` with `action.observationId`/`action.text`, or `prepare` for the text helper. Preparation requires consent and invalidates observations without entering text. |
 | `mobile_app_management` | `action.kind`: `list`, `foreground`, `launch`, `terminate`, `install`, or `uninstall`. No observation or screenshot; mutations require their specific authorization. |
@@ -388,7 +388,7 @@ Supported public UI inputs (all require `targetToken`):
 | `mobile_tap`, `action.kind: "long_press"` | Same fields as tap; one stationary native system-duration long press. No helper or configurable duration. |
 | `mobile_tap`, `action.kind: "double_tap"` | Same fields as tap; optional `action.delayMs` (integer 0-250, default 50) requests the first-UP to second-DOWN interval. Requires the prepared gesture helper. |
 | `mobile_tap`, `action.kind: "prepare"` | Upload/run the gesture helper after explicit approval or matching scoped session consent; no observation or tap. |
-| `mobile_swipe` | `observationId`, `from: { x, y }`, `to: { x, y }`, optional `durationMs` (integer 100-2000, default 400). |
+| `mobile_swipe` | `observationId`, `from: { x, y }`, `to: { x, y }`, optional `durationMs` (integer 100-2000, default 400), and optional scrollable `elementRef`; without scrollable metadata, require full-surface `bounds`. |
 | `mobile_input_text`, `action.kind: "type_text"` | `action.observationId`, `action.text`: 1-256 UTF-16 code units. Text outside the original ASCII subset needs the prepared text helper. |
 | `mobile_input_text`, `action.kind: "prepare"` | Upload/run the text helper after explicit approval or matching scoped session consent; no observation or text input. |
 | `mobile_press_key` | `observationId`, `key`: `BACK`, `HOME`, or `ENTER`. |
@@ -456,7 +456,7 @@ diagnostics fail explicitly with uncertain delivery and are never exposed raw.
 There is no helper deployment, fallback gesture, or automatic retry.
 Use only the authorized gesture; a long press may open a context menu rather
 than activate the target. Revalidation and screenshot settings are identical
-to tap, including the full-width pixel guard for coordinate targets.
+to tap, including metadata-first coordinate targeting and bounded visual fallback.
 
 Sources: AOSP [Android 11 Input.java](https://android.googlesource.com/platform/frameworks/base/+/android-11.0.0_r1/cmds/input/src/com/android/commands/input/Input.java)
 and [Android 16 InputShellCommand.java](https://android.googlesource.com/platform/frameworks/base/+/android-16.0.0_r1/services/core/java/com/android/server/input/InputShellCommand.java).
@@ -502,6 +502,8 @@ authorize the pair only when that is safe. Hierarchy-only mode supports
 For example, `mobile_tap` with
 `action: { kind: "double_tap", observationId, target: { x: 360, y: 800 }, delayMs: 50 }`
 requests a 50 ms event-time gap at a point from a fresh screenshot.
+The point must identify one actionable control; otherwise include full-control
+`target.bounds` as described below.
 
 #### Unicode text helper and preparation
 
@@ -637,8 +639,10 @@ Its focused-application text-writing checks remain unchanged.
 
 Window IDs are capture-local accessibility registrations, not durable identities.
 Reference revalidation uniquely matches the unchanged element and owning-window
-metadata, excluding reassigned registration IDs. Windowed targets also require
-matching foreground app/activity/user and reject other interactive windows whose
+metadata, excluding reassigned registration IDs. Interception and visual-region
+comparisons preserve each element's owning-window context as well; equivalent
+element/window sets cannot hide a change in their associations. Windowed targets
+also require matching foreground app/activity/user and reject other interactive windows whose
 bounds and layer could cover the tap point. These checks are conservative:
 window bounds are not proof of the exact touchable region, and a visually
 identical replacement is not distinguished by metadata alone. Unicode writes
@@ -652,8 +656,8 @@ use that eligibility; arbitrary non-clickable views remain ineligible.
 Double-tap still requires the explicitly prepared pinned helper and uses the
 same point for both taps, even if the first changes the UI. Authorize the pair
 only when both taps are safe; never substitute it for tap automatically.
-This makes touch-listener buttons targetable without weakening the raw-coordinate
-pixel guard. An exposed button and an acknowledged pointer command do not
+This makes touch-listener buttons targetable using metadata-first guards.
+An exposed button and an acknowledged pointer command do not
 prove gesture recognition. Verify the app's resulting state.
 
 On the tested Xiaomi Android 11 phone, stock capture exposed the built-in
@@ -688,24 +692,89 @@ prepared Unicode helper described above. Clipboard fallback and arbitrary
 shell are rejected.
 
 Observations expire after 30 seconds and are consumed on an action attempt.
-Elements are revalidated before dispatch; coordinate gestures additionally
-require in-bounds points and unchanged decoded pixels in a full-width interaction
-band. The band extends above/below a tap by 8% of the shorter display dimension
-(rounded up, at least 8 pixels, clipped to the display). For swipes, it covers the
-entire vertical path plus that padding, not just the endpoints. Exposed hierarchy
-elements intersecting the band must also remain unchanged when both reads succeed.
+Pointer gestures are **metadata-first**: revalidate a unique enabled target,
+its identity/state/bounds, matching foreground app/activity/Android user, and
+owning-window context. Metadata-backed input does not compare screenshot pixels.
+A playing video, animated background or independent sibling timer therefore
+does not veto an unchanged button. Exposed actionable controls overlapping the
+tap point must not change; windowed gestures also reject potentially covering
+windows. Metadata cannot prove the true touchable region or detect every
+custom-drawn overlay; do not treat these checks as permission for consequential
+input.
 
-Up to 20% of screen pixels may change outside this band, allowing unrelated
-ads, price animations, and status-bar updates without requiring a byte-identical
-PNG. Any changed target-band pixel, larger screen change, or known foreground
-app/activity/Android-user switch still rejects input. Allowing changed pixels
-elsewhere requires a verified matching foreground activity and consistent
-hierarchy availability; unavailable foreground diagnostics produce an explicit
-observation warning and retain the identical-visible-pixels requirement.
-Equivalent PNG encodings/metadata are compared by decoded RGB/RGBA pixels,
-including alpha, rather than file hashes. These are conservative visual/context
-checks, not proof of an unchanged page or permission to submit a transaction.
-Only the primary display is covered; capture sources and input remain non-atomic.
+An `elementRef` selects its observed centre. Screenshot coordinates identifying
+exactly one potential control use the same metadata guards but retain the
+**requested point**, without recentering or selecting the smallest overlapping
+node. Automatic promotion requires native Button/ImageButton/EditText semantics
+or nonempty text/description; an unlabeled generic clickable container alone
+does not identify a custom-drawn control. Use an explicit reference when the
+container itself is the intended target, or full-control visual bounds when it
+is not. Disabled, changed, removed or ambiguous actionable metadata is rejected and cannot
+fall back to pixels, even if explicit visual bounds are supplied. Multiple
+potential controls require an explicit reference. Coordinate actions still
+require usable original/live screenshots and in-bounds points.
+
+Hierarchy elements expose nullable native `scrollable`, including through the
+prepared Unicode helper. A swipe can specify top-level `elementRef` for an
+enabled scrollable surface or resolve one unique scrollable surface containing
+its start point. Both endpoints must lie in the same unchanged surface;
+child-content changes away from the initial touch are not surface changes.
+Actionable controls and competing scrollable surfaces overlapping the starting
+point must remain unchanged, even with an explicit reference. This includes
+non-clickable scrollable children that appear, move or change before input.
+Nested scrollable surfaces need an explicit reference. A window that may cover
+any part of the path's bounding rectangle blocks the swipe. No scrollable
+metadata means visual fallback, not an inferred scrollability claim for a
+generic full-screen container.
+
+When no actionable control/surface is exposed, visual fallback requires
+caller-supplied `{ x, y, width, height }` bounds around the **entire visible
+control or swipe surface**. Tap/long-press/double-tap put them in
+`action.target.bounds`; swipes use top-level `bounds`. Bare custom-drawn points
+are rejected, even on an identical screenshot. For example:
+
+```json
+{
+  "targetToken": "<selected target token>",
+  "action": {
+    "kind": "tap",
+    "observationId": "<latest observation id>",
+    "target": {
+      "x": 630,
+      "y": 171,
+      "bounds": { "x": 600, "y": 160, "width": 60, "height": 24 }
+    }
+  }
+}
+```
+
+Visual fallback protects those bounds plus a margin on **all four sides**:
+8% of the shorter display dimension, rounded up, at least 8 pixels, clipped to
+the display. All decoded pixels and exposed element/window metadata intersecting
+this local rectangle must remain unchanged. The full-width band and global
+20% changed-pixel threshold have been removed. Arbitrary changes outside the
+protected region do not independently veto the action; verified matching
+foreground context and consistent hierarchy availability/coverage are still
+required, even with identical pixels. Both hierarchies may be unavailable.
+Equivalent PNG encodings/metadata compare by decoded RGB/RGBA, including alpha.
+There are no ignored animation/timer regions, OCR, or automatically inferred
+control bounds. A timer or translucent control over moving video inside the
+protected region still blocks visual input. Bounds completeness is the caller's
+responsibility; pixel stability is not proof of semantic identity or an unchanged
+page.
+
+Visual rejections return `error.visualGuard` with `changedPixels`,
+`regionChangedPixels`, `totalPixels`, `changedBounds`, `regionChangedBounds`,
+`protectedRegion`, and `previousCapture`/`currentCapture`. Bounding rectangles
+are null when no pixels changed in that scope; one bounding rectangle can span
+multiple disjoint changes and does not classify their cause. Observation
+`captureTiming` reports `startedAt`, total `durationMs`, `screenshotDurationMs`
+(null when skipped) and `hierarchyDurationMs`; durations use a monotonic clock.
+`capturedAt` remains the observation-completion timestamp. These durations
+include command/transport and host processing, not just device capture time.
+Only the primary display is covered; parallel capture sources and subsequent
+input remain non-atomic. Post-action observations require caller review; they
+do not automatically establish the intended app outcome.
 
 `STALE_OBSERVATION` describes the local pre-input check that failed, not an
 app-level security block. It does not by itself identify ads or price animations

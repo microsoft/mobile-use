@@ -63,6 +63,17 @@ test("password text is redacted and empty/custom hierarchies stay honest", () =>
   assert.deepEqual(parseHierarchy(hierarchy("")).elements, []);
 });
 
+test("scrollability is exposed without inventing actionability for generic containers", () => {
+  const parsed = parseHierarchy(hierarchy(node({
+    class: "android.widget.ScrollView", text: "", "resource-id": "", clickable: "false", scrollable: "true",
+  })));
+  assert.equal(parsed.elements.length, 1);
+  assert.equal(parsed.elements[0]?.scrollable, true);
+  assert.equal(parsed.elements[0]?.clickable, false);
+  assert.equal(parseHierarchy(hierarchy()).elements[0]?.scrollable, null);
+  assert.throws(() => parseHierarchy(hierarchy(node({ scrollable: "yes" }))), hasCode("HIERARCHY_UNAVAILABLE"));
+});
+
 test("hierarchy field text and labels preserve exact whitespace for Unicode append guards", () => {
   for (const text of ["  abc  ", " \t ", "\r\n中文\t😀\n", "e\u0301", "中文 😀", "literal &#10; &copy; &quot;"]) {
     const field = parseHierarchy(hierarchy(editField({ text, "content-desc": "  label  " }))).elements[0];
@@ -162,7 +173,17 @@ test("the bounded action union rejects unsupported operations and target shapes"
     { kind: "double_tap", target: { x: 1, y: 1 }, count: 3 },
     { kind: "launch_app", packageName: "example.app;reboot" },
     { kind: "swipe", from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, durationMs: 2001 },
+    { kind: "tap", target: { x: 1, y: 1, bounds: { x: 0, y: 0, width: 0, height: 10 } } },
+    { kind: "tap", target: { x: 1, y: 1, bounds: { x: -1, y: 0, width: 10, height: 10 } } },
+    { kind: "tap", target: { elementRef: "e1", bounds: { x: 0, y: 0, width: 10, height: 10 } } },
+    { kind: "swipe", from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, elementRef: "e0" },
   ]) assert.equal(actionSchema.safeParse(value).success, false);
+  const bounds = { x: 0, y: 0, width: 40, height: 20 };
+  for (const kind of ["tap", "long_press", "double_tap"]) {
+    assert.equal(actionSchema.safeParse({ kind, target: { x: 10, y: 10, bounds } }).success, true);
+  }
+  assert.equal(actionSchema.safeParse({ kind: "swipe", from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, bounds }).success, true);
+  assert.equal(actionSchema.safeParse({ kind: "swipe", from: { x: 0, y: 0 }, to: { x: 1, y: 1 }, elementRef: "e1" }).success, true);
 });
 
 test("ordered hierarchy traversal preserves parent/child/sibling references without recursive collection", () => {
