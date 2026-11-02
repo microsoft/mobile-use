@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.regex.Matcher;
@@ -274,7 +275,26 @@ public final class TextMain {
             int user = currentUser(), windowId = root.getWindowId();
             if (windowId < 0) throw new WindowFailure(WindowCheck.REGISTRATION);
             String identity = windowIdentity(diagnostics, user);
-            nodes.clear();
+            String xml = dumpNodes(root, rotation, windowId, identity, false);
+            phase = "WINDOW";
+            if (!activeWindow(root) || root.getWindowId() != windowId || currentUser() != user ||
+                    !identity.equals(windowIdentity(diagnostics, user))) {
+                throw new WindowFailure(WindowCheck.CHANGED);
+            }
+            return xml;
+        } finally {
+            if (window != null) window.recycle();
+            for (AccessibilityNodeInfo node : nodes) node.recycle();
+        }
+    }
+
+    private static String boundsString(Rect bounds) {
+        return "[" + bounds.left + "," + bounds.top + "][" + bounds.right + "," + bounds.bottom + "]";
+    }
+
+    private static String dumpNodes(AccessibilityNodeInfo root, int rotation, int windowId, String identity, boolean recycleRoot) {
+        List<AccessibilityNodeInfo> nodes = new ArrayList<>();
+        try {
             phase = "HIERARCHY";
             collect(root, 1, nodes);
             StringBuilder xml = new StringBuilder("<hierarchy rotation=\"" + rotation + "\">");
@@ -284,8 +304,7 @@ public final class TextMain {
                     throw new IllegalStateException("Focused field unavailable");
                 }
                 String text = node.isPassword() ? "[redacted]" : string(node.getText());
-                String label = string(node.getContentDescription());
-                String hint = string(node.getHintText());
+                String label = string(node.getContentDescription()), hint = string(node.getHintText());
                 if (text.length() + (label.isEmpty() ? hint.length() : label.length()) > 4096) {
                     throw new IllegalStateException("Field too large");
                 }
@@ -293,13 +312,14 @@ public final class TextMain {
                 node.getBoundsInScreen(bounds);
                 xml.append("<node");
                 attribute(xml, "class", string(node.getClassName()));
-                if (node.getWindowId() == windowId) attribute(xml, "window-identity", identity);
+                attribute(xml, "package", string(node.getPackageName()));
+                if (identity != null && node.getWindowId() == windowId) attribute(xml, "window-identity", identity);
                 attribute(xml, "resource-id", string(node.getViewIdResourceName()));
                 attribute(xml, "text", text);
                 if (node.isEditable() && !node.isPassword()) attribute(xml, "text-sha256", textHash(node));
                 attribute(xml, "content-desc", label);
                 attribute(xml, "hint", hint);
-                attribute(xml, "bounds", "[" + bounds.left + "," + bounds.top + "][" + bounds.right + "," + bounds.bottom + "]");
+                attribute(xml, "bounds", boundsString(bounds));
                 attribute(xml, "enabled", Boolean.toString(node.isEnabled()));
                 attribute(xml, "clickable", Boolean.toString(node.isClickable()));
                 attribute(xml, "focused", Boolean.toString(node.isFocused()));
@@ -311,15 +331,102 @@ public final class TextMain {
             if (xml.toString().getBytes(StandardCharsets.UTF_8).length > 2 * 1024 * 1024) {
                 throw new IllegalStateException("Hierarchy too large");
             }
+            return xml.toString();
+        } finally {
+            for (AccessibilityNodeInfo node : nodes) {
+                if (node != root || recycleRoot) node.recycle();
+            }
+        }
+    }
+
+    private static String windowTag(AccessibilityWindowInfo window) {
+        Rect bounds = new Rect();
+        window.getBoundsInScreen(bounds);
+        String[] types = {"UNKNOWN", "APPLICATION", "INPUT_METHOD", "SYSTEM", "ACCESSIBILITY_OVERLAY",
+            "SPLIT_SCREEN_DIVIDER", "MAGNIFICATION_OVERLAY"};
+        int type = window.getType();
+        String name = type > 0 && type < types.length ? types[type] : "UNKNOWN_" + type;
+        if (window.getId() < 0 || window.getLayer() < 0) throw new WindowFailure(WindowCheck.REGISTRATION);
+        StringBuilder xml = new StringBuilder("<window");
+        attribute(xml, "id", Integer.toString(window.getId()));
+        attribute(xml, "type", "TYPE_" + name);
+        attribute(xml, "layer", Integer.toString(window.getLayer()));
+        attribute(xml, "bounds", boundsString(bounds));
+        attribute(xml, "active", Boolean.toString(window.isActive()));
+        attribute(xml, "focused", Boolean.toString(window.isFocused()));
+        return xml.append(">").toString();
+    }
+
+    private static String windowSnapshot(List<AccessibilityWindowInfo> windows) {
+        if (windows.size() > 128) throw new WindowFailure(WindowCheck.LIMIT);
+        List<String> tags = new ArrayList<>();
+        for (AccessibilityWindowInfo window : windows) {
+            if (window.getDisplayId() == 0) tags.add(windowTag(window));
+        }
+        Collections.sort(tags);
+        return tags.toString();
+    }
+
+    private static String dumpWindows(UiAutomation automation, int rotation, WindowDiagnostics diagnostics)
+            throws ReflectiveOperationException, IOException, InterruptedException {
+        phase = "WINDOW";
+        int user = currentUser(), nodes = 0;
+        List<AccessibilityWindowInfo> windows = automation.getWindows();
+        long start = SystemClock.uptimeMillis();
+        for (int attempt = 0; windows.isEmpty() && attempt < ROOT_TIMEOUT_MS / 100; attempt++) {
+            long remaining = ROOT_TIMEOUT_MS - (SystemClock.uptimeMillis() - start);
+            if (remaining <= 0) break;
+            SystemClock.sleep(Math.min(100, remaining));
+            windows = automation.getWindows();
+        }
+        try {
+            String before = windowSnapshot(windows), focusedIdentity = null;
+            if (windows.isEmpty()) throw new WindowFailure(WindowCheck.MISSING);
+            StringBuilder xml = new StringBuilder("<displays><display id=\"0\">");
+            for (AccessibilityWindowInfo window : windows) {
+                if (window.getDisplayId() != 0) continue;
+                xml.append(windowTag(window));
+                AccessibilityNodeInfo root = window.getRoot();
+                if (root != null) {
+                    if (root.getWindowId() != window.getId()) {
+                        root.recycle();
+                        throw new WindowFailure(WindowCheck.REGISTRATION);
+                    }
+                    String identity = null;
+                    if (window.getType() == AccessibilityWindowInfo.TYPE_APPLICATION && window.isActive() && window.isFocused()) {
+                        try {
+                            identity = windowIdentity(diagnostics, user);
+                            focusedIdentity = identity;
+                        } catch (IOException | InterruptedException | RuntimeException failure) {
+                            root.recycle();
+                            throw failure;
+                        }
+                    }
+                    String hierarchy = dumpNodes(root, rotation, window.getId(), identity, true);
+                    nodes += hierarchy.split("<node", -1).length - 1;
+                    if (nodes > 2000) throw new IllegalStateException("Hierarchy too large");
+                    xml.append(hierarchy);
+                }
+                xml.append("</window>");
+                if (xml.length() > 2 * 1024 * 1024) throw new IllegalStateException("Hierarchy too large");
+            }
+            xml.append("</display></displays>");
             phase = "WINDOW";
-            if (!activeWindow(root) || root.getWindowId() != windowId || currentUser() != user ||
-                    !identity.equals(windowIdentity(diagnostics, user))) {
-                throw new WindowFailure(WindowCheck.CHANGED);
+            List<AccessibilityWindowInfo> after = automation.getWindows();
+            try {
+                if (currentUser() != user || !before.equals(windowSnapshot(after)) ||
+                    (focusedIdentity != null && !focusedIdentity.equals(windowIdentity(diagnostics, user)))) {
+                    throw new WindowFailure(WindowCheck.CHANGED);
+                }
+            } finally {
+                for (AccessibilityWindowInfo window : after) window.recycle();
+            }
+            if (xml.toString().getBytes(StandardCharsets.UTF_8).length > 2 * 1024 * 1024) {
+                throw new IllegalStateException("Hierarchy too large");
             }
             return xml.toString();
         } finally {
-            if (window != null) window.recycle();
-            for (AccessibilityNodeInfo node : nodes) node.recycle();
+            for (AccessibilityWindowInfo window : windows) window.recycle();
         }
     }
 
@@ -408,7 +515,8 @@ public final class TextMain {
         phase = "REQUEST";
         try {
             boolean check = args.length == 1 && "--check".equals(args[0]);
-            hierarchy = args.length == 2 && "--dump".equals(args[0]) && args[1].matches("[0-3]");
+            boolean allWindows = args.length == 2 && "--dump-windows".equals(args[0]) && args[1].matches("[0-3]");
+            hierarchy = allWindows || (args.length == 2 && "--dump".equals(args[0]) && args[1].matches("[0-3]"));
             if (!hierarchy && args.length != 1) throw new IllegalArgumentException("Expected one request");
             Request request = check || hierarchy ? null : new Request(args[0]);
             thread.start();
@@ -425,10 +533,12 @@ public final class TextMain {
             AccessibilityServiceInfo info = automation.getServiceInfo();
             if (info == null) throw new IllegalStateException("No automation service");
             info.flags |= AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS |
-                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS |
+                AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS;
             automation.setServiceInfo(info);
             result = check ? "READY" : hierarchy
-                ? dump(automation, Integer.parseInt(args[1]), diagnostics) : append(automation, request, diagnostics);
+                ? (allWindows ? dumpWindows(automation, Integer.parseInt(args[1]), diagnostics)
+                    : dump(automation, Integer.parseInt(args[1]), diagnostics)) : append(automation, request, diagnostics);
         } catch (ReflectiveOperationException | IOException | RuntimeException | InterruptedException failure) {
             if (failure instanceof InterruptedException) Thread.currentThread().interrupt();
             result = "ERROR_" + phase;

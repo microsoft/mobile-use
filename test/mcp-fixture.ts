@@ -2,7 +2,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { MobileUseService } from "../src/device-session.js";
 import { MobileUseError } from "../src/errors.js";
 import { createMobileUseServer } from "../src/tools.js";
-import { chunk, editField, FakeAdb, FakeMonitors, hierarchy, node, pixelPng, recorderHelp } from "./helpers.js";
+import { chunk, editField, FakeAdb, FakeMonitors, hierarchy, node, pixelPng, recorderHelp, windowXml, windowsXml } from "./helpers.js";
 
 const adb = new FakeAdb();
 const monitors = new FakeMonitors(adb);
@@ -43,6 +43,45 @@ if (setupScenario === "unicode-text") adb.xml = hierarchy(editField());
 if (setupScenario === "no-screenshots" || setupScenario === "unicode-text") {
   adb.handler = (call) => {
     if (call.args.includes("screencap")) throw new Error("Screen capture is forbidden in this fixture.");
+    return undefined;
+  };
+}
+if (setupScenario === "floating-recorder") {
+  let recording = false, capture = 0;
+  adb.handler = (call) => {
+    if (call.args.includes("screencap")) throw new Error("Floating recorder fixture forbids screenshots.");
+    if (call.args.includes("uiautomator") || call.args.includes("--dump-windows")) {
+      adb.xml = windowsXml(windowXml(node()) + windowXml(node({
+        class: "android.widget.ImageButton", package: "example.recorder", text: "",
+        "content-desc": recording ? "Stop recording" : "Start recording",
+        "resource-id": "example.recorder:id/switch", clickable: "false", bounds: "[44,64][76,86]",
+      }) + (recording ? node({
+        text: `00:${++capture}`, clickable: "false", bounds: "[30,64][43,86]",
+      }) : ""), {
+        id: String(100 + ++capture), layer: "1", active: "false", focused: "false", bounds: "[30,60][80,96]",
+      }));
+    }
+    if (call.args.includes("input")) {
+      const expected = recording
+        ? "input touchscreen -d 0 draganddrop 60 75 60 75 0 2>&1"
+        : "input tap 60 75";
+      if (call.args.slice(3).join(" ") !== expected) throw new Error("Unexpected floating recorder input.");
+      recording = !recording;
+    }
+    if (call.args[6] === "dev.mobileuse.gestures.GestureMain" && call.args[7] !== "--check") {
+      if (!recording || call.args.slice(7).join(" ") !== "60 75 50") throw new Error("Unexpected floating recorder gesture.");
+      recording = false;
+    }
+    return undefined;
+  };
+}
+if (setupScenario === "floating-editors" || setupScenario === "inactive-editor") {
+  const foreground = setupScenario === "floating-editors" ? editField({ package: "example.poc" }) : node();
+  adb.xml = windowsXml(windowXml(foreground) + windowXml(editField({
+    package: "example.recorder", "resource-id": "example.recorder:id/text", bounds: "[34,64][76,86]",
+  }), { id: "2", layer: "1", bounds: "[30,60][80,96]", active: "false", focused: "false" }));
+  adb.handler = (call) => {
+    if (call.args.includes("screencap")) throw new Error("Floating editor fixtures forbid screenshots.");
     return undefined;
   };
 }

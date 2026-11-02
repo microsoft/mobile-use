@@ -47,7 +47,7 @@ export async function unicodeHierarchy(command: DeviceCommand, remotePath: strin
   }
   await verifyHelper(command, helper, remotePath, signal);
   const output = await command([
-    "shell", `CLASSPATH=${remotePath}`, "app_process", "/", helper.mainClass, "--dump", String(rotation),
+    "shell", `CLASSPATH=${remotePath}`, "app_process", "/", helper.mainClass, "--dump-windows", String(rotation),
   ], signal ? { signal } : {});
   const phase = helperFailurePhase(output.toString("utf8"));
   if (phase) {

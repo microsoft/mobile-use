@@ -456,7 +456,7 @@ test("element revalidation is independent of freshly assigned reference numbers"
 test("changed, ambiguous, disabled, or absent elements reject input and consume the attempt", async (t) => {
   const { adb, service } = harness(t);
   const selected = await service.selectDevice(USB);
-  for (const kind of ["tap", "double_tap"] as const) {
+  for (const kind of ["tap", "long_press", "double_tap"] as const) {
     for (const changed of [node({ text: "Changed" }), node() + node(), node({ enabled: "false" }), ""]) {
       adb.xml = hierarchy();
       const screen = await service.observe(selected.targetToken);
@@ -493,7 +493,7 @@ test("the exact 30-second age boundary is enforced, including clock rollback", a
 test("coordinate gestures reject changes at their target and require exact in-bounds endpoints", async (t) => {
   const { adb, service } = harness(t);
   const selected = await service.selectDevice(USB);
-  for (const kind of ["tap", "double_tap"] as const) {
+  for (const kind of ["tap", "long_press", "double_tap"] as const) {
     adb.image = png();
     const screen = await service.observe(selected.targetToken);
     adb.image = png(80, 160, 9);
@@ -506,7 +506,7 @@ test("coordinate gestures reject changes at their target and require exact in-bo
   assert.deepEqual(adb.inputs[0]?.args, ["-t", "7", "shell", "input", "swipe", "79", "159", "0", "0", "400"]);
 });
 
-for (const kind of ["tap", "double_tap"] as const) {
+for (const kind of ["tap", "long_press", "double_tap"] as const) {
   test(`coordinate ${kind} on custom-drawn pages tolerates status-bar and ad changes outside the interaction band`, async (t) => {
     const { adb, service } = harness(t);
     adb.display = displayDiagnostics(0, 720, 1600);
@@ -528,6 +528,10 @@ for (const kind of ["tap", "double_tap"] as const) {
     assert.ok(result.after?.image);
     if (kind === "tap") {
       assert.deepEqual(adb.inputs[0]?.args, ["-t", "7", "shell", "input", "tap", "630", "171"]);
+    } else if (kind === "long_press") {
+      assert.deepEqual(adb.inputs[0]?.args, [
+        "-t", "7", "shell", "input", "touchscreen", "-d", "0", "draganddrop", "630", "171", "630", "171", "0", "2>&1",
+      ]);
     } else {
       assert.deepEqual(result.gestureTiming, { requestedDelayMs: 50, actualGapMs: 50 });
       assert.deepEqual(adb.inputs[0]?.args.slice(-3), ["630", "171", "50"]);
@@ -813,7 +817,7 @@ test("cold-root failures during Unicode preflight remain pre-input errors with s
   await service.prepareTextInput(selected.targetToken);
   adb.xml = hierarchy(editField());
   const screen = await service.observe(selected.targetToken, undefined, false);
-  adb.handler = (call) => call.args[7] === "--dump"
+  adb.handler = (call) => call.args[7] === "--dump-windows"
     ? Buffer.from("MOBILE_USE_TEXT_V1_ERROR_ROOT\n") : undefined;
   await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
     kind: "type_text", text: "中文",

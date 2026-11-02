@@ -91,7 +91,7 @@ const stubs = {
   "android/accessibilityservice/AccessibilityServiceInfo.java": `
     package android.accessibilityservice;
     public class AccessibilityServiceInfo {
-      public static final int FLAG_REPORT_VIEW_IDS=16, FLAG_RETRIEVE_INTERACTIVE_WINDOWS=64;
+      public static final int FLAG_REPORT_VIEW_IDS=16, FLAG_RETRIEVE_INTERACTIVE_WINDOWS=64, FLAG_INCLUDE_NOT_IMPORTANT_VIEWS=2;
       public int flags=1;
     }`,
   "android/app/ActivityManager.java": `
@@ -110,7 +110,7 @@ const stubs = {
     public class UiAutomation {
       public static final int FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES=1;
       AccessibilityServiceInfo info = new AccessibilityServiceInfo();
-      int rootReads=0;
+      int rootReads=0, windowReads=0;
       public UiAutomation(Looper looper, IUiAutomationConnection connection) {}
       public void connect(int flags) {
         if (flags != FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES) throw new IllegalArgumentException("Must not suppress accessibility services");
@@ -118,7 +118,7 @@ const stubs = {
       public void disconnect() { System.err.println("DISCONNECTED"); }
       public AccessibilityServiceInfo getServiceInfo() { return info; }
       public void setServiceInfo(AccessibilityServiceInfo value) {
-        if (value.flags != 81) throw new IllegalArgumentException("Service flags were not preserved");
+        if (value.flags != 83) throw new IllegalArgumentException("Service flags were not preserved");
       }
       public AccessibilityNodeInfo getRootInActiveWindow() {
         if (Boolean.getBoolean("forbidRead")) throw new IllegalStateException("Check must not read UI");
@@ -128,15 +128,57 @@ const stubs = {
         return Boolean.getBoolean("noRoot") || rootReads <= Integer.getInteger("rootUnavailableReads", 0)
           ? null : new AccessibilityNodeInfo(false);
       }
+      public java.util.List<android.view.accessibility.AccessibilityWindowInfo> getWindows() {
+        if (Boolean.getBoolean("forbidRead")) throw new IllegalStateException("Check must not read windows");
+        windowReads++;
+        if (Boolean.getBoolean("noWindows") || windowReads <= Integer.getInteger("windowsUnavailableReads", 0)) {
+          return java.util.Collections.emptyList();
+        }
+        java.util.List<android.view.accessibility.AccessibilityWindowInfo> windows=new java.util.ArrayList<>();
+        if (!Boolean.getBoolean("overlayOnly")) windows.add(new android.view.accessibility.AccessibilityWindowInfo());
+        if (Boolean.getBoolean("withOverlay") && !(Boolean.getBoolean("removeOverlay") && windowReads > 1)) {
+          windows.add(new android.view.accessibility.AccessibilityWindowInfo(2, true));
+        }
+        return windows;
+      }
     }`,
   "android/view/accessibility/AccessibilityWindowInfo.java": `
     package android.view.accessibility;
     public class AccessibilityWindowInfo {
       public static final int TYPE_APPLICATION=1;
+      final int id;
+      final boolean overlay;
+      public AccessibilityWindowInfo() { this(Integer.getInteger("windowId", 1), false); }
+      public AccessibilityWindowInfo(int id, boolean overlay) { this.id=id; this.overlay=overlay; }
       public int getDisplayId() { return Integer.getInteger("display", 0); }
-      public int getType() { return Integer.getInteger("windowType", 1); }
-      public boolean isActive() { return !Boolean.getBoolean("inactive"); }
-      public boolean isFocused() { return !Boolean.getBoolean("windowUnfocused"); }
+      public int getId() { return id; }
+      public int getLayer() { return overlay ? 1 : 0; }
+      public void getBoundsInScreen(android.graphics.Rect b) {
+        b.left=0; b.top=0; b.right=80; b.bottom=160;
+      }
+      public int getType() { return Integer.getInteger(overlay ? "overlayType" : "windowType", 1); }
+      public boolean isActive() { return !overlay && !Boolean.getBoolean("inactive"); }
+      public boolean isFocused() { return !overlay && !Boolean.getBoolean("windowUnfocused"); }
+      public AccessibilityNodeInfo getRoot() {
+        if (Boolean.getBoolean("noRoot") || (overlay && Boolean.getBoolean("overlayNoRoot"))) return null;
+        if (!overlay) return new AccessibilityNodeInfo(false);
+        return new AccessibilityNodeInfo(false) {
+          public int getWindowId() { return id; }
+          public int getChildCount() { return 1; }
+          public CharSequence getPackageName() { return "example.recorder"; }
+          public AccessibilityNodeInfo getChild(int index) {
+            return new AccessibilityNodeInfo(true) {
+              public int getWindowId() { return id; }
+              public CharSequence getPackageName() { return "example.recorder"; }
+              public CharSequence getClassName() { return "android.widget.ImageButton"; }
+              public String getViewIdResourceName() { return "example.recorder:id/stop"; }
+              public boolean isEditable() { return false; }
+              public boolean isFocused() { return false; }
+              public boolean isClickable() { return false; }
+            };
+          }
+        };
+      }
       public void recycle() {}
     }`,
   "android/view/accessibility/AccessibilityNodeInfo.java": `
@@ -310,6 +352,29 @@ test("prepared helper observations preserve exact Unicode, whitespace, XML escap
     assert.equal(atLimit.status, 0, atLimit.stderr);
     assert.match(atLimit.stdout, /^<hierarchy/);
   }
+});
+
+test("multi-window helper observations include non-focused buttons without relaxing text-entry window checks", () => {
+  const result = run(["--dump-windows", "0"], {
+    withOverlay: true, previous: base64("中文 😀"), forbidWrite: true,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /^<displays><display id="0">/);
+  assert.match(result.stdout, /<window id="2"[^>]+active="false" focused="false">/);
+  assert.match(result.stdout, /package="example.recorder"/);
+  assert.match(result.stdout, /resource-id="example.recorder:id\/stop"/);
+  assert.match(result.stdout, /text="中文 😀"/);
+  assert.match(result.stdout, /window-identity="abc:u0"/);
+  assert.doesNotMatch(result.stderr, /WRITE /);
+  const rootless = run(["--dump-windows", "0"], { withOverlay: true, overlayNoRoot: true, forbidWrite: true });
+  assert.match(rootless.stdout, /<window id="2"[^>]+><\/window>/);
+  const system = run(["--dump-windows", "0"], { withOverlay: true, overlayOnly: true, overlayType: 3, forbidRead: false, forbidWrite: true });
+  assert.match(system.stdout, /type="TYPE_SYSTEM"/);
+  assert.doesNotMatch(system.stdout, /window-identity=/);
+  expectFailure(run(["--dump-windows", "0"], { withOverlay: true, removeOverlay: true, forbidWrite: true }), "WINDOW_CHANGED");
+  expectFailure(run(["--dump-windows", "0"], { noWindows: true, forbidWrite: true }), "WINDOW_MISSING");
+  const cold = run(["--dump-windows", "0"], { windowsUnavailableReads: 2, forbidWrite: true });
+  assert.match(cold.stdout, /^<displays>/);
 });
 
 test("focused fields refresh before observation and carry a fingerprint of raw text rather than lossy XML", () => {

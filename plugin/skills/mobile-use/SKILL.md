@@ -19,13 +19,13 @@ Android APK installation and app management are available after device selection
 | --- | --- |
 | App management | `mobile_app_management`: `action.kind` is `list`, `foreground`, `launch`, `terminate`, `install`, or `uninstall`. |
 | Screen recording | `mobile_screen_recording`: `action.kind` is `capabilities`, `start`, `status`, or `stop`. |
-| Taps | `mobile_tap`: `action.kind` is `tap`, `double_tap`, or explicit helper `prepare`. |
+| Taps | `mobile_tap`: `action.kind` is `tap`, `long_press`, `double_tap`, or explicit double-tap helper `prepare`. |
 | Swipes | `mobile_swipe`: `from`, `to`, optional `durationMs`. |
 | Back/Home/Enter | `mobile_press_key`: `key` is `BACK`, `HOME`, or `ENTER`. |
 | Input text | `mobile_input_text`: `action.kind` is `type_text` or explicit helper `prepare`. |
 | Device setup and observation | `mobile_doctor`, `mobile_start_adb_server`, `mobile_list_devices`, `mobile_select_device`, `mobile_wake`, `mobile_observe`. |
 
-All selected-device tools require `targetToken`. Tap/double-tap and text entry
+All selected-device tools require `targetToken`. Tap/long-press/double-tap and text entry
 require `action.observationId`; swipe and key input require top-level
 `observationId`. Helper `prepare` operations require no observation and never
 perform the subsequent tap/text action. Observe again after preparation.
@@ -219,6 +219,11 @@ pause the blocked action when genuine authorization is missing.
    foreground-app metadata is also read to guard Unicode input against app/user changes.
    inspect the exposed UI text, labels, resource IDs, and element references.
    The default is true, retaining image-plus-hierarchy observation.
+   Inspect `hierarchyScope` and `windows`: interactive-window capture includes
+   primary-display floating controls even when their window is not focused.
+   An active-only OEM response or an unavailable window root is reported explicitly.
+   Window IDs only associate nodes with windows within that observation; Android
+   can reassign them between captures. Do not treat them as durable identities.
    Hierarchy and image capture are not atomic. Display rotation is
    verified independently of the hierarchy; missing hierarchy alone does not
    imply rotation changed. `DISPLAY_STATE_UNAVAILABLE` means normal input is
@@ -238,7 +243,15 @@ pause the blocked action when genuine authorization is missing.
    Every input tool preserves the observation's screenshot setting during
    revalidation and in its returned observation. Hierarchy-only actions never
    capture screenshots; coordinate taps and swipes fail with `CAPTURE_UNAVAILABLE`.
-   Use enabled clickable `elementRef` targets instead.
+   Use enabled clickable `elementRef` targets instead. An exposed
+   `pointerTarget: true` native Button/ImageButton is also eligible for an
+   explicit tap, long_press or double_tap,
+   even when its native `clickable` flag is false. Its package, resource ID,
+   bounds, owning-window context and foreground app/user must match again;
+   changed, ambiguous or potentially covered controls are rejected.
+   This is pointer input, not an accessibility ACTION_CLICK.
+   Never infer eligibility for other non-clickable nodes. Double-tap retains its
+   helper-preparation requirement and the safety requirements for both taps.
 7. Inspect the returned new observation and verify the user's intended state.
    `dispatched` does not mean the task succeeded. Repeat observe-act-verify, not
    blind action batches.
@@ -249,9 +262,27 @@ usable content; report this limitation rather than guessing or silently
 enabling screenshots. UI text can still contain sensitive information and is
 subject to the same consent and no-saving rules as images.
 
+For text entry in interactive-window observations, use only the foreground
+application's active, focused window. An editor in an inactive floating window
+may retain node focus; that does not authorize typing. Both ASCII and Unicode
+require an unchanged editor, matching package and unique owning-window context,
+and matching foreground app/activity/user.
+
 UI actions are limited to explicit waking/unsecured-keyguard dismissal, safe
-navigation, single taps, double-taps, one bounded swipe, guarded text entry,
+navigation, single taps, explicit long presses, double-taps, one bounded swipe, guarded text entry,
 Back/Home/Enter, and launching a specifically requested installed app.
+Use `mobile_tap` with `action.kind: "long_press"`, `action.observationId`, and
+`action.target: { elementRef }` or screenshot `{ x, y }` for one stationary
+native primary-display press. It uses the system long-press timeout and sends
+DOWN/UP without MOVE events; no helper or configurable duration is provided.
+It retains tap's target/window/app guards, screenshot mode and coordinate
+pixel checks. OEM recognition is not guaranteed, and a long press can open a
+context menu. Never silently substitute it for tap or replay uncertain input.
+An exposed recorder Stop button does not establish that either gesture stops
+recording: verify the resulting recorder state, not just dispatch.
+A tap may only reactivate a dimmed toolbar; an opacity change alone is not proof
+of Stop. Do not infer that a long press or double-tap is required.
+
 Before double-tap, obtain specific approval or reuse matching scoped session
 consent to upload and run the bundled gesture helper on the selected device,
 then call `mobile_tap` with `action: { kind: "prepare" }`.

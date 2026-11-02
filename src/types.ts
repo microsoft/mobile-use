@@ -11,9 +11,23 @@ export type ScreenElement = {
   text: string;
   textHash?: string;
   windowIdentity?: string;
+  windowId?: number;
+  packageName?: string;
+  pointerTarget?: true;
   resourceId: string | null;
   editable: boolean;
 } & Record<"enabled" | "clickable" | "focused" | "password", boolean | null>;
+
+export interface ScreenWindow {
+  id: number;
+  displayId: number;
+  bounds: Rect;
+  layer: number;
+  type: string;
+  active: boolean;
+  focused: boolean;
+  hierarchy: "ok" | "unavailable";
+}
 
 export type TransportKind = "usb" | "network" | "paired-wireless" | "emulator" | "unknown";
 
@@ -129,6 +143,8 @@ export interface Observation {
   displayState: ReadStatus;
   screenshot: ReadStatus | { status: "skipped"; error: null };
   hierarchy: ReadStatus;
+  hierarchyScope: "active-window" | "interactive-windows" | "unavailable";
+  windows: ScreenWindow[];
   elements: ScreenElement[];
   warnings: string[];
 }
@@ -171,6 +187,11 @@ export const doubleTapActionSchema = z.strictObject({
   delayMs: z.number().int().min(0).max(250).default(50),
 });
 
+export const longPressActionSchema = z.strictObject({
+  kind: z.literal("long_press"),
+  target: tapTargetSchema,
+});
+
 export const swipeActionSchema = z.strictObject({
   kind: z.literal("swipe"),
   from: pointSchema,
@@ -194,7 +215,7 @@ export const launchAppActionSchema = z.strictObject({
 });
 
 export const actionSchema = z.discriminatedUnion("kind", [
-  tapActionSchema, doubleTapActionSchema, swipeActionSchema,
+  tapActionSchema, doubleTapActionSchema, longPressActionSchema, swipeActionSchema,
   textActionSchema, keyActionSchema, launchAppActionSchema,
 ]);
 

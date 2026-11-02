@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { parseAdbVersion, parseDeviceList, startTransportMonitor } from "./adb.js";
 import type { AdbConnection, MonitorFactory, TransportMonitor } from "./adb.js";
-import { AndroidBackend, validateText } from "./android.js";
+import { AndroidBackend, isPointerButton, validateText } from "./android.js";
 import type { Hierarchy, Screenshot } from "./android.js";
 import { checkCancelled, MobileUseError, publicError } from "./errors.js";
 import { compareScreens, interactionBand, MAX_CHANGED_SCREEN_FRACTION } from "./screen-guard.js";
@@ -9,7 +9,7 @@ import { actionSchema, recordingActionSchema } from "./types.js";
 import { isAdbText } from "./text-input.js";
 import type {
   ActionResult, AdbServerResult, AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, MobileAction, Observation,
-  ObservedScreen, PreparedGestures, PreparedTextInput, ReadStatus, RecordingAction, RecordingResult, ScreenElement, SelectedTarget, WakeResult,
+  ObservedScreen, PreparedGestures, PreparedTextInput, ReadStatus, RecordingAction, RecordingResult, ScreenElement, ScreenWindow, SelectedTarget, WakeResult,
 } from "./types.js";
 
 const OBSERVATION_MAX_AGE_MS = 30_000;
@@ -42,7 +42,12 @@ function sameEndpoint(inventory: DeviceEndpoint[], expected: DeviceEndpoint): bo
 }
 
 function elementSignature(element: ScreenElement): string {
-  const { ref: _ref, ...properties } = element;
+  const { ref: _ref, windowId: _windowId, ...properties } = element;
+  return JSON.stringify(properties);
+}
+
+function windowSignature(window: ScreenWindow): string {
+  const { id: _id, ...properties } = window;
   return JSON.stringify(properties);
 }
 
@@ -264,18 +269,22 @@ export class MobileUseService {
     }
     if (verifiedDisplay && ((screenshot &&
       (screenshot.width !== verifiedDisplay.width || screenshot.height !== verifiedDisplay.height)) ||
-      (hierarchy && hierarchy.rotation !== verifiedDisplay.rotation))) {
+      (hierarchy && hierarchy.rotation !== null && hierarchy.rotation !== verifiedDisplay.rotation))) {
       throw new MobileUseError("STALE_OBSERVATION", "Display geometry changed or is inconsistent during observation.", "Observe again on the primary display.", true);
     }
     const dimensions = screenshot ? { width: screenshot.width, height: screenshot.height } : verifiedDisplay;
     const display = dimensions ? { width: dimensions.width, height: dimensions.height, rotation: verifiedDisplay?.rotation ?? null } : null;
     const warnings: string[] = [];
     if (!foregroundApp) {
-      warnings.push(`Foreground activity is unavailable (${foregroundStatus.error?.code ?? "no resumed activity"}); Unicode input is blocked and coordinate input requires identical visible pixels.`);
+      warnings.push(`Foreground activity is unavailable (${foregroundStatus.error?.code ?? "no resumed activity"}); Unicode and windowed element/text input are blocked; coordinate input requires identical visible pixels.`);
     }
     if (!includeScreenshot) warnings.push("Screenshot capture skipped by request; no screenshot-coordinate actions are permitted.");
     else if (!screenshot) warnings.push("Image unavailable; no screenshot-coordinate actions are permitted.");
     if (!hierarchy) warnings.push("Hierarchy unavailable; no semantic element or focused-field claims can be made.");
+    if (hierarchy?.scope === "active-window") warnings.push("Only the active window was exposed; floating-window controls may be unavailable.");
+    if (hierarchy?.windows.some((window) => window.hierarchy === "unavailable")) {
+      warnings.push("Some interactive windows have no accessible root; their controls are unavailable.");
+    }
     if (hierarchy && !hierarchy.elements.length) warnings.push("No semantic elements were exposed; content may be custom-drawn or unavailable.");
     if (!verifiedDisplay) warnings.push("Primary display state could not be verified; input is blocked until a fresh observation verifies it.");
     if (!display) warnings.push("Display geometry is unavailable; coordinate-based input is blocked.");
@@ -294,7 +303,12 @@ export class MobileUseService {
       displayState: displayStatus,
       screenshot: screenshotStatus,
       hierarchy: hierarchyStatus,
-      elements: visible.map((element, index) => ({ ...element, ref: `e${index + 1}` })),
+      hierarchyScope: hierarchy?.scope ?? "unavailable",
+      windows: hierarchy?.windows ?? [],
+      elements: visible.map((element, index) => ({
+        ...element, ...(isPointerButton(element) && element.clickable !== true ? { pointerTarget: true as const } : {}),
+        ref: `e${index + 1}`,
+      })),
       warnings,
     };
     const image = screenshot?.image ?? null;
@@ -427,6 +441,28 @@ export class MobileUseService {
       throw new MobileUseError("STALE_OBSERVATION", "Display geometry or rotation changed.", "Inspect a new observation before input.");
     }
     const display = current.display;
+    const sameObservedElement = (before: ScreenElement, after: ScreenElement): boolean => {
+      if (elementSignature(before) !== elementSignature(after)) return false;
+      if (before.windowId === undefined) return after.windowId === undefined;
+      const oldWindow = old.windows.find((window) => window.id === before.windowId);
+      const newWindow = current.windows.find((window) => window.id === after.windowId);
+      return !!oldWindow && !!newWindow && windowSignature(oldWindow) === windowSignature(newWindow);
+    };
+    const verifyWindowContext = (before: ScreenElement, after: ScreenElement): ScreenWindow | undefined => {
+      if (before.windowId === undefined && after.windowId === undefined) return undefined;
+      const oldWindow = old.windows.find((window) => window.id === before.windowId);
+      const newWindow = current.windows.find((window) => window.id === after.windowId);
+      const app = previous.foregroundApp;
+      const liveApp = live.foregroundApp;
+      if (!oldWindow || !newWindow || windowSignature(oldWindow) !== windowSignature(newWindow) ||
+        old.windows.filter((window) => windowSignature(window) === windowSignature(oldWindow)).length !== 1 ||
+        current.windows.filter((window) => windowSignature(window) === windowSignature(newWindow)).length !== 1 ||
+        !app || !liveApp || app.packageName !== liveApp.packageName ||
+        app.activityName !== liveApp.activityName || app.userId !== liveApp.userId) {
+        throw new MobileUseError("ELEMENT_CHANGED", "The observed element's window or app context changed before input.", "Observe again and select one unchanged control in its owning window.");
+      }
+      return newWindow;
+    };
     const unchangedCoordinateContext = (from: { x: number; y: number }, to = from): void => {
       requirePoint(from, display);
       requirePoint(to, display);
@@ -456,6 +492,12 @@ export class MobileUseService {
         if (signatures(old) !== signatures(current)) {
           throw new MobileUseError("STALE_OBSERVATION", "UI elements in the coordinate action's interaction region changed before input.", "Inspect a new observation and prefer an enabled clickable elementRef.");
         }
+        const windowSignatures = (observation: Observation): string => JSON.stringify(observation.windows
+          .filter(({ bounds }) => bounds.y < region.y + region.height && bounds.y + bounds.height > region.y)
+          .map(windowSignature).sort());
+        if (windowSignatures(old) !== windowSignatures(current)) {
+          throw new MobileUseError("STALE_OBSERVATION", "Interactive windows in the coordinate action's interaction region changed before input.", "Inspect a new observation before input. No input was sent.");
+        }
       }
       if (before.equals(after)) return;
       const difference = compareScreens(before, after, region);
@@ -471,26 +513,38 @@ export class MobileUseService {
     };
     switch (action.kind) {
       case "tap":
+      case "long_press":
       case "double_tap": {
         let point: { x: number; y: number };
         if ("elementRef" in action.target) {
           const ref = action.target.elementRef;
           const oldElement = old.elements.find((element) => element.ref === ref);
-          const matches = oldElement ? current.elements.filter((element) => elementSignature(element) === elementSignature(oldElement)) : [];
+          const matches = oldElement ? current.elements.filter((element) => sameObservedElement(oldElement, element)) : [];
           const element = matches.length === 1 ? matches[0] : undefined;
-          if (!element || element.enabled !== true || element.clickable !== true) {
-            throw new MobileUseError("ELEMENT_CHANGED", "The referenced actionable element is missing, changed, disabled, or ambiguous.", "Inspect a new hierarchy and choose one enabled clickable element.");
+          if (!oldElement || !element || element.enabled !== true || (element.clickable !== true && !isPointerButton(element))) {
+            throw new MobileUseError("ELEMENT_CHANGED", "The referenced actionable element is missing, changed, disabled, ambiguous, or not an eligible pointer button.", "Inspect a new hierarchy and choose one enabled clickable element or pointerTarget button. Double-tap still requires the prepared gesture helper.");
           }
           point = {
             x: Math.floor(element.bounds.x + element.bounds.width / 2),
             y: Math.floor(element.bounds.y + element.bounds.height / 2),
           };
+          const window = verifyWindowContext(oldElement, element);
+          if (window) {
+            const containsPoint = (bounds: typeof element.bounds): boolean =>
+              point.x >= bounds.x && point.x < bounds.x + bounds.width &&
+              point.y >= bounds.y && point.y < bounds.y + bounds.height;
+            if (!containsPoint(window.bounds) || current.windows.some((candidate) =>
+              candidate.id !== window.id && candidate.layer >= window.layer && containsPoint(candidate.bounds))) {
+              throw new MobileUseError("ELEMENT_CHANGED", "Another interactive window may cover the referenced control.", "Observe again and use an uncovered control in the topmost matching window.");
+            }
+          }
         } else {
           unchangedCoordinateContext(action.target);
           point = action.target;
         }
         requirePoint(point, current.display);
         if (action.kind === "double_tap") return state.backend.doubleTap(point.x, point.y, action.delayMs, signal);
+        else if (action.kind === "long_press") await state.backend.longPress(point.x, point.y, signal);
         else await state.backend.tap(point.x, point.y, signal);
         break;
       }
@@ -499,11 +553,21 @@ export class MobileUseService {
         await state.backend.swipe(action.from, action.to, action.durationMs, signal);
         break;
       case "type_text": {
-        const fields = current.elements.filter((element) =>
-          element.editable && element.focused === true && element.enabled === true && element.password === false);
+        const fields = current.elements.filter((element) => {
+          if (!element.editable || element.focused !== true || element.enabled !== true || element.password !== false) return false;
+          if (element.windowId === undefined) return true;
+          const owner = current.windows.find((window) => window.id === element.windowId);
+          return owner?.type === "TYPE_APPLICATION" && owner.active && owner.focused;
+        });
         const field = fields.length === 1 ? fields[0] : undefined;
-        if (!field || !old.elements.some((element) => elementSignature(element) === elementSignature(field))) {
+        const matches = field ? old.elements.filter((element) => sameObservedElement(element, field)) : [];
+        const before = matches.length === 1 ? matches[0] : undefined;
+        if (!field || !before) {
           throw new MobileUseError("ELEMENT_CHANGED", "A unique unchanged focused non-password native text field is required.", "Observe, focus an approved non-sensitive EditText, and observe again.");
+        }
+        const owner = verifyWindowContext(before, field);
+        if (owner && (!field.packageName || field.packageName !== live.foregroundApp?.packageName)) {
+          throw new MobileUseError("ELEMENT_CHANGED", "The focused editor does not belong to the observed foreground application.", "Focus an approved non-sensitive editor in the foreground app and observe again.");
         }
         let foreground: ForegroundApp | undefined;
         if (!isAdbText(action.text)) {

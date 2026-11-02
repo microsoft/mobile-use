@@ -114,6 +114,19 @@ export function hierarchy(nodes = node(), rotation = 0): string {
   return `<?xml version="1.0"?><hierarchy rotation="${rotation}">${nodes}</hierarchy>\nUI hierarchy dumped to: /dev/tty\n`;
 }
 
+export function windowXml(nodes: string | null = node(), attributes: Record<string, string> = {}, children = "", rotation = 0): string {
+  const values = {
+    id: "1", type: "TYPE_APPLICATION", layer: "0", bounds: "[0,0][80,160]",
+    active: "true", focused: "true", ...attributes,
+  };
+  return `<window ${Object.entries(values).map(([key, value]) => `${key}="${xmlAttribute(value)}"`).join(" ")}>` +
+    children + (nodes === null ? "" : `<hierarchy rotation="${rotation}">${nodes}</hierarchy>`) + "</window>";
+}
+
+export function windowsXml(windows = windowXml(), otherDisplays = ""): string {
+  return `<?xml version="1.0"?><displays><display id="0">${windows}</display>${otherDisplays}</displays>`;
+}
+
 export function displayDiagnostics(rotation = 0, width = 80, height = 160): string {
   return "WINDOW MANAGER DISPLAY CONTENTS (dumpsys window displays)\n" +
     "  Display: mDisplayId=0 stacks=1\n" +
@@ -278,7 +291,7 @@ export class FakeAdb implements AdbConnection {
     }
     if (args[3]?.startsWith("CLASSPATH=") && args[4] === "app_process") {
       if (args[6] === "dev.mobileuse.text.TextMain") {
-        if (args[7] === "--dump") return Buffer.from(this.xml.replace(/<node ([^>]+)>/g, (node: string, attributes: string) => {
+        if (args[7] === "--dump-windows") return Buffer.from(this.xml.replace(/<node ([^>]+)>/g, (node: string, attributes: string) => {
           if (!attributes.includes('class="android.widget.EditText"')) return node;
           if (!attributes.includes('window-identity="')) node = node.replace(">", ` window-identity="abc:u${this.userId}">`);
           if (attributes.includes('password="true"') || attributes.includes('text-sha256="')) return node;
@@ -319,7 +332,7 @@ export class FakeAdb implements AdbConnection {
     }
     if (command.startsWith("shell getprop ")) return Buffer.from(this.properties[args[4] ?? ""] ?? "");
     if (command === "exec-out screencap -p") return this.image;
-    if (command === "shell -tt uiautomator dump /dev/tty") return Buffer.from(this.xml);
+    if (command === "shell -tt uiautomator dump --windows /dev/tty") return Buffer.from(this.xml);
     if (command === "shell dumpsys window displays") return Buffer.from(this.display);
     if (command === "shell dumpsys window policy") {
       return Buffer.from(keyguardPolicy({

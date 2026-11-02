@@ -8,11 +8,13 @@ import { doubleTap, prepareGestures } from "./gestures.js";
 import { appendUnicodeText, isAdbText, prepareTextInput, unicodeHierarchy, validateText } from "./text-input.js";
 import { ScreenRecorder } from "./recording.js";
 export { validateText } from "./text-input.js";
-import type { AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, PreparedGestures, PreparedTextInput, RecordingAction, RecordingResult, Rect, ScreenElement, WakeResult } from "./types.js";
+import type { AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, PreparedGestures, PreparedTextInput, RecordingAction, RecordingResult, Rect, ScreenElement, ScreenWindow, WakeResult } from "./types.js";
 
 export interface Hierarchy {
-  rotation: number;
+  rotation: number | null;
   elements: Omit<ScreenElement, "ref">[];
+  windows: ScreenWindow[];
+  scope: "active-window" | "interactive-windows";
 }
 
 export interface Screenshot {
@@ -25,6 +27,12 @@ export interface DisplayState {
   width: number;
   height: number;
   rotation: number;
+}
+
+export function isPointerButton(element: Omit<ScreenElement, "ref">): boolean {
+  return element.enabled === true && element.windowId !== undefined &&
+    !!element.packageName && !!element.resourceId &&
+    ["android.widget.Button", "android.widget.ImageButton"].includes(element.className);
 }
 
 function diagnosticSection(lines: string[], heading: string, unavailable: () => never): string[] {
@@ -311,6 +319,7 @@ function screenNode(attributes: Record<string, string>): Omit<ScreenElement, "re
     bounds, className, text, label, password,
     ...(textHash !== undefined && password === false ? { textHash } : {}),
     ...(windowIdentity !== undefined ? { windowIdentity } : {}),
+    ...(attributes.package ? { packageName: attributes.package } : {}),
     resourceId: attributes["resource-id"] || null,
     editable: className.endsWith("EditText"),
     enabled: readFlag(attributes, "enabled"),
@@ -323,11 +332,13 @@ function screenNode(attributes: Record<string, string>): Omit<ScreenElement, "re
 
 export function parseHierarchy(output: string): Hierarchy {
   if (Buffer.byteLength(output) > 2 * 1024 * 1024 || /<!DOCTYPE|<!ENTITY/i.test(output)) hierarchyError();
-  const opening = output.indexOf("<hierarchy");
-  if (opening < 0) hierarchyError();
-  const closing = output.lastIndexOf("</hierarchy>");
-  const emptyRoot = /^<hierarchy\b[^>]*\/>/.exec(output.slice(opening));
-  const document = emptyRoot?.[0] ?? (closing >= opening ? output.slice(opening, closing + 12) : "");
+  const opening = /<(hierarchy|displays)\b/.exec(output);
+  if (!opening) hierarchyError();
+  const tag = opening[1];
+  const closingTag = `</${tag}>`;
+  const closing = output.lastIndexOf(closingTag);
+  const emptyRoot = /^<(?:hierarchy|displays)\b[^>]*\/>/.exec(output.slice(opening.index));
+  const document = emptyRoot?.[0] ?? (closing >= opening.index ? output.slice(opening.index, closing + closingTag.length) : "");
   if (!document || XMLValidator.validate(document) !== true) hierarchyError();
   const tree: unknown = new XMLParser({
     preserveOrder: true,
@@ -342,33 +353,95 @@ export function parseHierarchy(output: string): Hierarchy {
   }).parse(document);
   if (!Array.isArray(tree) || tree.length !== 1) hierarchyError();
   const root: unknown = tree[0];
-  if (!isRecord(root) || !Array.isArray(root.hierarchy)) hierarchyError();
-  const rotation = readAttributes(root[":@"]).rotation;
-  if (rotation === undefined || !["0", "1", "2", "3"].includes(rotation)) hierarchyError();
-
-  const pending: { entry: unknown; depth: number }[] = [];
-  const enqueue = (children: unknown[], depth: number): void => {
-    for (let index = children.length - 1; index >= 0; index--) {
-      pending.push({ entry: children[index], depth });
-    }
-  };
-  enqueue(root.hierarchy, 1);
+  if (!isRecord(root)) hierarchyError();
   const elements: Hierarchy["elements"] = [];
+  const windows: ScreenWindow[] = [];
+  let rotation: number | null = null;
   let traversed = 0;
   let bytes = 0;
+  const collectHierarchy = (entry: Record<string, unknown>, windowId?: number): void => {
+    if (!Array.isArray(entry.hierarchy)) hierarchyError();
+    const value = readAttributes(entry[":@"]).rotation;
+    if (value === undefined || !["0", "1", "2", "3"].includes(value) ||
+      (rotation !== null && rotation !== Number(value))) hierarchyError();
+    rotation = Number(value);
+    const pending = entry.hierarchy.map((child: unknown) => ({ entry: child, depth: 1 })).reverse();
+    while (pending.length) {
+      const frame = pending.pop();
+      if (!frame || !isRecord(frame.entry) || !Array.isArray(frame.entry.node)) hierarchyError();
+      if (frame.depth > 64 || ++traversed > 2000) hierarchyError();
+      const node = screenNode(readAttributes(frame.entry[":@"]));
+      if (node) {
+        const element = { ...node, ...(windowId !== undefined ? { windowId } : {}) };
+        bytes += Buffer.byteLength(JSON.stringify(element));
+        if (elements.length === 500 || bytes > 512 * 1024) hierarchyError();
+        elements.push(element);
+      }
+      for (let index = frame.entry.node.length - 1; index >= 0; index--) {
+        pending.push({ entry: frame.entry.node[index], depth: frame.depth + 1 });
+      }
+    }
+  };
+  if (tag === "hierarchy") {
+    collectHierarchy(root);
+    return { rotation, elements, windows, scope: "active-window" };
+  }
+  if (!Array.isArray(root.displays) || root.displays.length > 32) hierarchyError();
+  let primary: unknown[] | undefined;
+  const displayIds = new Set<number>();
+  const integer = (value: string | undefined): number => {
+    if (value === undefined || !/^(?:0|[1-9]\d*)$/.test(value) || Number(value) > 0x7fffffff) hierarchyError();
+    return Number(value);
+  };
+  for (const display of root.displays) {
+    if (!isRecord(display) || !Array.isArray(display.display)) hierarchyError();
+    const id = integer(readAttributes(display[":@"]).id);
+    if (displayIds.has(id)) hierarchyError();
+    displayIds.add(id);
+    if (id === 0) primary = display.display;
+  }
+  if (!primary) hierarchyError();
+  const pending = primary.map((entry) => ({ entry, depth: 1 })).reverse();
+  const seen = new Map<number, string>();
+  let windowCount = 0;
   while (pending.length) {
     const frame = pending.pop();
-    if (!frame || !isRecord(frame.entry) || !Array.isArray(frame.entry.node)) hierarchyError();
-    if (frame.depth > 64 || ++traversed > 2000) hierarchyError();
-    const element = screenNode(readAttributes(frame.entry[":@"]));
-    if (element) {
-      bytes += Buffer.byteLength(JSON.stringify(element));
-      if (elements.length === 500 || bytes > 512 * 1024) hierarchyError();
-      elements.push(element);
+    if (!frame || !isRecord(frame.entry) || !Array.isArray(frame.entry.window) ||
+      frame.depth > 16 || ++windowCount > 128) hierarchyError();
+    const attributes = readAttributes(frame.entry[":@"]);
+    const children: Record<string, unknown>[] = [];
+    let hierarchy: Record<string, unknown> | undefined;
+    for (const child of frame.entry.window) {
+      if (!isRecord(child)) hierarchyError();
+      if (Array.isArray(child.window)) children.push(child);
+      else if (Array.isArray(child.hierarchy) && !hierarchy) hierarchy = child;
+      else hierarchyError();
     }
-    enqueue(frame.entry.node, frame.depth + 1);
+    const active = readFlag(attributes, "active");
+    const focused = readFlag(attributes, "focused");
+    if (active === null || focused === null || !attributes.bounds ||
+      !attributes.type || !/^TYPE_[A-Z0-9_]{1,48}$/.test(attributes.type)) hierarchyError();
+    const bounds = readBounds(attributes.bounds);
+    if (bounds.width < 0 || bounds.height < 0) hierarchyError();
+    const window: ScreenWindow = {
+      id: integer(attributes.id), displayId: 0, bounds,
+      layer: integer(attributes.layer), type: attributes.type, active, focused,
+      hierarchy: hierarchy ? "ok" : "unavailable",
+    };
+    const signature = JSON.stringify({ window, hierarchy });
+    const existing = seen.get(window.id);
+    if (existing !== undefined && existing !== signature) hierarchyError();
+    if (existing === undefined) {
+      seen.set(window.id, signature);
+      windows.push(window);
+      if (hierarchy) collectHierarchy(hierarchy, window.id);
+    }
+    for (let index = children.length - 1; index >= 0; index--) {
+      pending.push({ entry: children[index], depth: frame.depth + 1 });
+    }
   }
-  return { rotation: Number(rotation), elements };
+  windows.sort((a, b) => b.layer - a.layer || a.id - b.id);
+  return { rotation, elements, windows, scope: "interactive-windows" };
 }
 
 export class AndroidBackend {
@@ -471,7 +544,7 @@ export class AndroidBackend {
       return parseHierarchy(output.toString("utf8"));
     }
     // UI Automator opens /dev/tty as a file; raw exec-out has no controlling terminal.
-    const output = await this.command(["shell", "-tt", "uiautomator", "dump", "/dev/tty"], signal ? { signal } : {});
+    const output = await this.command(["shell", "-tt", "uiautomator", "dump", "--windows", "/dev/tty"], signal ? { signal } : {});
     return parseHierarchy(output.toString("utf8"));
   }
 
@@ -501,6 +574,20 @@ export class AndroidBackend {
 
   async tap(x: number, y: number, signal?: AbortSignal): Promise<void> {
     await this.input("tap", [x, y], signal);
+  }
+
+  async longPress(x: number, y: number, signal?: AbortSignal): Promise<void> {
+    // Zero movement duration retains the native long-press wait without sending MOVE events.
+    const output = await this.command([
+      "shell", "input", "touchscreen", "-d", "0", "draganddrop",
+      String(x), String(y), String(x), String(y), "0", "2>&1",
+    ], { mutating: true, ...(signal ? { signal } : {}) });
+    if (output.toString("utf8").trim()) {
+      throw new MobileUseError(
+        "ADB_FAILED", "Android's native long-press command returned diagnostics; delivery is uncertain.",
+        "Inspect the phone before further input. Do not replay automatically or bypass device input restrictions.", false, true,
+      );
+    }
   }
 
   async prepareGestures(signal?: AbortSignal): Promise<PreparedGestures> {
