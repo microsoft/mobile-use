@@ -85,17 +85,22 @@ if (setupScenario === "floating-editors" || setupScenario === "inactive-editor")
     return undefined;
   };
 }
-if (setupScenario === "coordinate-animation" || setupScenario === "coordinate-target-change") {
+if (["coordinate-animation", "coordinate-target-change", "video-metadata", "video-swipe"].includes(setupScenario)) {
   adb.xml = hierarchy(node({
     class: "android.widget.FrameLayout", text: "", clickable: "false",
     "resource-id": "example.poc:id/container", bounds: "[0,0][80,160]",
+  }));
+  if (setupScenario === "video-metadata") adb.xml = hierarchy(node({ bounds: "[32,112][48,128]" }));
+  if (setupScenario === "video-swipe") adb.xml = hierarchy(node({
+    class: "android.widget.ScrollView", text: "", clickable: "false", scrollable: "true", bounds: "[0,20][80,160]",
   }));
   let captures = 0;
   adb.handler = (call) => {
     if (!call.args.includes("screencap")) return undefined;
     const changed = ++captures > 1;
+    if (changed && setupScenario.startsWith("video-")) return pixelPng(80, 160, () => [240, 240, 240, 255]);
     const changedY = setupScenario === "coordinate-animation" ? 0 : 120;
-    return pixelPng(80, 160, (x, y) => changed && x === 0 && y === changedY
+    return pixelPng(80, 160, (x, y) => changed && x === 40 && y === changedY
       ? [0, 0, 0, 255] : [255, 255, 255, 255]);
   };
 }

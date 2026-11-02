@@ -2,24 +2,41 @@ import { decodePng } from "./android.js";
 import { MobileUseError } from "./errors.js";
 import type { Rect } from "./types.js";
 
-export const MAX_CHANGED_SCREEN_FRACTION = 0.2;
+export function containsPoint(bounds: Rect, point: { x: number; y: number }): boolean {
+  return point.x >= bounds.x && point.x < bounds.x + bounds.width &&
+    point.y >= bounds.y && point.y < bounds.y + bounds.height;
+}
 
-export function interactionBand(
+export function intersects(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.width && a.x + a.width > b.x &&
+    a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+export function interactionRegion(
   display: { width: number; height: number },
-  from: { x: number; y: number },
-  to = from,
+  bounds: Rect,
 ): Rect {
+  if (!Object.values(bounds).every(Number.isSafeInteger) || bounds.x < 0 || bounds.y < 0 ||
+    bounds.width < 1 || bounds.height < 1 ||
+    bounds.x + bounds.width > display.width || bounds.y + bounds.height > display.height) {
+    throw new MobileUseError("INVALID_INPUT", "Visual target bounds must fit the observed display.", "Supply the complete visible control or swipe surface bounds from a fresh screenshot.");
+  }
   const padding = Math.max(8, Math.ceil(Math.min(display.width, display.height) * 0.08));
-  const top = Math.max(0, Math.min(from.y, to.y) - padding);
-  const bottom = Math.min(display.height - 1, Math.max(from.y, to.y) + padding);
-  // Protect the whole row, including a control's label, not just its touch point.
-  return { x: 0, y: top, width: display.width, height: bottom - top + 1 };
+  const x = Math.max(0, bounds.x - padding);
+  const y = Math.max(0, bounds.y - padding);
+  return {
+    x, y,
+    width: Math.min(display.width, bounds.x + bounds.width + padding) - x,
+    height: Math.min(display.height, bounds.y + bounds.height + padding) - y,
+  };
 }
 
 export function compareScreens(previous: Buffer, current: Buffer, region: Rect): {
   changedPixels: number;
   regionChangedPixels: number;
   totalPixels: number;
+  changedBounds: Rect | null;
+  regionChangedBounds: Rect | null;
 } {
   const before = decodePng(previous);
   const after = decodePng(current);
@@ -28,6 +45,14 @@ export function compareScreens(previous: Buffer, current: Buffer, region: Rect):
   }
   let changedPixels = 0;
   let regionChangedPixels = 0;
+  const changedBounds = { left: before.width, top: before.height, right: -1, bottom: -1 };
+  const regionBounds = { ...changedBounds };
+  const extend = (bounds: typeof changedBounds, x: number, y: number): void => {
+    bounds.left = Math.min(bounds.left, x);
+    bounds.top = Math.min(bounds.top, y);
+    bounds.right = Math.max(bounds.right, x);
+    bounds.bottom = Math.max(bounds.bottom, y);
+  };
   for (let y = 0; y < before.height; y++) {
     for (let x = 0; x < before.width; x++) {
       const pixel = y * before.width + x;
@@ -42,10 +67,18 @@ export function compareScreens(previous: Buffer, current: Buffer, region: Rect):
       }
       if (!changed) continue;
       changedPixels++;
+      extend(changedBounds, x, y);
       if (x >= region.x && x < region.x + region.width && y >= region.y && y < region.y + region.height) {
         regionChangedPixels++;
+        extend(regionBounds, x, y);
       }
     }
   }
-  return { changedPixels, regionChangedPixels, totalPixels: before.width * before.height };
+  const rect = (bounds: typeof changedBounds): Rect | null => bounds.right < 0 ? null : ({
+    x: bounds.left, y: bounds.top, width: bounds.right - bounds.left + 1, height: bounds.bottom - bounds.top + 1,
+  });
+  return {
+    changedPixels, regionChangedPixels, totalPixels: before.width * before.height,
+    changedBounds: rect(changedBounds), regionChangedBounds: rect(regionBounds),
+  };
 }

@@ -225,6 +225,8 @@ test("hierarchy-only observations and chained actions never invoke screen captur
   ]) {
     assert.equal(screen.image, null);
     assert.deepEqual(screen.observation.screenshot, { status: "skipped", error: null });
+    assert.equal(screen.observation.captureTiming.screenshotDurationMs, null);
+    assert.ok(screen.observation.captureTiming.hierarchyDurationMs >= 0);
     const result = await service.act(selected.targetToken, screen.observation.observationId, action);
     assert.equal(result.dispatchStatus, "dispatched");
     assert.equal(result.verificationStatus, "requires-observation-review");
@@ -490,24 +492,27 @@ test("the exact 30-second age boundary is enforced, including clock rollback", a
   assert.equal(adb.inputs.length, 1);
 });
 
-test("coordinate gestures reject changes at their target and require exact in-bounds endpoints", async (t) => {
+test("metadata-backed coordinate gestures ignore visual animation and require exact in-bounds endpoints", async (t) => {
   const { adb, service } = harness(t);
   const selected = await service.selectDevice(USB);
+  await service.prepareGestures(selected.targetToken);
   for (const kind of ["tap", "long_press", "double_tap"] as const) {
     adb.image = png();
     const screen = await service.observe(selected.targetToken);
     adb.image = png(80, 160, 9);
-    await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind, target: { x: 10, y: 10 } }), hasCode("STALE_OBSERVATION"));
+    assert.equal((await service.act(selected.targetToken, screen.observation.observationId, { kind, target: { x: 10, y: 10 } })).dispatchStatus, "dispatched");
     const outside = await service.observe(selected.targetToken);
     await assert.rejects(service.act(selected.targetToken, outside.observation.observationId, { kind, target: { x: 80, y: 159 } }), hasCode("INVALID_INPUT"));
   }
   const swipe = await service.observe(selected.targetToken);
-  await service.act(selected.targetToken, swipe.observation.observationId, { kind: "swipe", from: { x: 79, y: 159 }, to: { x: 0, y: 0 } });
-  assert.deepEqual(adb.inputs[0]?.args, ["-t", "7", "shell", "input", "swipe", "79", "159", "0", "0", "400"]);
+  await service.act(selected.targetToken, swipe.observation.observationId, {
+    kind: "swipe", from: { x: 79, y: 159 }, to: { x: 0, y: 0 }, bounds: { x: 0, y: 0, width: 80, height: 160 },
+  });
+  assert.deepEqual(adb.inputs.at(-1)?.args, ["-t", "7", "shell", "input", "swipe", "79", "159", "0", "0", "400"]);
 });
 
 for (const kind of ["tap", "long_press", "double_tap"] as const) {
-  test(`coordinate ${kind} on custom-drawn pages tolerates status-bar and ad changes outside the interaction band`, async (t) => {
+  test(`visual ${kind} on custom-drawn pages tolerates changes outside the control and margin`, async (t) => {
     const { adb, service } = harness(t);
     adb.display = displayDiagnostics(0, 720, 1600);
     adb.xml = hierarchy(node({
@@ -521,7 +526,7 @@ for (const kind of ["tap", "long_press", "double_tap"] as const) {
     adb.image = pixelPng(720, 1600, (_x, y) => y < 48 || (y >= 500 && y < 650)
       ? [80, 80, 80, 255] : [255, 255, 255, 255]);
     const result = await service.act(selected.targetToken, screen.observation.observationId, {
-      kind, target: { x: 630, y: 171 },
+      kind, target: { x: 630, y: 171, bounds: { x: 600, y: 160, width: 60, height: 24 } },
     });
     assert.equal(result.dispatchStatus, "dispatched");
     assert.equal(result.verificationStatus, "requires-observation-review");
@@ -551,39 +556,48 @@ test("PNG metadata changes do not make unchanged visible pixels stale", async (t
   assert.equal(adb.inputs.length, 1);
 });
 
-test("the 20-percent screen-context limit accepts its boundary and rejects one additional pixel", async (t) => {
+test("large video changes outside visual target bounds and margin no longer veto input", async (t) => {
   const { adb, service } = harness(t);
   const selected = await service.selectDevice(USB);
-  for (const extraPixel of [false, true]) {
+  for (const metadata of [false, true]) {
+    adb.xml = metadata
+      ? hierarchy(node({ bounds: "[30,110][50,130]" }))
+      : hierarchy("");
     adb.image = pixelPng(80, 160, () => [255, 255, 255, 255]);
     const screen = await service.observe(selected.targetToken);
-    adb.image = pixelPng(80, 160, (x, y) => y < 32 || (extraPixel && x === 0 && y === 32)
+    adb.image = pixelPng(80, 160, (x, y) => x < 22 || x >= 58 || y < 102 || y >= 138
       ? [0, 0, 0, 255] : [255, 255, 255, 255]);
-    const action = service.act(selected.targetToken, screen.observation.observationId, { kind: "tap", target: { x: 40, y: 120 } });
-    if (extraPixel) {
-      await assert.rejects(action, (error: unknown) => {
-        hasCode("STALE_OBSERVATION")(error);
-        assert.ok(error instanceof MobileUseError && /More than 20%/.test(error.message) && !error.actionMayHaveRun);
-        return true;
-      });
-    } else {
-      assert.equal((await action).dispatchStatus, "dispatched");
-    }
+    const result = await service.act(selected.targetToken, screen.observation.observationId, {
+      kind: "tap", target: { x: 40, y: 120, bounds: { x: 30, y: 110, width: 20, height: 20 } },
+    });
+    assert.equal(result.dispatchStatus, "dispatched");
   }
-  assert.equal(adb.inputs.length, 1);
+  assert.equal(adb.inputs.length, 2);
 });
 
-test("a single changed pixel anywhere in the target row blocks input and consumes the observation", async (t) => {
+test("a single changed pixel in the visual margin blocks input with structured diagnostics and consumes the observation", async (t) => {
   const { adb, service } = harness(t);
+  adb.xml = hierarchy("");
   adb.image = pixelPng(80, 160, () => [255, 255, 255, 255]);
   const { selected, screen } = await ready(service);
-  adb.image = pixelPng(80, 160, (x, y) => x === 0 && y === 72 ? [0, 0, 0, 255] : [255, 255, 255, 255]);
+  adb.image = pixelPng(80, 160, (x, y) => x === 24 && y === 64 ? [0, 0, 0, 255] : [255, 255, 255, 255]);
   await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
-    kind: "tap", target: { x: 40, y: 80 },
+    kind: "tap", target: { x: 40, y: 80, bounds: { x: 32, y: 72, width: 16, height: 16 } },
   }), (error: unknown) => {
     hasCode("STALE_OBSERVATION")(error);
-    assert.ok(error instanceof MobileUseError && /Pixels.*interaction region/.test(error.message));
+    assert.ok(error instanceof MobileUseError && /Pixels.*protected region/.test(error.message));
     assert.equal(error.actionMayHaveRun, false);
+    const details = error.toJSON().visualGuard;
+    assert.ok(details);
+    assert.equal(details.changedPixels, 1);
+    assert.equal(details.regionChangedPixels, 1);
+    assert.equal(details.totalPixels, 12_800);
+    assert.deepEqual(details.protectedRegion, { x: 24, y: 64, width: 32, height: 32 });
+    assert.deepEqual(details.changedBounds, { x: 24, y: 64, width: 1, height: 1 });
+    assert.deepEqual(details.regionChangedBounds, details.changedBounds);
+    assert.deepEqual(details.previousCapture, screen.observation.captureTiming);
+    assert.ok(details.currentCapture.durationMs >= 0);
+    assert.ok(details.currentCapture.screenshotDurationMs !== null);
     return true;
   });
   await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
@@ -598,9 +612,10 @@ test("swipes protect their whole path, not just the start and end points", async
   for (const changedY of [10, 80]) {
     adb.image = pixelPng(80, 160, () => [255, 255, 255, 255]);
     const screen = await service.observe(selected.targetToken);
-    adb.image = pixelPng(80, 160, (x, y) => x === 0 && y === changedY ? [0, 0, 0, 255] : [255, 255, 255, 255]);
+    adb.image = pixelPng(80, 160, (x, y) => x === 40 && y === changedY ? [0, 0, 0, 255] : [255, 255, 255, 255]);
     const action = service.act(selected.targetToken, screen.observation.observationId, {
       kind: "swipe", from: { x: 40, y: 120 }, to: { x: 40, y: 40 },
+      bounds: { x: 32, y: 40, width: 16, height: 81 },
     });
     if (changedY === 80) await assert.rejects(action, hasCode("STALE_OBSERVATION"));
     else assert.equal((await action).dispatchStatus, "dispatched");
@@ -617,7 +632,7 @@ test("changed or overlaid hierarchy controls block coordinate input even when th
     adb.xml = hierarchy(nodes);
     await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
       kind: "tap", target: { x: 24, y: 18 },
-    }), hasCode("STALE_OBSERVATION"));
+    }), hasCode("ELEMENT_CHANGED"));
   }
   assert.equal(adb.inputs.length, 0);
 });
@@ -639,7 +654,7 @@ test("app, activity, and Android user switches block coordinate input even with 
   assert.equal(adb.inputs.length, 0);
 });
 
-test("unverifiable foreground context is explicit and cannot enable changed-image coordinate input", async (t) => {
+test("unverifiable foreground context blocks pointer input even with identical images", async (t) => {
   const { adb, service } = harness(t);
   adb.image = pixelPng(80, 160, () => [255, 255, 255, 255]);
   adb.handler = (call) => call.args.includes("activities") ? Buffer.from("Unrecognized activity diagnostics") : undefined;
@@ -647,13 +662,17 @@ test("unverifiable foreground context is explicit and cannot enable changed-imag
   assert.match(screen.observation.warnings.join(" "), /Foreground activity.*APP_FOREGROUND_UNAVAILABLE/);
   adb.image = pixelPng(80, 160, (x, y) => x === 0 && y === 0 ? [0, 0, 0, 255] : [255, 255, 255, 255]);
   await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
-    kind: "tap", target: { x: 40, y: 120 },
+    kind: "tap", target: { x: 40, y: 120, bounds: { x: 30, y: 110, width: 20, height: 20 } },
   }), hasCode("STALE_OBSERVATION"));
   const unchanged = await service.observe(selected.targetToken);
-  await service.act(selected.targetToken, unchanged.observation.observationId, {
-    kind: "tap", target: { x: 40, y: 120 },
-  });
-  assert.equal(adb.inputs.length, 1);
+  await assert.rejects(service.act(selected.targetToken, unchanged.observation.observationId, {
+    kind: "tap", target: { x: 40, y: 120, bounds: { x: 30, y: 110, width: 20, height: 20 } },
+  }), hasCode("STALE_OBSERVATION"));
+  const semantic = await service.observe(selected.targetToken);
+  await assert.rejects(service.act(selected.targetToken, semantic.observation.observationId, {
+    kind: "tap", target: { elementRef: "e1" },
+  }), hasCode("STALE_OBSERVATION"));
+  assert.equal(adb.inputs.length, 0);
 });
 
 test("changed images cannot use relaxed comparison across hierarchy loss or a missing foreground activity", async (t) => {
@@ -668,7 +687,7 @@ test("changed images cannot use relaxed comparison across hierarchy loss or a mi
     if (change === "hierarchy") adb.xml = "ERROR: null root node";
     else adb.foreground = null;
     await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
-      kind: "tap", target: { x: 40, y: 120 },
+      kind: "tap", target: { x: 40, y: 120, bounds: { x: 30, y: 110, width: 20, height: 20 } },
     }), hasCode("STALE_OBSERVATION"));
   }
   assert.equal(adb.inputs.length, 0);
@@ -681,7 +700,9 @@ test("display rotation is mapped and a later geometry change blocks input", asyn
   adb.display = displayDiagnostics(1, 160, 80);
   const { selected, screen } = await ready(service);
   assert.deepEqual(screen.observation.display, { width: 160, height: 80, rotation: 1 });
-  await service.act(selected.targetToken, screen.observation.observationId, { kind: "tap", target: { x: 159, y: 79 } });
+  await service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "tap", target: { x: 159, y: 79, bounds: { x: 140, y: 60, width: 20, height: 20 } },
+  });
   const before = await service.observe(selected.targetToken);
   adb.image = png();
   adb.xml = hierarchy();
@@ -897,28 +918,35 @@ test("unavailable hierarchy is explicit, while image-only coordinate input remai
   assert.deepEqual(screen.observation.display, { width: 80, height: 160, rotation: 0 });
   assert.deepEqual(screen.observation.elements, []);
   assert.match(screen.observation.warnings.join(" "), /no semantic element/);
-  await service.act(selected.targetToken, screen.observation.observationId, { kind: "tap", target: { x: 10, y: 10 } });
+  await service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "tap", target: { x: 10, y: 10, bounds: { x: 4, y: 8, width: 40, height: 20 } },
+  });
   assert.equal(adb.inputs.length, 1);
 });
 
-test("hierarchy loss and recovery do not change independently verified rotation or block coordinate input", async (t) => {
+test("hierarchy loss and recovery preserve verified rotation but require a new observation before pointer input", async (t) => {
   const { adb, service } = harness(t);
   const { selected, screen } = await ready(service);
   adb.handler = (call) => {
     if (call.args.includes("uiautomator")) throw new MobileUseError("ADB_FAILED", "Fixture hierarchy failure.", "Observe again.");
     return undefined;
   };
-  const first = await service.act(selected.targetToken, screen.observation.observationId, { kind: "tap", target: { x: 10, y: 10 } });
-  assert.equal(first.after?.observation.hierarchy.status, "unavailable");
-  assert.equal(first.after?.observation.display?.rotation, 0);
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
+    kind: "tap", target: { x: 10, y: 10, bounds: { x: 4, y: 8, width: 40, height: 20 } },
+  }), hasCode("ELEMENT_CHANGED"));
   const imageOnly = await service.observe(selected.targetToken);
+  assert.equal(imageOnly.observation.hierarchy.status, "unavailable");
+  assert.equal(imageOnly.observation.display?.rotation, 0);
   adb.handler = undefined;
-  const recovered = await service.act(selected.targetToken, imageOnly.observation.observationId, {
+  await assert.rejects(service.act(selected.targetToken, imageOnly.observation.observationId, {
     kind: "swipe", from: { x: 10, y: 100 }, to: { x: 10, y: 50 },
-  });
+    bounds: { x: 4, y: 40, width: 30, height: 80 },
+  }), hasCode("STALE_OBSERVATION"));
+  const fresh = await service.observe(selected.targetToken);
+  const recovered = await service.act(selected.targetToken, fresh.observation.observationId, { kind: "tap", target: { elementRef: "e1" } });
   assert.equal(recovered.after?.observation.hierarchy.status, "ok");
   assert.equal(recovered.after?.observation.display?.rotation, 0);
-  assert.equal(adb.inputs.length, 2);
+  assert.equal(adb.inputs.length, 1);
 });
 
 test("a real 180-degree rotation blocks input even with identical pixels and no hierarchy", async (t) => {

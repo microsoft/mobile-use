@@ -16,7 +16,7 @@ export type ScreenElement = {
   pointerTarget?: true;
   resourceId: string | null;
   editable: boolean;
-} & Record<"enabled" | "clickable" | "focused" | "password", boolean | null>;
+} & Record<"enabled" | "clickable" | "scrollable" | "focused" | "password", boolean | null>;
 
 export interface ScreenWindow {
   id: number;
@@ -134,10 +134,18 @@ export interface ReadStatus {
   error: ErrorInfo | null;
 }
 
+export interface CaptureTiming {
+  startedAt: string;
+  durationMs: number;
+  screenshotDurationMs: number | null;
+  hierarchyDurationMs: number;
+}
+
 export interface Observation {
   observationId: string;
   targetToken: string;
   capturedAt: string;
+  captureTiming: CaptureTiming;
   nonAtomic: true;
   display: { width: number; height: number; rotation: number | null } | null;
   displayState: ReadStatus;
@@ -167,9 +175,18 @@ const pointSchema = z.strictObject({
   y: z.number().int().nonnegative(),
 });
 
+const boundsSchema = z.strictObject({
+  x: z.number().int().nonnegative(),
+  y: z.number().int().nonnegative(),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+});
+
+const elementRefSchema = z.string().regex(/^e[1-9]\d*$/);
+
 const tapTargetSchema = z.union([
-  z.strictObject({ elementRef: z.string().regex(/^e[1-9]\d*$/) }),
-  pointSchema,
+  z.strictObject({ elementRef: elementRefSchema }),
+  pointSchema.extend({ bounds: boundsSchema.optional() }),
 ]);
 
 export const packageNameSchema = z.string().max(255).regex(
@@ -196,6 +213,8 @@ export const swipeActionSchema = z.strictObject({
   kind: z.literal("swipe"),
   from: pointSchema,
   to: pointSchema,
+  elementRef: elementRefSchema.optional(),
+  bounds: boundsSchema.optional(),
   durationMs: z.number().int().min(100).max(2000).default(400),
 });
 
