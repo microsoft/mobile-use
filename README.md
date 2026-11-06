@@ -33,8 +33,8 @@ copilot plugin install (Resolve-Path .\plugins\mobile-use).Path
 ```
 
 No npm install or build is needed to use that package. Install the
-`plugins\mobile-use` folder, not the repository root or the source-only `plugin`
-folder. Confirm the plugin and its tools appear in Copilot before using a phone.
+`plugins\mobile-use` folder, not the repository root. Confirm the plugin and its
+tools appear in Copilot before using a phone.
 For local development builds and updating the installed copy, see the
 [build instructions](CONTRIBUTING.md#build-and-check-the-plugin).
 

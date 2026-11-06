@@ -31,7 +31,7 @@ and commit the updated package along with the source changes.
 | `npm run typecheck` | Typecheck without emitting files. |
 | `npm test` | Compile and run the TypeScript no-phone tests. |
 | `npm run build:plugin` | Bundle the local plugin into `dist\mobile-use`. |
-| `npm run build:marketplace` | Build the plugin and replace the tracked `plugins\mobile-use` package with the complete output. |
+| `npm run build:marketplace` | Build the plugin and refresh only generated assets in `plugins\mobile-use`, preserving authored manifests and skills. |
 | `npm run test:plugin` | Check build/package parity and both artifacts' copied-artifact protocol behavior; build the plugin first. |
 | `npm run check` | Run all of the above in order. |
 | `npm run test:gestures` | Test the Java helper's injection and timing logic with Android stubs; requires a JDK. |
@@ -42,6 +42,13 @@ and commit the updated package along with the source changes.
 The artifact includes `plugin.json`, `mcp.json`, `skills\mobile-use\SKILL.md`,
 `server\index.mjs`, and license notices. Runtime dependencies are bundled; its
 launcher is `node`, not a download-on-launch npm/npx command.
+
+`plugins\mobile-use` is the single authored plugin directory: edit `plugin.json`,
+`mcp.json`, and `skills` there. `build:plugin` copies those inputs to the ignored
+`dist\mobile-use` folder and builds fresh runtime/license assets without changing
+the tracked package. `build:marketplace` additionally replaces only `server`,
+`licenses`, `LICENSE`, and `THIRD_PARTY_NOTICES` in the tracked directory.
+Do not edit those generated assets by hand.
 
 The checked-in `src\gesture-helper-data.ts` embeds the gesture DEX and its
 SHA-256, so ordinary plugin builds do not need an Android SDK or Java.
@@ -77,26 +84,29 @@ distribution remains outside this POC.
 
 The plugin stays hosted in `microsoft/mobile-use`. The intended Awesome Copilot
 listing points to the tracked `plugins/mobile-use` folder at an immutable
-commit. Intake installs that Git snapshot without building it; the
-source-only `plugin` directory and ignored `dist` output are not submission paths.
-Do not edit generated files under `plugins\mobile-use` by hand.
+commit. Intake installs that Git snapshot without building it; the ignored
+`dist` output is not a submission path. Authored metadata/skills and generated
+runtime/license assets live together in `plugins\mobile-use`; there is no
+separate source-only plugin directory.
 
 ### Prepare a reviewable revision
 
-1. Keep `package.json`, `package-lock.json`, and `plugin\plugin.json` versions
+1. Keep `package.json`, `package-lock.json`, and `plugins\mobile-use\plugin.json` versions
    synchronized. Before changing behavior in a previously listed release, choose
    a new semantic version. Keep author, description, repository, license, and
    keywords current in the source manifest.
 2. Restore locked dependencies with `npm ci --ignore-scripts --no-audit --no-fund`,
-   then run `npm run build:marketplace` and `npm run check`. Packaging replaces
-   only `plugins\mobile-use`, removing stale files and copying the entire bundle,
-   skill, manifest, MCP configuration, and dependency license/provenance files.
+   then run `npm run build:marketplace` and `npm run check`. Packaging preserves
+   authored manifests/skills and replaces only the generated server and licensing
+   assets, removing stale files from generated directories.
    The package intentionally contains no Node.js, ADB, npm dependencies to
    install, device evidence, or credentials.
 3. Review and commit the source changes and the complete generated folder.
    CI compares file lists and text contents (ignoring CRLF/LF differences) against
    a fresh build and checks both packages' MCP startup from isolated copies
    without `node_modules`. CI does not regenerate the tracked package to hide drift.
+   Regeneration is also exercised in an isolated fixture to verify authored-file
+   preservation and removal of stale generated assets.
    The main `SKILL.md` must stay within the intake's 500-line limit; detailed
    recording guidance lives in its linked `references\screen-recording.md`.
 4. From a clean checkout of the candidate commit on Windows, install
@@ -160,7 +170,7 @@ The plugin bundles a local stdio MCP server and a usage skill. Its project-owned
 Android adapter invokes installed Platform-Tools directly; it does not import,
 vendor, or launch mobile-mcp.
 
-Keep the server's behavior and the [usage skill](plugin/skills/mobile-use/SKILL.md)
+Keep the server's behavior and the [usage skill](plugins/mobile-use/skills/mobile-use/SKILL.md)
 consistent. Installation, debugging trust, and tool annotations are not blanket
 authorization. Treat device content as untrusted data and preserve the
 [user-facing safety boundaries](README.md#safety-and-privacy).

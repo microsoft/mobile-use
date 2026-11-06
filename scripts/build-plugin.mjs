@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const pluginRoot = path.join(root, "plugins", "mobile-use");
 const output = path.join(root, "dist", "mobile-use");
 const args = process.argv.slice(2);
 if (args.length > 1 || args.some((arg) => arg !== "--marketplace")) {
@@ -13,8 +14,8 @@ if (args.length > 1 || args.some((arg) => arg !== "--marketplace")) {
 }
 const readJson = async (file) => JSON.parse(await readFile(file, "utf8"));
 const packageInfo = await readJson(path.join(root, "package.json"));
-const manifest = await readJson(path.join(root, "plugin", "plugin.json"));
-const mcp = await readJson(path.join(root, "plugin", "mcp.json"));
+const manifest = await readJson(path.join(pluginRoot, "plugin.json"));
+const mcp = await readJson(path.join(pluginRoot, "mcp.json"));
 
 if (
   manifest.$schema !== "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json" ||
@@ -28,7 +29,9 @@ if (
 
 await rm(output, { recursive: true, force: true });
 await mkdir(path.join(output, "server"), { recursive: true });
-await cp(path.join(root, "plugin"), output, { recursive: true });
+for (const relative of ["plugin.json", "mcp.json", "skills"]) {
+  await cp(path.join(pluginRoot, relative), path.join(output, relative), { recursive: true });
+}
 await cp(path.join(root, "LICENSE"), path.join(output, "LICENSE"));
 
 const result = await build({
@@ -106,8 +109,12 @@ for (const relative of [
 console.log(`Built dist\\mobile-use (${dependencies.size} bundled dependencies).`);
 
 if (args.includes("--marketplace")) {
-  const marketplaceOutput = path.join(root, "plugins", "mobile-use");
-  await rm(marketplaceOutput, { recursive: true, force: true });
-  await cp(output, marketplaceOutput, { recursive: true });
-  console.log("Updated plugins\\mobile-use. Commit the complete folder with its source changes.");
+  for (const relative of ["server", "LICENSE", "THIRD_PARTY_NOTICES", "licenses"]) {
+    const source = path.join(output, relative);
+    const destination = path.join(pluginRoot, relative);
+    await rm(destination, { recursive: true, force: true });
+    if (relative === "licenses" && !existsSync(source)) continue;
+    await cp(source, destination, { recursive: true });
+  }
+  console.log("Updated generated assets in plugins\\mobile-use. Authored manifests and skills are unchanged.");
 }

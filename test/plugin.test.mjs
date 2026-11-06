@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { cp, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -113,6 +113,55 @@ test("the committed marketplace package matches the complete build", async () =>
       actual.replace(/\r\n/g, "\n") === expected.replace(/\r\n/g, "\n"),
       `${relative}: ${remediation}`,
     );
+  }
+});
+
+test("marketplace generation preserves authored files and replaces stale generated assets", async (t) => {
+  const fixture = await mkdtemp(path.join(tmpdir(), "mobile-use build with spaces "));
+  t.after(() => rm(fixture, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  await mkdir(path.join(fixture, "scripts"));
+  await cp(path.join(root, "scripts", "build-plugin.mjs"), path.join(fixture, "scripts", "build-plugin.mjs"));
+  for (const relative of ["src", "third_party", "plugins", "package.json", "LICENSE", "THIRD_PARTY_NOTICES"]) {
+    await cp(path.join(root, relative), path.join(fixture, relative), { recursive: true });
+  }
+  await symlink(path.join(root, "node_modules"), path.join(fixture, "node_modules"), "junction");
+
+  const published = path.join(fixture, "plugins", "mobile-use");
+  const built = path.join(fixture, "dist", "mobile-use");
+  const authoredPaths = [
+    "plugin.json", "mcp.json",
+    path.join("skills", "mobile-use", "SKILL.md"),
+    path.join("skills", "mobile-use", "references", "screen-recording.md"),
+  ];
+  const authored = await Promise.all(authoredPaths.map((relative) => readFile(path.join(published, relative))));
+  for (const relative of ["server", "licenses"]) {
+    await mkdir(path.join(published, relative), { recursive: true });
+    await writeFile(path.join(published, relative, "stale-build-probe.txt"), "stale\n", { flag: "wx" });
+  }
+  const runBuild = (args) => {
+    const result = spawnSync(process.execPath, [path.join(fixture, "scripts", "build-plugin.mjs"), ...args], {
+      cwd: fixture, encoding: "utf8", windowsHide: true, timeout: 120_000,
+    });
+    assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
+  };
+
+  runBuild([]);
+  for (const relative of ["server", "licenses"]) {
+    await assert.rejects(stat(path.join(built, relative, "stale-build-probe.txt")), { code: "ENOENT" });
+    assert.equal(await readFile(path.join(published, relative, "stale-build-probe.txt"), "utf8"), "stale\n");
+  }
+  runBuild(["--marketplace"]);
+  for (const [index, relative] of authoredPaths.entries()) {
+    assert.deepEqual(await readFile(path.join(published, relative)), authored[index], `${relative} must not be rewritten.`);
+  }
+  for (const relative of ["server", "licenses"]) {
+    await assert.rejects(stat(path.join(published, relative, "stale-build-probe.txt")), { code: "ENOENT" });
+  }
+  const paths = (await readdir(built, { recursive: true })).sort();
+  assert.deepEqual((await readdir(published, { recursive: true })).sort(), paths);
+  for (const relative of paths) {
+    if (!(await stat(path.join(built, relative))).isFile()) continue;
+    assert.deepEqual(await readFile(path.join(published, relative)), await readFile(path.join(built, relative)));
   }
 });
 
