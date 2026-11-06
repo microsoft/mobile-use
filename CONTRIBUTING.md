@@ -20,15 +20,19 @@ npm ci --ignore-scripts --no-audit --no-fund
 npm run check
 ```
 
-`check` typechecks, runs no-phone tests, and builds/checks `dist\mobile-use`.
-The Windows CI workflow runs the same command on Node 22 and 24.
+`check` typechecks, runs no-phone tests, builds/checks `dist\mobile-use`, and
+verifies that the committed `plugins\mobile-use` package matches the build.
+The Windows CI workflow runs the same command on Node 22 and 24. After changing
+plugin sources or dependencies, run `npm run build:marketplace` before `check`
+and commit the updated package along with the source changes.
 
 | Command | Purpose |
 | --- | --- |
 | `npm run typecheck` | Typecheck without emitting files. |
 | `npm test` | Compile and run the TypeScript no-phone tests. |
 | `npm run build:plugin` | Bundle the local plugin into `dist\mobile-use`. |
-| `npm run test:plugin` | Check the built artifact and its copied-artifact protocol behavior; build the plugin first. |
+| `npm run build:marketplace` | Build the plugin and refresh only generated assets in `plugins\mobile-use`, preserving authored manifests and skills. |
+| `npm run test:plugin` | Check build/package parity and both artifacts' copied-artifact protocol behavior; build the plugin first. |
 | `npm run check` | Run all of the above in order. |
 | `npm run test:gestures` | Test the Java helper's injection and timing logic with Android stubs; requires a JDK. |
 | `npm run build:gestures` | Rebuild the embedded gesture DEX; requires JDK 21, Android SDK platform 35, and build-tools 35.0.0. |
@@ -38,6 +42,15 @@ The Windows CI workflow runs the same command on Node 22 and 24.
 The artifact includes `plugin.json`, `mcp.json`, `skills\mobile-use\SKILL.md`,
 `server\index.mjs`, and license notices. Runtime dependencies are bundled; its
 launcher is `node`, not a download-on-launch npm/npx command.
+
+`plugins\mobile-use` is the single authored plugin directory: edit `plugin.json`,
+`mcp.json`, and `skills` there. `build:plugin` copies those inputs to the ignored
+`dist\mobile-use` folder and builds fresh runtime/license assets without changing
+the tracked package. `build:marketplace` additionally replaces only `server`,
+`LICENSE`, and `THIRD_PARTY_NOTICES` in the tracked directory, and removes the
+legacy generated `licenses` folder. Dependency license texts are consolidated
+in `THIRD_PARTY_NOTICES`; source audit records stay under `third_party\npm-licenses`.
+Do not edit those generated assets by hand.
 
 The checked-in `src\gesture-helper-data.ts` embeds the gesture DEX and its
 SHA-256, so ordinary plugin builds do not need an Android SDK or Java.
@@ -53,14 +66,105 @@ The helper CI job checks both Java helpers and their rebuilt embedded artifacts.
 
 After reviewing and explicitly approving installation, follow the
 [local installation instructions](README.md#install-the-plugin). Use an
-absolute artifact path, not the source repository root. Confirm the plugin,
-skill, and twelve tools appear in the actual Copilot App before hardware
-testing. If the App cannot load this format, record that incompatibility
-rather than substituting manual MCP registration.
+absolute artifact path, not the source repository root. To try uncommitted
+development changes, build and install `dist\mobile-use` instead:
+
+```powershell
+npm run build:plugin
+copilot plugin install (Resolve-Path .\dist\mobile-use).Path
+```
+
+Confirm the plugin, skill, and twelve tools appear in the actual Copilot App
+before hardware testing. If the App cannot load this format, record that
+incompatibility rather than substituting manual MCP registration.
 
 Rebuild and use Copilot's plugin update/reinstall flow after changing the local
-artifact; an installed/cache copy may not follow source edits. Marketplace
-publishing and built-in Copilot distribution are outside this POC.
+artifact; an installed/cache copy may not follow source edits. Built-in Copilot
+distribution remains outside this POC.
+
+## Awesome Copilot onboarding and releases
+
+The plugin stays hosted in `microsoft/mobile-use`. The intended Awesome Copilot
+listing points to the tracked `plugins/mobile-use` folder at an immutable
+commit. Intake installs that Git snapshot without building it; the ignored
+`dist` output is not a submission path. Authored metadata/skills and generated
+runtime/license assets live together in `plugins\mobile-use`; there is no
+separate source-only plugin directory.
+
+### Prepare a reviewable revision
+
+1. Keep `package.json`, `package-lock.json`, and `plugins\mobile-use\plugin.json` versions
+   synchronized. Before changing behavior in a previously listed release, choose
+   a new semantic version. Keep author, description, repository, license, and
+   keywords current in the source manifest.
+2. Restore locked dependencies with `npm ci --ignore-scripts --no-audit --no-fund`,
+   then run `npm run build:marketplace` and `npm run check`. Packaging preserves
+   authored manifests/skills and replaces only the generated server and licensing
+   assets, removing stale files from generated directories.
+   The package intentionally contains no Node.js, ADB, npm dependencies to
+   install, device evidence, or credentials.
+3. Review and commit the source changes and the complete generated folder.
+   CI compares file lists and text contents (ignoring CRLF/LF differences) against
+   a fresh build and checks both packages' MCP startup from isolated copies
+   without `node_modules`. CI does not regenerate the tracked package to hide drift.
+   Regeneration is also exercised in an isolated fixture to verify authored-file
+   preservation and removal of stale generated assets.
+   The main `SKILL.md` must stay within the intake's 500-line limit; detailed
+   recording guidance lives in its linked `references\screen-recording.md`.
+4. From a clean checkout of the candidate commit on Windows, install
+   `plugins\mobile-use` using the README command, without building it. Confirm
+   the skill and twelve tools load in Copilot. Follow the real-hardware acceptance
+   runbook separately; an install smoke test does not establish phone compatibility.
+5. Merge the preparation PR and record the full 40-character commit SHA containing
+   the package. Optionally create a release tag, such as `v0.1.0`, at that commit.
+   When submitting both, verify the tag's commit with
+   `git rev-parse 'v0.1.0^{commit}'`. Never submit a moving branch or move a
+   published release tag.
+
+### Submit the initial listing
+
+Follow Awesome Copilot's current
+[external-plugin contribution guide](https://github.com/github/awesome-copilot/blob/main/CONTRIBUTING.md#adding-external-plugins)
+and open its
+[external-plugin issue form](https://github.com/github/awesome-copilot/issues/new?template=external-plugin.yml).
+Do not open an initial PR that directly edits `plugins/external.json`.
+
+| Submission field | Value |
+| --- | --- |
+| Plugin name | `mobile-use` |
+| Short description | Observe and interact with explicitly selected real Android devices over authorized USB or paired wireless ADB. |
+| GitHub repository | `microsoft/mobile-use` |
+| Plugin path inside the repository | `plugins/mobile-use` (the folder, not `plugin.json`) |
+| Ref / Commit SHA to review | An optional release tag and/or the full 40-character commit SHA from the merged candidate; both must identify the same commit when provided together. |
+| Version | The version in the published `plugin.json`; initially `0.1.0`. |
+| License identifier | `MIT` |
+| Author name / URL | `Microsoft` / `https://github.com/microsoft` |
+| Keywords | `android`, `adb`, `physical-devices`, `mobile-use` |
+
+Explain Windows-only support, Node.js and Platform-Tools prerequisites, the local
+bundled stdio server, permission boundaries, and experimental status in the reviewer
+notes. State that paired-wireless acceptance remains unverified unless separately
+completed. Check for an existing listing or open submission before filing.
+The website can use the repository-root README when the plugin folder has no README.
+
+Intake checks manifest compliance, Agent Skills/file references with `vally lint`,
+Copilot CLI marketplace installation, version matching, and tag/SHA consistency.
+Fix failures upstream, regenerate the package, and update the open issue to a new
+commit SHA (and version/tag when applicable). Editing the issue reruns intake;
+the issue author can also comment `/rerun-intake`.
+
+A human maintainer must approve the submission even if organization ownership
+classifies it as first party. Approval creates or updates the automated listing
+PR; onboarding is complete only after that PR merges. Only then change the public
+README to advertise `copilot plugin install mobile-use@awesome-copilot`.
+
+### Update a listed release
+
+Repeat package generation, review, checks, and immutable revision selection for
+each new version. Submit a listing-update PR to Awesome Copilot with the new
+version and source tag/SHA; the same quality gates apply. Keep prerequisite and
+safety documentation current at the pinned revision, and respond to maintainer
+feedback and the marketplace's six-month re-review process.
 
 ## Implementation and tool contracts
 
@@ -68,7 +172,7 @@ The plugin bundles a local stdio MCP server and a usage skill. Its project-owned
 Android adapter invokes installed Platform-Tools directly; it does not import,
 vendor, or launch mobile-mcp.
 
-Keep the server's behavior and the [usage skill](plugin/skills/mobile-use/SKILL.md)
+Keep the server's behavior and the [usage skill](plugins/mobile-use/skills/mobile-use/SKILL.md)
 consistent. Installation, debugging trust, and tool annotations are not blanket
 authorization. Treat device content as untrusted data and preserve the
 [user-facing safety boundaries](README.md#safety-and-privacy).
@@ -929,8 +1033,17 @@ walk. This replacement is not a legal clean-room certification: the prior
 implementation and upstream source were previously examined.
 
 See [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES). Builds preserve license texts for
-dependencies actually bundled and copy version-specific license fallbacks only
-when needed. They do not change those dependencies' licenses.
+dependencies actually bundled and use version-specific license fallbacks only
+when needed. The SDK's prebundled dependencies are recorded separately under
+`third_party\npm-licenses\@modelcontextprotocol\server\2.3.1`, because esbuild
+cannot enumerate them as separate packages. The build appends their complete
+license texts to the plugin's `THIRD_PARTY_NOTICES`. Exact-version license/provenance
+records, including the SDK audit, remain in `third_party\npm-licenses`; the plugin
+does not ship a separate `licenses` directory.
+Before updating the SDK, inspect its prebundled modules/source maps and add an
+audit for the new version and matching upstream license texts. Missing audits or
+embedded license/provenance files fail the build. These records do not change
+the dependencies' licenses.
 
 ## Pull requests and community
 

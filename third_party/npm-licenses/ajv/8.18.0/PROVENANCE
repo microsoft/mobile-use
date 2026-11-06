@@ -1,0 +1,8 @@
+Package: ajv@8.18.0
+Declared license: MIT
+Published package gitHead: 142ce84b807c4fe66e619c22480a28d0e4bd50fa
+License source:
+https://github.com/ajv-validator/ajv/blob/142ce84b807c4fe66e619c22480a28d0e4bd50fa/LICENSE
+
+Embedded in @modelcontextprotocol/server@2.3.1; see that package's pinned audit.
+This upstream license text applies to this exact dependency version only.

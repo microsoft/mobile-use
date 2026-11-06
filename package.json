@@ -13,6 +13,7 @@
     "build:tests": "tsc",
     "test": "npm run build:tests && node --test .test-build\\test\\*.test.js",
     "build:plugin": "node scripts\\build-plugin.mjs",
+    "build:marketplace": "node scripts\\build-plugin.mjs --marketplace",
     "build:gestures": "node scripts\\build-gestures.mjs",
     "build:text": "node scripts\\build-text.mjs",
     "test:plugin": "node --test test\\plugin.test.mjs",

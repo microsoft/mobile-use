@@ -6,11 +6,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const pluginRoot = path.join(root, "plugins", "mobile-use");
 const output = path.join(root, "dist", "mobile-use");
+const args = process.argv.slice(2);
+if (args.length > 1 || args.some((arg) => arg !== "--marketplace")) {
+  throw new Error("Usage: node scripts\\build-plugin.mjs [--marketplace]");
+}
 const readJson = async (file) => JSON.parse(await readFile(file, "utf8"));
 const packageInfo = await readJson(path.join(root, "package.json"));
-const manifest = await readJson(path.join(root, "plugin", "plugin.json"));
-const mcp = await readJson(path.join(root, "plugin", "mcp.json"));
+const manifest = await readJson(path.join(pluginRoot, "plugin.json"));
+const mcp = await readJson(path.join(pluginRoot, "mcp.json"));
 
 if (
   manifest.$schema !== "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json" ||
@@ -24,7 +29,9 @@ if (
 
 await rm(output, { recursive: true, force: true });
 await mkdir(path.join(output, "server"), { recursive: true });
-await cp(path.join(root, "plugin"), output, { recursive: true });
+for (const relative of ["plugin.json", "mcp.json", "skills"]) {
+  await cp(path.join(pluginRoot, relative), path.join(output, relative), { recursive: true });
+}
 await cp(path.join(root, "LICENSE"), path.join(output, "LICENSE"));
 
 const result = await build({
@@ -61,6 +68,26 @@ for (const input of Object.keys(result.metafile.inputs)) {
   dependencies.set(directory, await readJson(path.join(directory, "package.json")));
 }
 
+// esbuild cannot see dependencies that the published SDK has already bundled.
+for (const dependency of [...dependencies.values()]) {
+  if (dependency.name !== "@modelcontextprotocol/server") continue;
+  const relative = path.join("npm-licenses", ...dependency.name.split("/"), dependency.version);
+  const auditDirectory = path.join(root, "third_party", relative);
+  const auditFile = path.join(auditDirectory, "embedded-dependencies.json");
+  if (!existsSync(auditFile) || !existsSync(path.join(auditDirectory, "PROVENANCE"))) {
+    throw new Error(`Embedded dependency audit/provenance missing for ${dependency.name}@${dependency.version}.`);
+  }
+  const embeddedDependencies = await readJson(auditFile);
+  for (const embedded of embeddedDependencies) {
+    const embeddedRelative = path.join("npm-licenses", ...embedded.name.split("/"), embedded.version);
+    const directory = path.join(root, "third_party", embeddedRelative);
+    if (!existsSync(path.join(directory, "LICENSE")) || !existsSync(path.join(directory, "PROVENANCE"))) {
+      throw new Error(`License/provenance missing for embedded dependency ${embedded.name}@${embedded.version}.`);
+    }
+    dependencies.set(directory, embedded);
+  }
+}
+
 let notices = await readFile(path.join(root, "THIRD_PARTY_NOTICES"), "utf8");
 for (const [directory, dependency] of [...dependencies].sort((a, b) =>
   a[1].name.localeCompare(b[1].name),
@@ -75,10 +102,7 @@ for (const [directory, dependency] of [...dependencies].sort((a, b) =>
     if (!existsSync(fallback)) {
       throw new Error(`License text missing for bundled dependency ${dependency.name}@${dependency.version}.`);
     }
-    await cp(path.dirname(fallback), path.join(output, "licenses", "npm-licenses", ...dependency.name.split("/"), dependency.version), {
-      recursive: true,
-    });
-    notices += `\n--- Version-pinned upstream LICENSE; see licenses/npm-licenses provenance ---\n${await readFile(fallback, "utf8")}`;
+    notices += `\n--- Version-pinned upstream LICENSE; provenance retained in the source repository ---\n${await readFile(fallback, "utf8")}`;
   }
   for (const file of files) {
     notices += `\n--- ${file} ---\n${await readFile(path.join(directory, file), "utf8")}`;
@@ -91,6 +115,7 @@ for (const relative of [
   "mcp.json",
   path.join("server", "index.mjs"),
   path.join("skills", "mobile-use", "SKILL.md"),
+  path.join("skills", "mobile-use", "references", "screen-recording.md"),
   "LICENSE",
   "THIRD_PARTY_NOTICES",
 ]) {
@@ -99,3 +124,14 @@ for (const relative of [
   }
 }
 console.log(`Built dist\\mobile-use (${dependencies.size} bundled dependencies).`);
+
+if (args.includes("--marketplace")) {
+  await rm(path.join(pluginRoot, "licenses"), { recursive: true, force: true });
+  for (const relative of ["server", "LICENSE", "THIRD_PARTY_NOTICES"]) {
+    const source = path.join(output, relative);
+    const destination = path.join(pluginRoot, relative);
+    await rm(destination, { recursive: true, force: true });
+    await cp(source, destination, { recursive: true });
+  }
+  console.log("Updated generated assets in plugins\\mobile-use. Authored manifests and skills are unchanged.");
+}

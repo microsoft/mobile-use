@@ -28,7 +28,7 @@ jobs:
           cache: npm
       - name: Restore locked dependencies without install scripts
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Typecheck, fixtures, bundle, and copied-artifact protocol checks
+      - name: Typecheck, fixtures, bundle, marketplace drift, and copied-artifact checks
         run: npm run check
   gesture-helper:
     name: Android helper sources and embedded DEX

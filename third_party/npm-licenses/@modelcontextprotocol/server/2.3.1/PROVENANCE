@@ -1,0 +1,17 @@
+Package: @modelcontextprotocol/server@2.3.1
+Published npm tarball integrity:
+sha512-e59MfWuSssj6DoQ96JCTqdW1AXT5/XtnTl0WWd6MU1Ka434fFUGGosCLJbGNySDhHGvxQWoRWK137FXYFkYNWw==
+
+The published SDK prebundles dependencies that are absent from our npm dependency
+tree and esbuild input metadata. The retained region markers and sources in
+dist/ajvProvider-CEoC__sr.mjs.map identify ajv@8.18.0, ajv-formats@3.0.1,
+fast-deep-equal@3.1.3, fast-uri@3.1.0, and json-schema-traverse@1.0.0.
+dist/src-Cqbh3MYc.mjs.map identifies content-type@1.0.5.
+Both JavaScript modules contribute to the mobile-use server bundle.
+
+embedded-dependencies.json records this audit for SDK 2.3.1 only. Each embedded
+dependency has its own version-pinned LICENSE and PROVENANCE alongside this
+directory under third_party/npm-licenses in the source repository. The build
+appends their complete license texts to the plugin's THIRD_PARTY_NOTICES without
+shipping duplicate audit records. An SDK version update must audit its
+prebundles and add a new version-specific record; an unreviewed version fails.

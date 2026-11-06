@@ -3,6 +3,10 @@
   "name": "mobile-use",
   "version": "0.1.0",
   "description": "Observe and interact with explicitly selected real Android devices over authorized USB or paired wireless ADB.",
+  "author": {
+    "name": "Microsoft",
+    "url": "https://github.com/microsoft"
+  },
   "repository": "https://github.com/microsoft/mobile-use",
   "license": "MIT",
   "keywords": ["android", "adb", "physical-devices", "mobile-use"]
