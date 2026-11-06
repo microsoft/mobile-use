@@ -1,8 +1,0 @@
-Package: fast-deep-equal@3.1.3
-Declared license: MIT
-Published package gitHead: d807ffc5013e710deb1c63d463a03f729bcd144d
-License source:
-https://github.com/epoberezkin/fast-deep-equal/blob/d807ffc5013e710deb1c63d463a03f729bcd144d/LICENSE
-
-Embedded in @modelcontextprotocol/server@2.3.1; see that package's pinned audit.
-This upstream license text applies to this exact dependency version only.

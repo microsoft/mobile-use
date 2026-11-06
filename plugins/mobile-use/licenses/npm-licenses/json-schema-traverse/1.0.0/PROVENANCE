@@ -1,8 +1,0 @@
-Package: json-schema-traverse@1.0.0
-Declared license: MIT
-Published package gitHead: 6b45983cd76270042cc79527da5c8972f13599ec
-License source:
-https://github.com/epoberezkin/json-schema-traverse/blob/6b45983cd76270042cc79527da5c8972f13599ec/LICENSE
-
-Embedded in @modelcontextprotocol/server@2.3.1; see that package's pinned audit.
-This upstream license text applies to this exact dependency version only.

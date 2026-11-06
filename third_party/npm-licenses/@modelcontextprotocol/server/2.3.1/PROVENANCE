@@ -11,6 +11,7 @@ Both JavaScript modules contribute to the mobile-use server bundle.
 
 embedded-dependencies.json records this audit for SDK 2.3.1 only. Each embedded
 dependency has its own version-pinned LICENSE and PROVENANCE alongside this
-directory under third_party/npm-licenses. The build ships those files and appends
-their license texts to THIRD_PARTY_NOTICES. An SDK version update must audit its
+directory under third_party/npm-licenses in the source repository. The build
+appends their complete license texts to the plugin's THIRD_PARTY_NOTICES without
+shipping duplicate audit records. An SDK version update must audit its
 prebundles and add a new version-specific record; an unreviewed version fails.

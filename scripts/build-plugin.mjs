@@ -78,14 +78,12 @@ for (const dependency of [...dependencies.values()]) {
     throw new Error(`Embedded dependency audit/provenance missing for ${dependency.name}@${dependency.version}.`);
   }
   const embeddedDependencies = await readJson(auditFile);
-  await cp(auditDirectory, path.join(output, "licenses", relative), { recursive: true });
   for (const embedded of embeddedDependencies) {
     const embeddedRelative = path.join("npm-licenses", ...embedded.name.split("/"), embedded.version);
     const directory = path.join(root, "third_party", embeddedRelative);
     if (!existsSync(path.join(directory, "LICENSE")) || !existsSync(path.join(directory, "PROVENANCE"))) {
       throw new Error(`License/provenance missing for embedded dependency ${embedded.name}@${embedded.version}.`);
     }
-    await cp(directory, path.join(output, "licenses", embeddedRelative), { recursive: true });
     dependencies.set(directory, embedded);
   }
 }
@@ -104,10 +102,7 @@ for (const [directory, dependency] of [...dependencies].sort((a, b) =>
     if (!existsSync(fallback)) {
       throw new Error(`License text missing for bundled dependency ${dependency.name}@${dependency.version}.`);
     }
-    await cp(path.dirname(fallback), path.join(output, "licenses", "npm-licenses", ...dependency.name.split("/"), dependency.version), {
-      recursive: true,
-    });
-    notices += `\n--- Version-pinned upstream LICENSE; see licenses/npm-licenses provenance ---\n${await readFile(fallback, "utf8")}`;
+    notices += `\n--- Version-pinned upstream LICENSE; provenance retained in the source repository ---\n${await readFile(fallback, "utf8")}`;
   }
   for (const file of files) {
     notices += `\n--- ${file} ---\n${await readFile(path.join(directory, file), "utf8")}`;
@@ -131,11 +126,11 @@ for (const relative of [
 console.log(`Built dist\\mobile-use (${dependencies.size} bundled dependencies).`);
 
 if (args.includes("--marketplace")) {
-  for (const relative of ["server", "LICENSE", "THIRD_PARTY_NOTICES", "licenses"]) {
+  await rm(path.join(pluginRoot, "licenses"), { recursive: true, force: true });
+  for (const relative of ["server", "LICENSE", "THIRD_PARTY_NOTICES"]) {
     const source = path.join(output, relative);
     const destination = path.join(pluginRoot, relative);
     await rm(destination, { recursive: true, force: true });
-    if (relative === "licenses" && !existsSync(source)) continue;
     await cp(source, destination, { recursive: true });
   }
   console.log("Updated generated assets in plugins\\mobile-use. Authored manifests and skills are unchanged.");

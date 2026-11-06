@@ -86,7 +86,10 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.match(notices, /=== @modelcontextprotocol\/core@2\.3\.1 \(Apache-2\.0\) ===/);
   assert.match(notices, /=== @modelcontextprotocol\/server@2\.3\.1 \(Apache-2\.0\) ===/);
   assert.match(notices, /Apache License/);
-  assert.match(await readFile(path.join(artifact, "licenses", "npm-licenses", "@nodable", "entities", "3.1.0", "LICENSE"), "utf8"), /MIT License/);
+  const fallbackLicense = await readFile(
+    path.join(root, "third_party", "npm-licenses", "@nodable", "entities", "3.1.0", "LICENSE"), "utf8",
+  );
+  assert.ok(notices.includes(fallbackLicense), "Preserve the complete fallback license text in notices.");
 });
 
 test("the rebuilt artifact excludes the removed device backend but retains actual dependency notices", async () => {
@@ -99,7 +102,7 @@ test("the rebuilt artifact excludes the removed device backend but retains actua
   assert.match(notices, /@modelcontextprotocol\/server/);
 });
 
-test("the artifact includes pinned licenses and provenance for the SDK's embedded dependencies", async () => {
+test("the artifact includes complete embedded dependency notices using source-only audit records", async () => {
   const dependencies = [
     { name: "ajv", version: "8.18.0", license: "MIT", copyright: "2015-2021 Evgeny Poberezkin" },
     { name: "ajv-formats", version: "3.0.1", license: "MIT", copyright: "2020 Evgeny Poberezkin" },
@@ -110,29 +113,26 @@ test("the artifact includes pinned licenses and provenance for the SDK's embedde
   ];
   const auditRelative = path.join("npm-licenses", "@modelcontextprotocol", "server", "2.3.1");
   assert.deepEqual(
-    await json(path.join(artifact, "licenses", auditRelative, "embedded-dependencies.json")),
+    await json(path.join(root, "third_party", auditRelative, "embedded-dependencies.json")),
     dependencies.map(({ name, version, license }) => ({ name, version, license })),
   );
   assert.match(
-    await readFile(path.join(artifact, "licenses", auditRelative, "PROVENANCE"), "utf8"),
+    await readFile(path.join(root, "third_party", auditRelative, "PROVENANCE"), "utf8"),
     /Published npm tarball integrity:\r?\nsha512-/,
   );
   const notices = await readFile(path.join(artifact, "THIRD_PARTY_NOTICES"), "utf8");
   for (const dependency of dependencies) {
     const relative = path.join("npm-licenses", dependency.name, dependency.version);
-    const license = await readFile(path.join(artifact, "licenses", relative, "LICENSE"), "utf8");
-    const provenance = await readFile(path.join(artifact, "licenses", relative, "PROVENANCE"), "utf8");
+    const license = await readFile(path.join(root, "third_party", relative, "LICENSE"), "utf8");
+    const provenance = await readFile(path.join(root, "third_party", relative, "PROVENANCE"), "utf8");
     assert.ok(notices.includes(`=== ${dependency.name}@${dependency.version} (${dependency.license}) ===`));
     assert.ok(notices.includes(license), `${dependency.name}: preserve the complete license text in notices.`);
     assert.ok(license.includes(dependency.copyright));
     assert.match(provenance, /Published package gitHead: [0-9a-f]{40}\r?\n/);
     assert.match(provenance, /https:\/\/github\.com\/.+\/blob\/[0-9a-f]{40}\/LICENSE/);
-    for (const file of ["LICENSE", "PROVENANCE"]) {
-      assert.equal(
-        (await readFile(path.join(artifact, "licenses", relative, file), "utf8")).replace(/\r\n/g, "\n"),
-        (await readFile(path.join(root, "third_party", relative, file), "utf8")).replace(/\r\n/g, "\n"),
-      );
-    }
+  }
+  for (const source of [artifact, marketplaceArtifact]) {
+    await assert.rejects(stat(path.join(source, "licenses")), { code: "ENOENT" });
   }
 });
 
@@ -199,6 +199,9 @@ test("marketplace generation preserves authored files and replaces stale generat
   }
   for (const relative of ["server", "licenses"]) {
     await assert.rejects(stat(path.join(published, relative, "stale-build-probe.txt")), { code: "ENOENT" });
+  }
+  for (const source of [built, published]) {
+    await assert.rejects(stat(path.join(source, "licenses")), { code: "ENOENT" });
   }
   const paths = (await readdir(built, { recursive: true })).sort();
   assert.deepEqual((await readdir(published, { recursive: true })).sort(), paths);

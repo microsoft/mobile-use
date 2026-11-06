@@ -6,11 +6,13 @@ server/core packages retain their Apache-2.0 and applicable MIT notices.
 The plugin build appends license/notice texts for dependencies actually included
 in its server bundle. When a published npm package omits its license file, a
 version-specific upstream license and immutable source provenance are retained
-under third_party/npm-licenses. The build fails if neither source is available.
+in the source repository under third_party/npm-licenses. The build fails if
+neither license source is available.
 
 The MCP SDK also embeds dependencies that are not visible as separate esbuild
-inputs. Its version-pinned embedded-dependency audit under third_party/npm-licenses
-adds their license texts below and ships their licenses and immutable provenance.
+inputs. Its version-pinned embedded-dependency audit is retained in the source
+repository under third_party/npm-licenses. The build includes their complete
+license texts below, without duplicating the source audit records in the plugin.
 An SDK update requires a new audit; missing audit/license/provenance files fail
 the build rather than silently omitting embedded dependency notices.
 
@@ -462,7 +464,7 @@ the full license text.
 
 === @nodable/entities@3.1.0 (MIT) ===
 
---- Version-pinned upstream LICENSE; see licenses/npm-licenses provenance ---
+--- Version-pinned upstream LICENSE; provenance retained in the source repository ---
 MIT License
 
 Copyright (c) 2026 Nodable

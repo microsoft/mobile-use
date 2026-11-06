@@ -1,8 +1,0 @@
-Package: ajv-formats@3.0.1
-Declared license: MIT
-Published package gitHead: 1fb3fa7d967f919ff924bb34aef73a2f39ab0de3
-License source:
-https://github.com/ajv-validator/ajv-formats/blob/1fb3fa7d967f919ff924bb34aef73a2f39ab0de3/LICENSE
-
-Embedded in @modelcontextprotocol/server@2.3.1; see that package's pinned audit.
-This upstream license text applies to this exact dependency version only.

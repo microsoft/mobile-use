@@ -47,7 +47,9 @@ launcher is `node`, not a download-on-launch npm/npx command.
 `mcp.json`, and `skills` there. `build:plugin` copies those inputs to the ignored
 `dist\mobile-use` folder and builds fresh runtime/license assets without changing
 the tracked package. `build:marketplace` additionally replaces only `server`,
-`licenses`, `LICENSE`, and `THIRD_PARTY_NOTICES` in the tracked directory.
+`LICENSE`, and `THIRD_PARTY_NOTICES` in the tracked directory, and removes the
+legacy generated `licenses` folder. Dependency license texts are consolidated
+in `THIRD_PARTY_NOTICES`; source audit records stay under `third_party\npm-licenses`.
 Do not edit those generated assets by hand.
 
 The checked-in `src\gesture-helper-data.ts` embeds the gesture DEX and its
@@ -1031,11 +1033,13 @@ walk. This replacement is not a legal clean-room certification: the prior
 implementation and upstream source were previously examined.
 
 See [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES). Builds preserve license texts for
-dependencies actually bundled and copy version-specific license fallbacks only
+dependencies actually bundled and use version-specific license fallbacks only
 when needed. The SDK's prebundled dependencies are recorded separately under
 `third_party\npm-licenses\@modelcontextprotocol\server\2.3.1`, because esbuild
-cannot enumerate them as separate packages. The build appends their license texts
-and ships each exact-version license/provenance record, including the SDK audit.
+cannot enumerate them as separate packages. The build appends their complete
+license texts to the plugin's `THIRD_PARTY_NOTICES`. Exact-version license/provenance
+records, including the SDK audit, remain in `third_party\npm-licenses`; the plugin
+does not ship a separate `licenses` directory.
 Before updating the SDK, inspect its prebundled modules/source maps and add an
 audit for the new version and matching upstream license texts. Missing audits or
 embedded license/provenance files fail the build. These records do not change
