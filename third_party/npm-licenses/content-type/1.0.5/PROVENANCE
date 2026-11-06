@@ -1,0 +1,8 @@
+Package: content-type@1.0.5
+Declared license: MIT
+Published package gitHead: 6115a4064e4dfd9845241c3f89c233ee2423deeb
+License source:
+https://github.com/jshttp/content-type/blob/6115a4064e4dfd9845241c3f89c233ee2423deeb/LICENSE
+
+Embedded in @modelcontextprotocol/server@2.3.1; see that package's pinned audit.
+This upstream license text applies to this exact dependency version only.

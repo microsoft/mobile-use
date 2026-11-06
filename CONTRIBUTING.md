@@ -1032,7 +1032,14 @@ implementation and upstream source were previously examined.
 
 See [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES). Builds preserve license texts for
 dependencies actually bundled and copy version-specific license fallbacks only
-when needed. They do not change those dependencies' licenses.
+when needed. The SDK's prebundled dependencies are recorded separately under
+`third_party\npm-licenses\@modelcontextprotocol\server\2.3.1`, because esbuild
+cannot enumerate them as separate packages. The build appends their license texts
+and ships each exact-version license/provenance record, including the SDK audit.
+Before updating the SDK, inspect its prebundled modules/source maps and add an
+audit for the new version and matching upstream license texts. Missing audits or
+embedded license/provenance files fail the build. These records do not change
+the dependencies' licenses.
 
 ## Pull requests and community
 

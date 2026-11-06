@@ -99,6 +99,43 @@ test("the rebuilt artifact excludes the removed device backend but retains actua
   assert.match(notices, /@modelcontextprotocol\/server/);
 });
 
+test("the artifact includes pinned licenses and provenance for the SDK's embedded dependencies", async () => {
+  const dependencies = [
+    { name: "ajv", version: "8.18.0", license: "MIT", copyright: "2015-2021 Evgeny Poberezkin" },
+    { name: "ajv-formats", version: "3.0.1", license: "MIT", copyright: "2020 Evgeny Poberezkin" },
+    { name: "content-type", version: "1.0.5", license: "MIT", copyright: "2015 Douglas Christopher Wilson" },
+    { name: "fast-deep-equal", version: "3.1.3", license: "MIT", copyright: "2017 Evgeny Poberezkin" },
+    { name: "fast-uri", version: "3.1.0", license: "BSD-3-Clause", copyright: "2021-present The Fastify team" },
+    { name: "json-schema-traverse", version: "1.0.0", license: "MIT", copyright: "2017 Evgeny Poberezkin" },
+  ];
+  const auditRelative = path.join("npm-licenses", "@modelcontextprotocol", "server", "2.3.1");
+  assert.deepEqual(
+    await json(path.join(artifact, "licenses", auditRelative, "embedded-dependencies.json")),
+    dependencies.map(({ name, version, license }) => ({ name, version, license })),
+  );
+  assert.match(
+    await readFile(path.join(artifact, "licenses", auditRelative, "PROVENANCE"), "utf8"),
+    /Published npm tarball integrity:\r?\nsha512-/,
+  );
+  const notices = await readFile(path.join(artifact, "THIRD_PARTY_NOTICES"), "utf8");
+  for (const dependency of dependencies) {
+    const relative = path.join("npm-licenses", dependency.name, dependency.version);
+    const license = await readFile(path.join(artifact, "licenses", relative, "LICENSE"), "utf8");
+    const provenance = await readFile(path.join(artifact, "licenses", relative, "PROVENANCE"), "utf8");
+    assert.ok(notices.includes(`=== ${dependency.name}@${dependency.version} (${dependency.license}) ===`));
+    assert.ok(notices.includes(license), `${dependency.name}: preserve the complete license text in notices.`);
+    assert.ok(license.includes(dependency.copyright));
+    assert.match(provenance, /Published package gitHead: [0-9a-f]{40}\r?\n/);
+    assert.match(provenance, /https:\/\/github\.com\/.+\/blob\/[0-9a-f]{40}\/LICENSE/);
+    for (const file of ["LICENSE", "PROVENANCE"]) {
+      assert.equal(
+        (await readFile(path.join(artifact, "licenses", relative, file), "utf8")).replace(/\r\n/g, "\n"),
+        (await readFile(path.join(root, "third_party", relative, file), "utf8")).replace(/\r\n/g, "\n"),
+      );
+    }
+  }
+});
+
 test("the committed marketplace package matches the complete build", async () => {
   const expectedPaths = (await readdir(artifact, { recursive: true })).sort();
   const actualPaths = (await readdir(marketplaceArtifact, { recursive: true })).sort();
@@ -138,10 +175,16 @@ test("marketplace generation preserves authored files and replaces stale generat
     await mkdir(path.join(published, relative), { recursive: true });
     await writeFile(path.join(published, relative, "stale-build-probe.txt"), "stale\n", { flag: "wx" });
   }
-  const runBuild = (args) => {
+  const runBuild = (args, expectedError) => {
     const result = spawnSync(process.execPath, [path.join(fixture, "scripts", "build-plugin.mjs"), ...args], {
       cwd: fixture, encoding: "utf8", windowsHide: true, timeout: 120_000,
     });
+    if (expectedError) {
+      assert.equal(result.error, undefined);
+      assert.notEqual(result.status, 0, "Missing license metadata must fail the build.");
+      assert.match(result.stderr, expectedError);
+      return;
+    }
     assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
   };
 
@@ -162,6 +205,22 @@ test("marketplace generation preserves authored files and replaces stale generat
   for (const relative of paths) {
     if (!(await stat(path.join(built, relative))).isFile()) continue;
     assert.deepEqual(await readFile(path.join(published, relative)), await readFile(path.join(built, relative)));
+  }
+  const publishedNotices = await readFile(path.join(published, "THIRD_PARTY_NOTICES"));
+  for (const [relative, expectedError] of [
+    [path.join("@modelcontextprotocol", "server", "2.3.1", "embedded-dependencies.json"),
+      /Embedded dependency audit\/provenance missing for @modelcontextprotocol\/server@2\.3\.1/],
+    [path.join("@modelcontextprotocol", "server", "2.3.1", "PROVENANCE"),
+      /Embedded dependency audit\/provenance missing for @modelcontextprotocol\/server@2\.3\.1/],
+    [path.join("ajv", "8.18.0", "LICENSE"), /License\/provenance missing for embedded dependency ajv@8\.18\.0/],
+    [path.join("fast-uri", "3.1.0", "PROVENANCE"), /License\/provenance missing for embedded dependency fast-uri@3\.1\.0/],
+  ]) {
+    const file = path.join(fixture, "third_party", "npm-licenses", relative);
+    const original = await readFile(file);
+    await rm(file);
+    runBuild(["--marketplace"], expectedError);
+    assert.deepEqual(await readFile(path.join(published, "THIRD_PARTY_NOTICES")), publishedNotices);
+    await writeFile(file, original);
   }
 });
 

@@ -68,6 +68,28 @@ for (const input of Object.keys(result.metafile.inputs)) {
   dependencies.set(directory, await readJson(path.join(directory, "package.json")));
 }
 
+// esbuild cannot see dependencies that the published SDK has already bundled.
+for (const dependency of [...dependencies.values()]) {
+  if (dependency.name !== "@modelcontextprotocol/server") continue;
+  const relative = path.join("npm-licenses", ...dependency.name.split("/"), dependency.version);
+  const auditDirectory = path.join(root, "third_party", relative);
+  const auditFile = path.join(auditDirectory, "embedded-dependencies.json");
+  if (!existsSync(auditFile) || !existsSync(path.join(auditDirectory, "PROVENANCE"))) {
+    throw new Error(`Embedded dependency audit/provenance missing for ${dependency.name}@${dependency.version}.`);
+  }
+  const embeddedDependencies = await readJson(auditFile);
+  await cp(auditDirectory, path.join(output, "licenses", relative), { recursive: true });
+  for (const embedded of embeddedDependencies) {
+    const embeddedRelative = path.join("npm-licenses", ...embedded.name.split("/"), embedded.version);
+    const directory = path.join(root, "third_party", embeddedRelative);
+    if (!existsSync(path.join(directory, "LICENSE")) || !existsSync(path.join(directory, "PROVENANCE"))) {
+      throw new Error(`License/provenance missing for embedded dependency ${embedded.name}@${embedded.version}.`);
+    }
+    await cp(directory, path.join(output, "licenses", embeddedRelative), { recursive: true });
+    dependencies.set(directory, embedded);
+  }
+}
+
 let notices = await readFile(path.join(root, "THIRD_PARTY_NOTICES"), "utf8");
 for (const [directory, dependency] of [...dependencies].sort((a, b) =>
   a[1].name.localeCompare(b[1].name),

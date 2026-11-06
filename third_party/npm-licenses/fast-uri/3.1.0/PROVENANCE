@@ -1,0 +1,8 @@
+Package: fast-uri@3.1.0
+Declared license: BSD-3-Clause
+Published package gitHead: 2d08e68f4068320aa3f9da93a6f150e57af50c42
+License source:
+https://github.com/fastify/fast-uri/blob/2d08e68f4068320aa3f9da93a6f150e57af50c42/LICENSE
+
+Embedded in @modelcontextprotocol/server@2.3.1; see that package's pinned audit.
+This upstream license text applies to this exact dependency version only.
