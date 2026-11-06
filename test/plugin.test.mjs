@@ -10,6 +10,7 @@ import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotoc
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const artifact = path.join(root, "dist", "mobile-use");
+const marketplaceArtifact = path.join(root, "plugins", "mobile-use");
 const json = async (file) => JSON.parse(await readFile(file, "utf8"));
 
 test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launcher", async () => {
@@ -26,6 +27,8 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.equal(manifest.version, packageInfo.version);
   assert.equal(packageInfo.license, "MIT");
   assert.equal(manifest.license, "MIT");
+  assert.deepEqual(manifest.author, { name: "Microsoft", url: "https://github.com/microsoft" });
+  assert.equal(manifest.repository, "https://github.com/microsoft/mobile-use");
   assert.equal(mcp.$schema, "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json");
   assert.deepEqual(Object.keys(mcp).sort(), ["$schema", "mcpServers"]);
   assert.deepEqual(Object.keys(mcp.mcpServers), ["mobile-use"]);
@@ -36,6 +39,11 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
     cwd: "${PLUGIN_ROOT}",
   });
   const skill = await readFile(path.join(artifact, "skills", "mobile-use", "SKILL.md"), "utf8");
+  assert.ok(skill.split(/\r?\n/).length <= 500, "Agent Skills intake limits SKILL.md to 500 lines.");
+  assert.match(skill, /\[screen recording reference\]\(references\/screen-recording\.md\)/);
+  const recordingReference = await readFile(
+    path.join(artifact, "skills", "mobile-use", "references", "screen-recording.md"), "utf8",
+  );
   assert.match(skill, /^---\r?\nname: mobile-use\r?\ndescription: /);
   assert.match(skill, /## First-use setup \(required\)/);
   assert.match(skill, /Only \*\*Android SDK Platform-Tools\*\* is required/);
@@ -58,17 +66,18 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.match(skill, /Installation and uninstallation always need one-action explicit approval/);
   assert.match(skill, /## Screen recording/);
   assert.match(skill, /Screenshot-free\s+observation permission\s+never authorizes recording/);
-  assert.match(skill, /Omit it for unlimited recording until stopped/);
-  assert.match(skill, /### Android version differences and failure handling/);
-  assert.match(skill, /RECORDING_DURATION_UNSUPPORTED/);
-  assert.match(skill, /RECORDING_CAPABILITIES_UNAVAILABLE/);
-  assert.match(skill, /android-14\.0\.0_r1/);
-  assert.match(skill, /Use live `capabilities` results, not just Android version/);
+  assert.match(recordingReference, /Omit it for unlimited recording until stopped/);
+  assert.match(recordingReference, /## Android version differences and failure handling/);
+  assert.match(recordingReference, /RECORDING_DURATION_UNSUPPORTED/);
+  assert.match(recordingReference, /RECORDING_CAPABILITIES_UNAVAILABLE/);
+  assert.match(recordingReference, /android-14\.0\.0_r1/);
+  assert.match(recordingReference, /Use live `capabilities` results, not just Android version/);
   assert.match(skill, /does not read or validate Android-user identity/);
   assert.match(skill, /caller supervises approved content and consent/);
-  assert.match(skill, /status: starting/);
-  assert.match(skill, /does not poll startup or recorder exit, retry\s+commands, or reconcile racing results/);
-  assert.match(skill, /The AI caller decides when to request\s+status/);
+  assert.match(skill, /Never automatically replay uncertain\s+start\/stop\/export/);
+  assert.match(recordingReference, /status: starting/);
+  assert.match(recordingReference, /does not poll startup or recorder exit, retry\s+commands, or reconcile racing results/);
+  assert.match(recordingReference, /The AI caller decides when to request\s+status/);
   const notices = await readFile(path.join(artifact, "THIRD_PARTY_NOTICES"), "utf8");
   assert.match(notices, /@modelcontextprotocol\/server@2\.3\.1/);
   assert.match(notices, /zod@4\.6\.7/);
@@ -90,8 +99,30 @@ test("the rebuilt artifact excludes the removed device backend but retains actua
   assert.match(notices, /@modelcontextprotocol\/server/);
 });
 
-for (const mode of ["legacy", "auto"]) {
-  test(`copied artifact starts without node_modules over ${mode} MCP negotiation`, async (t) => {
+test("the committed marketplace package matches the complete build", async () => {
+  const expectedPaths = (await readdir(artifact, { recursive: true })).sort();
+  const actualPaths = (await readdir(marketplaceArtifact, { recursive: true })).sort();
+  const remediation = "Run npm run build:marketplace and commit plugins\\mobile-use.";
+  assert.deepEqual(actualPaths, expectedPaths, remediation);
+  for (const relative of expectedPaths) {
+    if (!(await stat(path.join(artifact, relative))).isFile()) continue;
+    const expected = await readFile(path.join(artifact, relative), "utf8");
+    const actual = await readFile(path.join(marketplaceArtifact, relative), "utf8");
+    // Git checks out the published text files as LF, even with core.autocrlf enabled.
+    assert.ok(
+      actual.replace(/\r\n/g, "\n") === expected.replace(/\r\n/g, "\n"),
+      `${relative}: ${remediation}`,
+    );
+  }
+});
+
+for (const [label, source, mode] of [
+  ["built", artifact, "legacy"],
+  ["built", artifact, "auto"],
+  ["marketplace", marketplaceArtifact, "legacy"],
+  ["marketplace", marketplaceArtifact, "auto"],
+]) {
+  test(`copied ${label} artifact starts without node_modules over ${mode} MCP negotiation`, async (t) => {
     const copied = await mkdtemp(path.join(tmpdir(), "mobile-use plugin with spaces "));
     let client;
     t.after(async () => {
@@ -103,7 +134,7 @@ for (const mode of ["legacy", "auto"]) {
     });
     const relative = path.relative(root, copied);
     assert.ok(relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative), "copy must not resolve dependencies from this checkout");
-    await cp(artifact, copied, { recursive: true });
+    await cp(source, copied, { recursive: true });
     await assert.rejects(stat(path.join(copied, "node_modules")), { code: "ENOENT" });
     const transport = new StdioClientTransport({
       command: process.execPath,

@@ -25,17 +25,18 @@ required to use the plugin. Windows may need the phone manufacturer's
 
 ## Install the plugin
 
-There is no marketplace package yet. Follow the
-[build instructions](CONTRIBUTING.md#build-and-check-the-plugin), then run this
-from the repository directory in PowerShell:
+The Awesome Copilot marketplace listing is not available yet. A prebuilt plugin
+is checked into this repository; from a checkout, run this in PowerShell:
 
 ```powershell
-copilot plugin install (Resolve-Path .\dist\mobile-use).Path
+copilot plugin install (Resolve-Path .\plugins\mobile-use).Path
 ```
 
-Install the built `dist\mobile-use` folder, not the repository root. Confirm
-the plugin and its tools appear in Copilot before using a phone. After rebuilding,
-update or reinstall the plugin to load your changes.
+No npm install or build is needed to use that package. Install the
+`plugins\mobile-use` folder, not the repository root or the source-only `plugin`
+folder. Confirm the plugin and its tools appear in Copilot before using a phone.
+For local development builds and updating the installed copy, see the
+[build instructions](CONTRIBUTING.md#build-and-check-the-plugin).
 
 ## Connect your device
 

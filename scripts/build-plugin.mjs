@@ -7,6 +7,10 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const output = path.join(root, "dist", "mobile-use");
+const args = process.argv.slice(2);
+if (args.length > 1 || args.some((arg) => arg !== "--marketplace")) {
+  throw new Error("Usage: node scripts\\build-plugin.mjs [--marketplace]");
+}
 const readJson = async (file) => JSON.parse(await readFile(file, "utf8"));
 const packageInfo = await readJson(path.join(root, "package.json"));
 const manifest = await readJson(path.join(root, "plugin", "plugin.json"));
@@ -91,6 +95,7 @@ for (const relative of [
   "mcp.json",
   path.join("server", "index.mjs"),
   path.join("skills", "mobile-use", "SKILL.md"),
+  path.join("skills", "mobile-use", "references", "screen-recording.md"),
   "LICENSE",
   "THIRD_PARTY_NOTICES",
 ]) {
@@ -99,3 +104,10 @@ for (const relative of [
   }
 }
 console.log(`Built dist\\mobile-use (${dependencies.size} bundled dependencies).`);
+
+if (args.includes("--marketplace")) {
+  const marketplaceOutput = path.join(root, "plugins", "mobile-use");
+  await rm(marketplaceOutput, { recursive: true, force: true });
+  await cp(output, marketplaceOutput, { recursive: true });
+  console.log("Updated plugins\\mobile-use. Commit the complete folder with its source changes.");
+}
