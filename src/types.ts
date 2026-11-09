@@ -32,6 +32,7 @@ export interface ScreenWindow {
 export type TransportKind = "usb" | "network" | "paired-wireless" | "emulator" | "unknown";
 
 export interface DeviceEndpoint {
+  platform?: "android" | "ios";
   endpointId: string;
   transportId: string | null;
   kind: TransportKind;
@@ -142,12 +143,13 @@ export interface CaptureTiming {
 }
 
 export interface Observation {
+  platform?: "android" | "ios";
   observationId: string;
   targetToken: string;
   capturedAt: string;
   captureTiming: CaptureTiming;
   nonAtomic: true;
-  display: { width: number; height: number; rotation: number | null } | null;
+  display: { width: number; height: number; rotation: number | null; scale?: number } | null;
   displayState: ReadStatus;
   screenshot: ReadStatus | { status: "skipped"; error: null };
   hierarchy: ReadStatus;

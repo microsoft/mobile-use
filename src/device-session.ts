@@ -4,6 +4,7 @@ import type { AdbConnection, MonitorFactory, TransportMonitor } from "./adb.js";
 import { AndroidBackend, isPointerButton, validateText } from "./android.js";
 import type { Hierarchy, Screenshot } from "./android.js";
 import { checkCancelled, MobileUseError, publicError } from "./errors.js";
+import type { AndroidDoctor, MobileService } from "./mobile-service.js";
 import { compareScreens, containsPoint, interactionRegion, intersects } from "./screen-guard.js";
 import { actionSchema, recordingActionSchema } from "./types.js";
 import { isAdbText } from "./text-input.js";
@@ -74,7 +75,8 @@ function readFailure(error: unknown): ReadStatus {
   return { status: "unavailable", error: failure.toJSON() };
 }
 
-export class MobileUseService {
+export class MobileUseService implements MobileService {
+  readonly platform = "android";
   private selected: TargetState | undefined;
   private snapshot: Snapshot | undefined;
   private queue: Promise<void> = Promise.resolve();
@@ -147,12 +149,12 @@ export class MobileUseService {
     }
   }
 
-  doctor(signal?: AbortSignal): Promise<{ status: "ready"; adbExecutable: string; platformToolsVersion: string }> {
+  doctor(signal?: AbortSignal): Promise<AndroidDoctor> {
     return this.serialize(async () => {
       const adbExecutable = this.adb.executable();
       const output = (await this.adb.run(["version"], signal ? { signal } : {})).toString("utf8");
       const { platformToolsVersion } = parseAdbVersion(output);
-      return { status: "ready", adbExecutable, platformToolsVersion };
+      return { status: "ready", platform: this.platform, adbExecutable, platformToolsVersion };
     }, signal);
   }
 

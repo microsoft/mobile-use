@@ -715,6 +715,9 @@ for (const mode of ["legacy", "auto"] as const) {
       "mobile_swipe", "mobile_tap", "mobile_wake",
     ]);
     assert.ok(tools.tools.every((tool) => typeof tool.title === "string" && tool.title.length > 0));
+    const selection = tools.tools.find((tool) => tool.name === "mobile_select_device");
+    assert.equal(selection?.annotations?.readOnlyHint, true);
+    assert.equal(selection?.annotations?.destructiveHint, false);
     for (const name of ["mobile_tap", "mobile_input_text"]) {
       const tool = tools.tools.find((entry) => entry.name === name);
       assert.deepEqual(tool?.inputSchema.required, ["targetToken", "action"]);
@@ -739,6 +742,7 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.equal(wake?.annotations?.idempotentHint, false);
     assert.deepEqual(wake?.inputSchema.required, ["targetToken"]);
     const doctor = payload(await client.callTool({ name: "mobile_doctor", arguments: {} }));
+    assert.equal(doctor.platform, "android");
     assert.equal(doctor.status, "ready");
     assert.equal(doctor.scope, "host");
     assert.equal(doctor.adbExecutable, "C:\\fixture-only\\adb.exe");

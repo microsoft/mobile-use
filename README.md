@@ -6,6 +6,10 @@ tablet** from Windows, over USB or modern paired wireless ADB.
 Read screens or UI text, tap and swipe, enter text, manage apps, and record
 silent screen videos on a device you explicitly select.
 
+An **iOS 17+ source adapter** is in development and is **not included in the
+checked-in plugin**. WDA personal signing/onboarding and real-device acceptance
+are not ready; see the [iOS MVP status](docs/ios-mvp.md).
+
 **Experimental:** this is a proof of concept, not a released or
 production-supported product. USB workflows, including screen recording, have
 been tested on one Android 11 phone. Paired-wireless acceptance remains
@@ -111,7 +115,8 @@ verify capture stopped on the phone; unsaved recordings may remain there.
 Use one controller per phone and reselect the device after disconnection.
 Exiting the plugin does not stop the shared ADB server or revoke debugging trust.
 
-Only real Android devices are supported, not iOS, emulators, or cloud devices.
+The checked-in plugin supports real Android devices, not emulators or cloud
+devices. The source-only iOS adapter is not a shipped plugin capability.
 There is no audio recording, streaming, or general-purpose file transfer.
 
 ## Help and contributing

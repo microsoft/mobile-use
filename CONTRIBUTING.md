@@ -13,6 +13,9 @@ setup in the README, plus specific consent for the device and task.
 
 ## Build and check the plugin
 
+Source validation, matching the default Windows CI, runs `npm run typecheck`
+and `npm test`. The commands below additionally validate the plugin package.
+
 From the repository directory in PowerShell:
 
 ```powershell
@@ -22,9 +25,18 @@ npm run check
 
 `check` typechecks, runs no-phone tests, builds/checks `dist\mobile-use`, and
 verifies that the committed `plugins\mobile-use` package matches the build.
-The Windows CI workflow runs the same command on Node 22 and 24. After changing
-plugin sources or dependencies, run `npm run build:marketplace` before `check`
-and commit the updated package along with the source changes.
+The default Windows workflow runs source checks on Node 22 and 24 and retains
+the Android helper/DEX checks. Source-only development does not require updating
+the checked-in plugin.
+
+The separate `plugin-release.yml` workflow runs on plugin package, packaging
+script/test, dependency or licensing changes in PRs and pushes to main, or through
+manual dispatch. It builds the candidate plugin and runs the unchanged strict
+parity and copied-artifact tests on Node 22 and 24; it does not generate or publish
+marketplace updates. Before intentional package updates, run
+`npm run build:marketplace` locally, then `check`, and commit the updated package.
+Keep the always-running source/helper checks required. Do not make the
+path-filtered release workflow a required check for every source-only PR.
 
 | Command | Purpose |
 | --- | --- |
@@ -165,6 +177,100 @@ each new version. Submit a listing-update PR to Awesome Copilot with the new
 version and source tag/SHA; the same quality gates apply. Keep prerequisite and
 safety documentation current at the pinned revision, and respond to maintainer
 feedback and the marketplace's six-month re-review process.
+
+## iOS WDA adapter
+
+This is source-only development, not a published plugin capability.
+`plugins\mobile-use` remains unchanged while WDA personal signing/onboarding,
+device bring-up and real-hardware acceptance are incomplete. See
+[iOS MVP status and development setup](docs/ios-mvp.md).
+
+`src\service-factory.ts` chooses the existing Android `MobileUseService` by
+default, or `IosMobileUseService` for `MOBILE_USE_PLATFORM=ios`. Invalid modes
+fail explicitly; there is no automatic platform fallback. Both implement the
+explicit, implementation-independent `MobileService` tool-facing contract.
+Each service has a required `platform`; doctor results discriminate on the same
+field. Android source doctor adds `platform: "android"` while preserving its
+existing fields. The Android driver, queue, guards and helpers remain unchanged.
+
+The iOS adapter connects only to the explicitly configured local WDA URL. It
+does not deploy/sign/start a Runner or add a Host/IPC/Grant layer. This MVP uses
+an independently started, dedicated Runner and user-managed forwarding. The
+development guide describes setup and platform-specific tool semantics; setting
+iOS environment variables on the checked-in plugin does not enable this adapter.
+
+`doctor`/inventory read `/status` and `/wda/device/info`, require real iOS 17+
+hardware, and do not capture or create sessions. The reported vendor UUID is
+IDFV, not UDID; no physical USB discovery is claimed. Explicit selection
+rejects a foreign session, then creates a session without an initial App,
+with automatic XCTest screenshots and terminate-on-session-end disabled.
+Noncompact element responses provide allowlisted fields for target resolution.
+iOS selection is annotated as a destructive, non-idempotent mutation because it
+creates or deletes an owned WDA session; Android selection retains its existing
+read-only annotations.
+
+Every selected request is serialized and checks the endpoint's vendor identity,
+WDA build and owned session. Observation reads lock state, pixel geometry from
+WDA points/scale, orientation, foreground Bundle ID/process, bounded XML hierarchy
+and optional PNG, then rechecks context before delivery. XML entity declarations,
+malformed attributes, oversized/deep trees and ambiguous focus fail explicitly.
+Secure editor subtrees are omitted; screenshots are not redacted.
+Formatting-only XML text is ignored without trimming attribute values or changing
+reference paths. Partially visible native controls keep their original bounds
+for matching and input guards. Full interface rotation comes from `/rotation`,
+not the direction-collapsing `/orientation` endpoint.
+
+Observations keep the existing token/ID/30-second/single-attempt model. iOS
+adds optional platform and screen scale metadata without changing Android
+outputs. Native roles indicate pointer/scroll eligibility; they are not exposed
+as Android-derived semantics. Reference revalidation binds the unique unchanged
+control to its hierarchy/window context and resolves an enabled, visible,
+hittable WDA element. Competing start-point controls must remain unchanged.
+Visual fallback reuses `screen-guard.ts`'s local pixel/metadata margin checks.
+All public coordinates are pixels; only W3C dispatch converts them to points.
+
+Pointer actions are single W3C sequences, including bounded movement, a fixed
+one-second stationary press, and exactly two taps with the requested gap.
+Text targets the unchanged keyboard-focused non-password editor and types at
+the current cursor without clearing or submitting; control characters are
+unsupported. HOME uses WDA's sessionless route while retaining target/context
+checks and verifying the response's owned session; BACK/ENTER are unsupported.
+Foreground and verified App launch
+use Bundle IDs, not invented Android user/activity fields. Other App-management,
+helper, wake and recording capabilities explicitly fail without fallback.
+
+Read/lookup failures preserve no-dispatch semantics. Mutation failures carry
+`actionMayHaveRun`; post-action capture failure preserves `dispatchStatus:
+dispatched`. Cancellation is propagated from MCP to HTTP but is not device-side
+quiescence. Shutdown drains the host queue and deletes only a still-identifiable
+owned session; it neither stops the external Runner nor reconnects after
+ownership loss. WDA checks remain non-atomic and metadata cannot distinguish
+all visually identical replacements.
+
+Protocol behavior was checked against Appium WDA 16.16.5 source at
+[`7585a1f`](https://github.com/appium/appium-ios/tree/7585a1f072ba795cf923708e91db890ef3a2dfb4/packages/webdriveragent),
+particularly session/response envelopes, device/screen metadata, XML source,
+element find/value/hittability and W3C actions. No WDA source, binary, signing
+material or third-party iOS implementation is bundled.
+
+`test\ios.test.ts` covers adapter state/guards/failure semantics and
+`test\ios-tools.test.ts` exercises the actual stdio entry point over both MCP
+protocol modes, using a local synthetic WDA. Run `npm run typecheck` and
+`npm test` for source validation; the default CI runs these independently of
+plugin packaging. `npm run check` additionally rebuilds the plugin and enforces
+parity with `plugins\mobile-use`; with the plugin frozen, that local full check
+is expected to fail. The release workflow retains this gate for package-related
+changes or manual dispatch. It is not a waived check or evidence that the current
+plugin contains iOS support.
+Do not refresh marketplace assets until plugin integration is ready.
+
+Hardware acceptance is still pending: verify signing/trust outside the adapter,
+physical-device identity, screenshot
+scale/orientation, native controls and editor cursor behavior, App transitions,
+system overlays, disconnect/cancellation and owned-session cleanup with a real
+phone and a development MCP client. Installed-plugin acceptance follows only
+when the adapter is intentionally packaged. Fixture success is not hardware
+acceptance.
 
 ## Implementation and tool contracts
 
