@@ -8,13 +8,16 @@ export async function createIosFixture() {
     sessionId: null as string | null, sequence: 0,
     uuid: "11111111-1111-4111-8111-111111111111", simulator: false, iosVersion: "17.5",
     app: "example.demo", pid: 100, build: "fixture-boot", locked: false,
-    shade: 8, scale: 2, rotation: "PORTRAIT", buttonEnabled: true, buttonLabel: "Tap",
+    shade: 8, scale: 2, rotation: 0, rotationX: 0, rotationY: 0,
+    buttonEnabled: true, buttonLabel: "Tap", buttonX: 5,
     windowName: "Main", value: "safe", focusId: "editor", focusType: "XCUIElementTypeTextField",
     overlay: false,
+    prettySource: true, screenshot: undefined as string | undefined,
     failAction: false, failAfterAction: false, corruptSource: false,
     sourceHook: undefined as (() => void) | undefined,
     actionHook: undefined as (() => Promise<void>) | undefined,
   };
+  const buttonRect = () => ({ ...rects.button, x: state.buttonX });
   const rects = {
     button: { x: 5, y: 5, width: 10, height: 10 },
     editor: { x: 5, y: 25, width: 20, height: 10 },
@@ -26,7 +29,7 @@ export async function createIosFixture() {
     `<${type} name="${attribute(name)}" label="${attribute(label)}" value="${attribute(value)}" enabled="${enabled}" visible="true" ` +
     `x="${rect.x}" y="${rect.y}" width="${rect.width}" height="${rect.height}">${children}</${type}>`;
   function source() {
-    const children = node("XCUIElementTypeButton", "button", state.buttonLabel, "", rects.button, "", state.buttonEnabled) +
+    const children = node("XCUIElementTypeButton", "button", state.buttonLabel, "", buttonRect(), "", state.buttonEnabled) +
       node("XCUIElementTypeTextField", "editor", "Notes", state.value, rects.editor) +
       node("XCUIElementTypeTable", "table", "List", "", rects.table) +
       node("XCUIElementTypeSecureTextField", "private-name", "private-label", "private-value",
@@ -35,14 +38,16 @@ export async function createIosFixture() {
           { x: 30, y: 25, width: 5, height: 10 })) +
       (state.overlay ? node("XCUIElementTypeButton", "overlay", "Overlay", "", rects.button) : "");
     const full = { x: 0, y: 0, width: 40, height: 80 };
-    return `<AppiumAUT>${node("XCUIElementTypeApplication", "Demo", "Demo", "", full,
+    const xml = `<AppiumAUT>${node("XCUIElementTypeApplication", "Demo", "Demo", "", full,
       node("XCUIElementTypeWindow", state.windowName, "", "", full, children))}</AppiumAUT>`;
+    return state.prettySource ? `\n${xml.replaceAll("><", ">\n  <")}\n` : xml;
   }
   function element(id: keyof typeof rects) {
     const type = id === "button" ? "XCUIElementTypeButton" : id === "table" ? "XCUIElementTypeTable" : state.focusType;
     return {
       "element-6066-11e4-a52e-4f735466cecf": id === "editor" ? state.focusId : id,
-      type, rect: rects[id], enabled: id === "button" ? state.buttonEnabled : true, displayed: true,
+      type, rect: id === "button" ? buttonRect() : rects[id],
+      enabled: id === "button" ? state.buttonEnabled : true, displayed: true,
       label: id === "button" ? state.buttonLabel : id === "editor" ? "Notes" : "List",
       "attribute/name": id, "attribute/value": id === "editor" ? state.value : null,
     };
@@ -81,30 +86,33 @@ export async function createIosFixture() {
         reply(null);
         return;
       }
-      if (!state.sessionId || !path.startsWith(`/session/${state.sessionId}/`)) {
+      const home = path === "/wda/homescreen" && request.method === "POST";
+      if (!home && (!state.sessionId || !path.startsWith(`/session/${state.sessionId}/`))) {
         reply({ error: "invalid session id", message: "private-error" }, 404);
         return;
       }
-      const command = path.slice(`/session/${state.sessionId}`.length);
+      const command = home ? path : path.slice(`/session/${state.sessionId}`.length);
       if (command === "/wda/locked") reply(state.locked);
       else if (command === "/wda/activeAppInfo") reply({ bundleId: state.app, pid: state.pid, name: "private-device-name" });
       else if (command === "/wda/screen") reply({ screenSize: { width: 40, height: 80 }, scale: state.scale });
-      else if (command === "/orientation") reply(state.rotation);
+      else if (command === "/orientation") reply(state.rotation === 0 || state.rotation === 180 ? "PORTRAIT" : "LANDSCAPE");
+      else if (command === "/rotation") reply({ x: state.rotationX, y: state.rotationY, z: state.rotation });
       else if (command === "/source?format=xml") {
         const xml = state.corruptSource ? "<broken" : source();
         state.sourceHook?.();
         reply(xml);
-      } else if (command === "/screenshot") reply(png(Math.round(40 * state.scale), Math.round(80 * state.scale), state.shade).toString("base64"));
+      } else if (command === "/screenshot") reply(state.screenshot ??
+        png(Math.round(40 * state.scale), Math.round(80 * state.scale), state.shade).toString("base64"));
       else if (command === "/element/active") reply(element("editor"));
       else if (command === "/elements") {
         const predicate = typeof input === "object" && input !== null && "value" in input ? String(input.value) : "";
         const id = predicate.includes("'button'") ? "button" : predicate.includes("'table'") ? "table" : "editor";
         reply([element(id)]);
       } else if (command.endsWith("/attribute/hittable")) reply(true);
-      else if (command === "/actions" || command.endsWith("/value") || command === "/wda/homescreen") {
+      else if (command === "/actions" || command.endsWith("/value") || home) {
         await state.actionHook?.();
         if (command.endsWith("/value") && typeof input === "object" && input !== null && "text" in input) state.value += String(input.text);
-        if (command === "/wda/homescreen") { state.app = "com.apple.springboard"; state.pid++; }
+        if (home) { state.app = "com.apple.springboard"; state.pid++; }
         if (state.failAfterAction) state.corruptSource = true;
         if (state.failAction) response.destroy(); else reply(null);
       } else if (command === "/wda/apps/launch") {

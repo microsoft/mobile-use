@@ -1,5 +1,6 @@
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { isRecord, MobileUseError } from "../errors.js";
+import { intersects } from "../screen-guard.js";
 import type { Rect, ScreenElement } from "../types.js";
 import type { WdaElement } from "./wda.js";
 
@@ -22,6 +23,11 @@ function invalid(): never {
     "Stop input. Use an observable, non-sensitive native screen; do not fall back to raw commands.");
 }
 
+function elementEntries(values: unknown[]): unknown[] {
+  return values.filter((value) => !(isRecord(value) && Object.keys(value).length === 1 &&
+    typeof value["#text"] === "string" && /^[ \t\r\n]*$/.test(value["#text"])));
+}
+
 export function pixels(rect: Rect, scale: number): Rect {
   const x = Math.round(rect.x * scale);
   const y = Math.round(rect.y * scale);
@@ -38,11 +44,14 @@ export function parseIosHierarchy(xml: string, scale: number, appId: string,
     attributeNamePrefix: "", parseAttributeValue: false, parseTagValue: false,
     trimValues: false, htmlEntities: true,
   }).parse(xml);
-  if (!Array.isArray(tree) || tree.length !== 1 || !isRecord(tree[0])) invalid();
-  const root = tree[0];
-  const roots = Array.isArray(root.AppiumAUT) ? root.AppiumAUT : [root];
+  if (!Array.isArray(tree)) invalid();
+  const entries = elementEntries(tree);
+  if (entries.length !== 1 || !isRecord(entries[0])) invalid();
+  const root = entries[0];
+  const roots = Array.isArray(root.AppiumAUT) ? elementEntries(root.AppiumAUT) : [root];
   if (roots.length !== 1 || !isRecord(roots[0]) || !Array.isArray(roots[0].XCUIElementTypeApplication)) invalid();
-  const pending = [{ value: roots[0], path: "0", depth: 0, window: null as string | null }];
+  const pending: Array<{ value: unknown; path: string; depth: number; window: string | null }> =
+    [{ value: roots[0], path: "0", depth: 0, window: null }];
   const nodes: IosNode[] = [];
   let visited = 0;
   let bytes = 0;
@@ -84,8 +93,8 @@ export function parseIosHierarchy(xml: string, scale: number, appId: string,
     const enabled = flag(attrs, "enabled");
     const visible = flag(attrs, "visible");
     const window = type === "XCUIElementTypeWindow" ? JSON.stringify([name, bounds]) : frame.window;
-    if (visible === true && bounds.x >= 0 && bounds.y >= 0 && bounds.width > 0 && bounds.height > 0 &&
-      bounds.x + bounds.width <= display.width && bounds.y + bounds.height <= display.height &&
+    if (visible === true && bounds.width > 0 && bounds.height > 0 &&
+      intersects(bounds, { x: 0, y: 0, width: display.width, height: display.height }) &&
       (name || label || value || pointerTypes.has(type) || scrollTypes.has(type))) {
       const element: Omit<ScreenElement, "ref"> = {
         bounds, className: type, label, text: value || (editorTypes.has(type) ? "" : label),
@@ -97,8 +106,9 @@ export function parseIosHierarchy(xml: string, scale: number, appId: string,
       if (nodes.length >= 500 || bytes > 512 * 1024) invalid();
       nodes.push({ element, name, path: frame.path, window });
     }
-    for (let index = children.length - 1; index >= 0; index--) {
-      pending.push({ value: children[index], path: `${frame.path}.${index}`, depth: frame.depth + 1, window });
+    const elements = elementEntries(children);
+    for (let index = elements.length - 1; index >= 0; index--) {
+      pending.push({ value: elements[index], path: `${frame.path}.${index}`, depth: frame.depth + 1, window });
     }
   }
   return { nodes, protectedContentOmitted };

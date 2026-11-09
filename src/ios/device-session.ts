@@ -354,7 +354,7 @@ export class IosMobileUseService implements MobileService {
     } else if (action.kind === "key") {
       if (action.key !== "HOME") throw wdaFailure("UNSUPPORTED_OPERATION");
       await this.assertContext(target, live, signal);
-      await this.wda.command(target.sessionId, "POST", "/wda/homescreen", signal, {});
+      await this.wda.home(target.sessionId, signal);
       return;
     } else {
       throw wdaFailure("UNSUPPORTED_OPERATION");

@@ -148,6 +148,10 @@ export class WdaClient {
     return (await this.request(method, `/session/${sessionId}${path}`, signal, body, mutating, sessionId)).value;
   }
 
+  async home(sessionId: string, signal?: AbortSignal): Promise<void> {
+    await this.request("POST", "/wda/homescreen", signal, {}, true, sessionId);
+  }
+
   async closeSession(sessionId: string): Promise<void> {
     const current = await this.probe();
     if (current.sessionId !== sessionId) throw wdaFailure("TRANSPORT_LOST");
@@ -168,18 +172,17 @@ export class WdaClient {
       screenSize: z.object({ width: z.number().positive().max(8192), height: z.number().positive().max(8192) }),
       scale: z.number().positive().max(4),
     }).safeParse(await this.command(sessionId, "GET", "/wda/screen", signal));
-    const orientation = await this.command(sessionId, "GET", "/orientation", signal);
-    const rotation = new Map<string, number>([
-      ["PORTRAIT", 0], ["LANDSCAPE", 1],
-      ["UIA_DEVICE_ORIENTATION_PORTRAIT_UPSIDEDOWN", 2], ["UIA_DEVICE_ORIENTATION_LANDSCAPERIGHT", 3],
-    ]).get(typeof orientation === "string" ? orientation : "");
-    if (!parsed.success || rotation === undefined) throw wdaFailure("DISPLAY_STATE_UNAVAILABLE");
+    const rotation = z.object({
+      x: z.literal(0), y: z.literal(0),
+      z: z.union([z.literal(0), z.literal(90), z.literal(180), z.literal(270)]),
+    }).safeParse(await this.command(sessionId, "GET", "/rotation", signal));
+    if (!parsed.success || !rotation.success) throw wdaFailure("DISPLAY_STATE_UNAVAILABLE");
     const { screenSize, scale } = parsed.data;
     const width = Math.round(screenSize.width * scale);
     const height = Math.round(screenSize.height * scale);
     if (Math.abs(width - screenSize.width * scale) > 0.01 ||
       Math.abs(height - screenSize.height * scale) > 0.01) throw wdaFailure("DISPLAY_STATE_UNAVAILABLE");
-    return { width, height, scale, rotation };
+    return { width, height, scale, rotation: rotation.data.z / 90 };
   }
 
   async assertUnlocked(sessionId: string, signal?: AbortSignal) {
@@ -198,7 +201,7 @@ export class WdaClient {
   async screenshot(sessionId: string, signal?: AbortSignal): Promise<Buffer> {
     const value = await this.command(sessionId, "GET", "/screenshot", signal);
     if (typeof value !== "string" || !value.length || value.length > 24 * 1024 * 1024 ||
-      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+      value.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(value) || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) {
       throw wdaFailure("CAPTURE_UNAVAILABLE");
     }
     return Buffer.from(value, "base64");

@@ -198,6 +198,10 @@ WDA points/scale, orientation, foreground Bundle ID/process, bounded XML hierarc
 and optional PNG, then rechecks context before delivery. XML entity declarations,
 malformed attributes, oversized/deep trees and ambiguous focus fail explicitly.
 Secure editor subtrees are omitted; screenshots are not redacted.
+Formatting-only XML text is ignored without trimming attribute values or changing
+reference paths. Partially visible native controls keep their original bounds
+for matching and input guards. Full interface rotation comes from `/rotation`,
+not the direction-collapsing `/orientation` endpoint.
 
 Observations keep the existing token/ID/30-second/single-attempt model. iOS
 adds optional platform and screen scale metadata without changing Android
@@ -212,7 +216,9 @@ Pointer actions are single W3C sequences, including bounded movement, a fixed
 one-second stationary press, and exactly two taps with the requested gap.
 Text targets the unchanged keyboard-focused non-password editor and types at
 the current cursor without clearing or submitting; control characters are
-unsupported. HOME works, not BACK/ENTER. Foreground and verified App launch
+unsupported. HOME uses WDA's sessionless route while retaining target/context
+checks and verifying the response's owned session; BACK/ENTER are unsupported.
+Foreground and verified App launch
 use Bundle IDs, not invented Android user/activity fields. Other App-management,
 helper, wake and recording capabilities explicitly fail without fallback.
 

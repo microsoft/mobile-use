@@ -4,7 +4,8 @@ import type { TestContext } from "node:test";
 import { isRecord, MobileUseError } from "../src/errors.js";
 import { IosMobileUseService } from "../src/ios/device-session.js";
 import { parseIosHierarchy } from "../src/ios/hierarchy.js";
-import { readWdaUrl } from "../src/ios/wda.js";
+import { readWdaUrl, WdaClient } from "../src/ios/wda.js";
+import { chunk, png } from "./helpers.js";
 import { createIosFixture } from "./ios-fixture.js";
 
 async function fixture(t: TestContext, now?: () => number) {
@@ -237,7 +238,7 @@ test("observations expire and are consumed once even on a rejected target", asyn
 test("App/rotation/window changes block old references and do not dispatch", async (t) => {
   const f = await fixture(t);
   const token = await select(f);
-  for (const mutate of [() => { f.state.app = "example.other"; }, () => { f.state.rotation = "LANDSCAPE"; },
+  for (const mutate of [() => { f.state.app = "example.other"; }, () => { f.state.rotation = 90; },
     () => { f.state.windowName = "Replacement"; }]) {
     const screen = await f.service.observe(token, undefined, false);
     mutate();
@@ -338,6 +339,7 @@ test("Home works while unsupported capabilities reject explicitly without touchi
   let screen = await f.service.observe(token, undefined, false);
   await f.service.act(token, screen.observation.observationId, { kind: "key", key: "HOME" });
   assert.equal(f.state.app, "com.apple.springboard");
+  assert.equal(mutations(f)[0]?.path, "/wda/homescreen");
   const calls = f.calls.length;
   for (const operation of [
     () => f.service.startAdbServer(), () => f.service.wake(token), () => f.service.prepareGestures(token),
@@ -374,4 +376,124 @@ test("iOS hierarchy parsing rejects entities, excessive depth and malformed geom
   const wrapping = '<XCUIElementTypeOther x="0" y="0" width="1" height="1" enabled="true" visible="true">';
   const deep = wrapping.repeat(65) + "</XCUIElementTypeOther>".repeat(65);
   assert.throws(() => parse(f.source().replace("</XCUIElementTypeApplication>", deep + "</XCUIElementTypeApplication>")));
+});
+
+test("indented WDA XML preserves attributes and reference identity without accepting meaningful tag text", async (t) => {
+  const f = await fixture(t);
+  f.state.value = "  spaced & text  ";
+  f.state.prettySource = false;
+  const compact = f.source();
+  const parse = (xml: string) => parseIosHierarchy(xml, 2, "example.demo", { width: 80, height: 160 });
+  f.state.prettySource = true;
+  assert.deepEqual(parse(f.source()), parse(compact));
+  assert.equal(parse(f.source()).nodes.find((node) => node.name === "editor")?.element.text, f.state.value);
+  assert.throws(() => parse(compact.replace("<AppiumAUT>", "<AppiumAUT>unexpected")));
+  assert.throws(() => parse(compact.replace("</XCUIElementTypeWindow>", "unexpected</XCUIElementTypeWindow>")));
+  f.state.prettySource = false;
+  const token = await select(f);
+  const before = await f.service.observe(token, undefined, false);
+  f.state.prettySource = true;
+  const result = await f.service.act(token, before.observation.observationId, {
+    kind: "tap", target: { elementRef: ref(before, "button") },
+  });
+  assert.equal(result.dispatchStatus, "dispatched");
+});
+
+test("partially visible disabled controls cannot fall back to visual taps and keep native geometry", async (t) => {
+  const f = await fixture(t);
+  f.state.buttonX = -1;
+  f.state.buttonEnabled = false;
+  const token = await select(f);
+  let screen = await f.service.observe(token);
+  const action = { kind: "tap", target: { x: 2, y: 20, bounds: { x: 0, y: 10, width: 18, height: 20 } } };
+  await assert.rejects(f.service.act(token, screen.observation.observationId, action), (error: unknown) =>
+    error instanceof MobileUseError && error.code === "ELEMENT_CHANGED" && !error.actionMayHaveRun);
+  assert.equal(mutations(f).length, 0);
+  assert.deepEqual(screen.observation.elements.find((node) => node.resourceId === "button")?.bounds,
+    { x: -2, y: 10, width: 20, height: 20 });
+  f.state.buttonEnabled = true;
+  screen = await f.service.observe(token);
+  assert.equal((await f.service.act(token, screen.observation.observationId, action)).dispatchStatus, "dispatched");
+  assert.equal(mutations(f).length, 1);
+});
+
+test("multi-megabyte valid PNG screenshots survive observation and post-action capture", async (t) => {
+  const f = await fixture(t);
+  const image = png();
+  const large = Buffer.concat([
+    image.subarray(0, -12),
+    chunk("tEXt", Buffer.concat([Buffer.from("fixture\0"), Buffer.alloc(3 * 1024 * 1024, 97)])),
+    image.subarray(-12),
+  ]);
+  f.state.screenshot = large.toString("base64");
+  const token = await select(f);
+  const screen = await f.service.observe(token);
+  assert.deepEqual(screen.image, large);
+  const result = await f.service.act(token, screen.observation.observationId, {
+    kind: "tap", target: { elementRef: ref(screen, "button") },
+  });
+  assert.equal(result.dispatchStatus, "dispatched");
+  assert.equal(result.verificationStatus, "requires-observation-review");
+  assert.deepEqual(result.after?.image, large);
+});
+
+test("screenshot Base64 validation rejects invalid length, alphabet and padding", async (t) => {
+  const f = await fixture(t);
+  await select(f);
+  const sessionId = f.state.sessionId;
+  assert.ok(sessionId);
+  const wda = new WdaClient(f.url);
+  for (const value of ["", "AAAAA", "AA=A", "A===", "AA?=", "AAAA\n", "AAA\n", "AAA\r", "AA\r\n"]) {
+    f.state.screenshot = value;
+    await assert.rejects(wda.screenshot(sessionId), (error: unknown) =>
+      error instanceof MobileUseError && error.code === "CAPTURE_UNAVAILABLE");
+  }
+});
+
+test("HOME verifies the owned session even though its route is sessionless", async (t) => {
+  const f = await fixture(t);
+  const token = await select(f);
+  const screen = await f.service.observe(token, undefined, false);
+  f.state.actionHook = async () => { f.state.sessionId = "foreign-session"; };
+  const result = await f.service.act(token, screen.observation.observationId, { kind: "key", key: "HOME" });
+  assert.equal(result.dispatchStatus, "outcome-unknown");
+  assert.equal(result.error?.code, "TRANSPORT_LOST");
+  assert.equal(result.error?.actionMayHaveRun, true);
+  assert.equal(mutations(f)[0]?.path, "/wda/homescreen");
+  await f.service.stop();
+  assert.equal(f.state.sessionId, "foreign-session");
+  assert.equal(f.calls.some((call) => call.method === "DELETE"), false);
+});
+
+test("observations distinguish all four interface rotations and reject unsupported axes or angles", async (t) => {
+  const f = await fixture(t);
+  const token = await select(f);
+  for (const angle of [0, 90, 180, 270]) {
+    f.state.rotation = angle;
+    assert.equal((await f.service.observe(token, undefined, false)).observation.display?.rotation, angle / 90);
+  }
+  f.state.rotation = 45;
+  await assert.rejects(f.service.observe(token, undefined, false), (error: unknown) =>
+    error instanceof MobileUseError && error.code === "DISPLAY_STATE_UNAVAILABLE");
+  f.state.rotation = 0;
+  f.state.rotationX = 90;
+  await assert.rejects(f.service.observe(token, undefined, false), (error: unknown) =>
+    error instanceof MobileUseError && error.code === "DISPLAY_STATE_UNAVAILABLE");
+});
+
+test("opposite portrait and landscape rotations block old refs even with unchanged dimensions and metadata", async (t) => {
+  for (const [before, after] of [[0, 180], [90, 270]] as const) {
+    await t.test(`${before} to ${after}`, async (t) => {
+      const f = await fixture(t);
+      const token = await select(f);
+      f.state.rotation = before;
+      const screen = await f.service.observe(token, undefined, false);
+      f.state.rotation = after;
+      await assert.rejects(f.service.act(token, screen.observation.observationId, {
+        kind: "tap", target: { elementRef: ref(screen, "button") },
+      }), (error: unknown) => error instanceof MobileUseError &&
+        error.code === "STALE_OBSERVATION" && !error.actionMayHaveRun);
+      assert.equal(mutations(f).length, 0);
+    });
+  }
 });
