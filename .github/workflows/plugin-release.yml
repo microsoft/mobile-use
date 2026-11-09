@@ -1,0 +1,52 @@
+name: Windows plugin release checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "plugins/mobile-use/**"
+      - "scripts/build-plugin.mjs"
+      - "test/plugin.test.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - "LICENSE"
+      - "THIRD_PARTY_NOTICES"
+      - "third_party/**"
+  pull_request:
+    paths:
+      - "plugins/mobile-use/**"
+      - "scripts/build-plugin.mjs"
+      - "test/plugin.test.mjs"
+      - "package.json"
+      - "package-lock.json"
+      - "LICENSE"
+      - "THIRD_PARTY_NOTICES"
+      - "third_party/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plugin-release:
+    name: Plugin release checks (Node ${{ matrix.node }})
+    runs-on: windows-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: Restore locked dependencies without install scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build candidate plugin
+        run: npm run build:plugin
+      - name: Verify marketplace parity and copied-artifact behavior
+        run: npm run test:plugin

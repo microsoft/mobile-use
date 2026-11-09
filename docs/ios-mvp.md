@@ -136,7 +136,12 @@ Run `npm run typecheck` and `npm test` for source validation, including Android
 regression tests and both iOS stdio MCP negotiation modes. Fixtures validate the
 flow without a phone; real-device and client/platform acceptance remains pending.
 
-The existing `npm run check` also rebuilds the plugin and requires its output
+Default Windows CI runs source validation and Android helper/DEX checks.
+The separate plugin release workflow runs for package-related changes or manual
+dispatch, preserving strict parity and copied-artifact checks without requiring
+source-only development to update the checked-in plugin.
+
+The local `npm run check` also rebuilds the plugin and requires its output
 to match `plugins\mobile-use`. Because the checked-in plugin is intentionally
 frozen, that release-integration parity check will fail until packaging is ready.
 Do not bypass it or run `npm run build:marketplace` to publish this adapter early.

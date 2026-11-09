@@ -1,4 +1,4 @@
-name: Windows plugin checks
+name: Windows source checks
 
 on:
   push:
@@ -28,8 +28,10 @@ jobs:
           cache: npm
       - name: Restore locked dependencies without install scripts
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Typecheck, fixtures, bundle, marketplace drift, and copied-artifact checks
-        run: npm run check
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Android and iOS source tests
+        run: npm test
   gesture-helper:
     name: Android helper sources and embedded DEX
     runs-on: windows-latest

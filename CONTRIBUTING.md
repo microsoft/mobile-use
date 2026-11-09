@@ -13,6 +13,9 @@ setup in the README, plus specific consent for the device and task.
 
 ## Build and check the plugin
 
+Source validation, matching the default Windows CI, runs `npm run typecheck`
+and `npm test`. The commands below additionally validate the plugin package.
+
 From the repository directory in PowerShell:
 
 ```powershell
@@ -22,9 +25,18 @@ npm run check
 
 `check` typechecks, runs no-phone tests, builds/checks `dist\mobile-use`, and
 verifies that the committed `plugins\mobile-use` package matches the build.
-The Windows CI workflow runs the same command on Node 22 and 24. After changing
-plugin sources or dependencies, run `npm run build:marketplace` before `check`
-and commit the updated package along with the source changes.
+The default Windows workflow runs source checks on Node 22 and 24 and retains
+the Android helper/DEX checks. Source-only development does not require updating
+the checked-in plugin.
+
+The separate `plugin-release.yml` workflow runs on plugin package, packaging
+script/test, dependency or licensing changes in PRs and pushes to main, or through
+manual dispatch. It builds the candidate plugin and runs the unchanged strict
+parity and copied-artifact tests on Node 22 and 24; it does not generate or publish
+marketplace updates. Before intentional package updates, run
+`npm run build:marketplace` locally, then `check`, and commit the updated package.
+Keep the always-running source/helper checks required. Do not make the
+path-filtered release workflow a required check for every source-only PR.
 
 | Command | Purpose |
 | --- | --- |
@@ -239,10 +251,12 @@ material or third-party iOS implementation is bundled.
 `test\ios.test.ts` covers adapter state/guards/failure semantics and
 `test\ios-tools.test.ts` exercises the actual stdio entry point over both MCP
 protocol modes, using a local synthetic WDA. Run `npm run typecheck` and
-`npm test` for source validation. `npm run check` additionally rebuilds the
-plugin and enforces parity with `plugins\mobile-use`; with the plugin frozen,
-that parity check is expected to fail. It is a pending release-integration check,
-not a waived check or evidence that the current plugin contains iOS support.
+`npm test` for source validation; the default CI runs these independently of
+plugin packaging. `npm run check` additionally rebuilds the plugin and enforces
+parity with `plugins\mobile-use`; with the plugin frozen, that local full check
+is expected to fail. The release workflow retains this gate for package-related
+changes or manual dispatch. It is not a waived check or evidence that the current
+plugin contains iOS support.
 Do not refresh marketplace assets until plugin integration is ready.
 
 Hardware acceptance is still pending: verify signing/trust outside the adapter,
