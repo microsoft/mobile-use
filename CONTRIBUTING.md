@@ -168,6 +168,11 @@ feedback and the marketplace's six-month re-review process.
 
 ## iOS WDA adapter
 
+This is source-only development, not a published plugin capability.
+`plugins\mobile-use` remains unchanged while WDA personal signing/onboarding,
+device bring-up and real-hardware acceptance are incomplete. See
+[iOS MVP status and development setup](docs/ios-mvp.md).
+
 `src\service-factory.ts` chooses the existing Android `MobileUseService` by
 default, or `IosMobileUseService` for `MOBILE_USE_PLATFORM=ios`. Invalid modes
 fail explicitly; there is no automatic platform fallback. Both implement the
@@ -176,9 +181,9 @@ helpers and output fields remain unchanged.
 
 The iOS adapter connects only to the explicitly configured local WDA URL. It
 does not deploy/sign/start a Runner or add a Host/IPC/Grant layer. This MVP uses
-an independently started, dedicated Runner and user-managed forwarding. Read
-the packaged [iOS reference](plugins/mobile-use/skills/mobile-use/references/ios.md)
-for setup and platform-specific tool semantics.
+an independently started, dedicated Runner and user-managed forwarding. The
+development guide describes setup and platform-specific tool semantics; setting
+iOS environment variables on the checked-in plugin does not enable this adapter.
 
 `doctor`/inventory read `/status` and `/wda/device/info`, require real iOS 17+
 hardware, and do not capture or create sessions. The reported vendor UUID is
@@ -227,12 +232,20 @@ material or third-party iOS implementation is bundled.
 
 `test\ios.test.ts` covers adapter state/guards/failure semantics and
 `test\ios-tools.test.ts` exercises the actual stdio entry point over both MCP
-protocol modes, using a local synthetic WDA. Run `npm run check` for the complete
-existing suite and plugin parity checks. Hardware acceptance is still pending:
-verify signing/trust outside the plugin, physical-device identity, screenshot
+protocol modes, using a local synthetic WDA. Run `npm run typecheck` and
+`npm test` for source validation. `npm run check` additionally rebuilds the
+plugin and enforces parity with `plugins\mobile-use`; with the plugin frozen,
+that parity check is expected to fail. It is a pending release-integration check,
+not a waived check or evidence that the current plugin contains iOS support.
+Do not refresh marketplace assets until plugin integration is ready.
+
+Hardware acceptance is still pending: verify signing/trust outside the adapter,
+physical-device identity, screenshot
 scale/orientation, native controls and editor cursor behavior, App transitions,
 system overlays, disconnect/cancellation and owned-session cleanup with a real
-phone and installed Copilot plugin. Fixture success is not hardware acceptance.
+phone and a development MCP client. Installed-plugin acceptance follows only
+when the adapter is intentionally packaged. Fixture success is not hardware
+acceptance.
 
 ## Implementation and tool contracts
 

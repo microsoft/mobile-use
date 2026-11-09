@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -13,47 +12,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const artifact = path.join(root, "dist", "mobile-use");
 const marketplaceArtifact = path.join(root, "plugins", "mobile-use");
 const json = async (file) => JSON.parse(await readFile(file, "utf8"));
-
-for (const source of [artifact, marketplaceArtifact]) {
-  for (const mode of ["legacy", "auto"]) {
-    test(`copied ${path.basename(path.dirname(source))} artifact runs iOS WDA mode without npm over ${mode}`, async (t) => {
-      const directory = await mkdtemp(path.join(tmpdir(), "mobile-use iOS copied package "));
-      await cp(source, directory, { recursive: true });
-      const server = createServer((request, response) => {
-        response.setHeader("Content-Type", "application/json");
-        const value = request.url === "/status" ? {
-          ready: true, os: { name: "iOS", version: "17.5" },
-          build: { time: "synthetic", productBundleIdentifier: "example.runner" },
-        } : { uuid: "11111111-1111-4111-8111-111111111111", model: "iPhone", isSimulator: false };
-        response.end(JSON.stringify({ sessionId: null, value }));
-      });
-      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-      const address = server.address();
-      assert.ok(address && typeof address !== "string");
-      const client = new Client({ name: "copied-ios-fixture", version: "0.1.0" }, { versionNegotiation: { mode } });
-      t.after(async () => {
-        await client.close();
-        server.closeAllConnections();
-        await new Promise((resolve) => server.close(resolve));
-        await rm(directory, { recursive: true, force: true });
-      });
-      await client.connect(new StdioClientTransport({
-        command: process.execPath, args: [path.join(directory, "server", "index.mjs")],
-        cwd: directory, env: { ...getDefaultEnvironment(), MOBILE_USE_PLATFORM: "ios",
-          MOBILE_USE_WDA_URL: `http://127.0.0.1:${address.port}` }, stderr: "pipe",
-      }));
-      assert.match(client.getInstructions() ?? "", /server is in iOS mode/);
-      const result = await client.callTool({ name: "mobile_doctor", arguments: {} });
-      assert.equal(result.isError, undefined);
-      const payload = JSON.parse(result.content.find((block) => block.type === "text").text);
-      assert.equal(payload.platform, "ios");
-      assert.equal(payload.status, "ready");
-      assert.equal("adbExecutable" in payload, false);
-      const reference = await readFile(path.join(directory, "skills", "mobile-use", "references", "ios.md"), "utf8");
-      assert.match(reference, /current cursor/);
-    });
-  }
-}
 
 test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launcher", async () => {
   const manifest = await json(path.join(artifact, "plugin.json"));

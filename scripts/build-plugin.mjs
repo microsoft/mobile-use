@@ -116,7 +116,6 @@ for (const relative of [
   path.join("server", "index.mjs"),
   path.join("skills", "mobile-use", "SKILL.md"),
   path.join("skills", "mobile-use", "references", "screen-recording.md"),
-  path.join("skills", "mobile-use", "references", "ios.md"),
   "LICENSE",
   "THIRD_PARTY_NOTICES",
 ]) {
