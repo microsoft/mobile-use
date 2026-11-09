@@ -6,6 +6,9 @@ tablet** from Windows, over USB or modern paired wireless ADB.
 Read screens or UI text, tap and swipe, enter text, manage apps, and record
 silent screen videos on a device you explicitly select.
 
+An **experimental iOS 17+ adapter** uses the same tools with a user-started
+local WebDriverAgent (WDA). Its real-device acceptance is **unverified**.
+
 **Experimental:** this is a proof of concept, not a released or
 production-supported product. USB workflows, including screen recording, have
 been tested on one Android 11 phone. Paired-wireless acceptance remains
@@ -59,6 +62,28 @@ You perform settings changes, debugging authorization, and pairing yourself.
 Enter passwords and pairing codes only on the phone or in the local ADB prompt,
 never in chat. Copilot asks before starting a missing local ADB server.
 
+### iOS MVP
+
+Build/sign and start a dedicated WDA Runner yourself, complete Apple trust and
+Developer Mode on the phone, and forward its port to your computer. Do not
+share the Runner with Appium or another controller. Before starting Copilot:
+
+```powershell
+$env:MOBILE_USE_PLATFORM = "ios"
+$env:MOBILE_USE_WDA_URL = "http://127.0.0.1:8100" # Your actual forwarded port
+```
+
+Restart Copilot, run doctor, list/select the returned endpoint, then observe
+and interact with approved content using the same `mobile_*` tools. iOS supports
+tap, long-press, double-tap, swipe, text, Home, and foreground/App launch.
+`packageName` means the Bundle ID. Text is inserted at the current cursor,
+without clearing or submitting; Unicode needs no Android helper.
+
+The plugin does not deploy WDA. iOS wake/unlock, Back/Enter, recording and
+other App-management operations are unsupported. Remove these environment
+settings or set `MOBILE_USE_PLATFORM=android` to use the unchanged Android mode.
+See the [iOS reference](plugins/mobile-use/skills/mobile-use/references/ios.md).
+
 ## Use with Copilot
 
 Name the selected device and the non-sensitive task you want performed:
@@ -111,7 +136,8 @@ verify capture stopped on the phone; unsaved recordings may remain there.
 Use one controller per phone and reselect the device after disconnection.
 Exiting the plugin does not stop the shared ADB server or revoke debugging trust.
 
-Only real Android devices are supported, not iOS, emulators, or cloud devices.
+Only real devices are supported: Android and the experimental iOS WDA mode,
+not emulators or cloud devices.
 There is no audio recording, streaming, or general-purpose file transfer.
 
 ## Help and contributing

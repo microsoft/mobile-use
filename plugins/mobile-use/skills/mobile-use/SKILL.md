@@ -1,17 +1,18 @@
 ---
 name: mobile-use
-description: Set up and use mobile-use with a real Android 11+ phone or tablet on Windows. Guide Android Platform-Tools and debugging setup; then observe and interact with a selected USB or modern paired wireless device, list apps, read the foreground app, launch or terminate apps, and install local APKs or uninstall apps only with explicit user approval.
+description: Set up and use mobile-use with a real Android 11+ device over ADB, or experimental iOS 17+ through user-started local WDA. Follow platform-specific setup, explicitly select a device, observe approved content, and use the same tools for bounded interaction.
 ---
 
-# Real Android mobile-use
+# Real-device mobile-use
+
+For **iOS mode**, follow the [iOS reference](references/ios.md); the Android instructions below apply only to Android.
 
 Use the mobile-use MCP tools, not ad-hoc ADB/shell commands. Windows, Node 22.2+
 (Node 24 LTS recommended), Android Platform-Tools, and a real Android 11+ device
 with Wireless debugging are prerequisites. Guide users through missing setup
 steps; do not assume they have installed the tools or enabled Developer options.
-This plugin does not install host prerequisites or pair devices, change
-debugging settings, or provide a remote device service. Separately approved
-Android APK installation and app management are available after device selection.
+This plugin does not install host prerequisites or pair devices, change debugging settings, or provide a remote device service.
+Separately approved Android APK installation and app management are available after device selection.
 
 ## Tool categories
 
@@ -25,10 +26,9 @@ Android APK installation and app management are available after device selection
 | Input text | `mobile_input_text`: `action.kind` is `type_text` or explicit helper `prepare`. |
 | Device setup and observation | `mobile_doctor`, `mobile_start_adb_server`, `mobile_list_devices`, `mobile_select_device`, `mobile_wake`, `mobile_observe`. |
 
-All selected-device tools require `targetToken`. Tap/long-press/double-tap and text entry
-require `action.observationId`; swipe and key input require top-level
-`observationId`. Helper `prepare` operations require no observation and never
-perform the subsequent tap/text action. Observe again after preparation.
+All selected-device tools require `targetToken`. Tap/long-press/double-tap and text entry require
+`action.observationId`; swipe and key input require top-level `observationId`. Helper `prepare`
+requires no observation and never performs the subsequent tap/text action; observe again afterward.
 App management and screen recording take no observation. There is no generic `mobile_act` tool.
 
 ## First-use setup (required)
