@@ -188,8 +188,10 @@ device bring-up and real-hardware acceptance are incomplete. See
 `src\service-factory.ts` chooses the existing Android `MobileUseService` by
 default, or `IosMobileUseService` for `MOBILE_USE_PLATFORM=ios`. Invalid modes
 fail explicitly; there is no automatic platform fallback. Both implement the
-small `MobileService` tool-facing contract. The Android driver, queue, guards,
-helpers and output fields remain unchanged.
+explicit, implementation-independent `MobileService` tool-facing contract.
+Each service has a required `platform`; doctor results discriminate on the same
+field. Android source doctor adds `platform: "android"` while preserving its
+existing fields. The Android driver, queue, guards and helpers remain unchanged.
 
 The iOS adapter connects only to the explicitly configured local WDA URL. It
 does not deploy/sign/start a Runner or add a Host/IPC/Grant layer. This MVP uses
@@ -203,6 +205,9 @@ IDFV, not UDID; no physical USB discovery is claimed. Explicit selection
 rejects a foreign session, then creates a session without an initial App,
 with automatic XCTest screenshots and terminate-on-session-end disabled.
 Noncompact element responses provide allowlisted fields for target resolution.
+iOS selection is annotated as a destructive, non-idempotent mutation because it
+creates or deletes an owned WDA session; Android selection retains its existing
+read-only annotations.
 
 Every selected request is serialized and checks the endpoint's vendor identity,
 WDA build and owned session. Observation reads lock state, pixel geometry from

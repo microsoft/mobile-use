@@ -43,6 +43,10 @@ for (const mode of ["legacy", "auto"] as const) {
       assert.ok(tools.some((tool) => tool.name === name));
     }
     assert.match(tools.find((tool) => tool.name === "mobile_input_text")?.description ?? "", /current cursor/);
+    const selection = tools.find((tool) => tool.name === "mobile_select_device");
+    assert.equal(selection?.annotations?.readOnlyHint, false);
+    assert.equal(selection?.annotations?.destructiveHint, true);
+    assert.equal(selection?.annotations?.idempotentHint, false);
     const doctor = payload(await client.callTool({ name: "mobile_doctor", arguments: {} }));
     assert.equal(doctor.platform, "ios");
     assert.equal("adbExecutable" in doctor, false);

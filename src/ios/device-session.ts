@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { decodePng } from "../android.js";
 import { checkCancelled, MobileUseError, publicError } from "../errors.js";
-import type { MobileService, IosAppOperationResult, IosForegroundApp, IosSelectedTarget } from "../mobile-service.js";
+import type { MobileService, IosAppOperationResult, IosDoctor, IosForegroundApp, IosSelectedTarget } from "../mobile-service.js";
 import { compareScreens, containsPoint, interactionRegion, intersects } from "../screen-guard.js";
 import { actionSchema } from "../types.js";
 import type {
@@ -106,7 +106,7 @@ export class IosMobileUseService implements MobileService {
     };
   }
 
-  doctor(signal?: AbortSignal) {
+  doctor(signal?: AbortSignal): Promise<IosDoctor> {
     return this.serialize(async () => {
       const probe = await this.wda.probe(signal);
       return { status: "ready" as const, platform: "ios" as const, wdaUrl: this.wda.url,

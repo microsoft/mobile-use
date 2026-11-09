@@ -91,7 +91,7 @@ export function createMobileUseServer(service: MobileService): McpServer {
     title: "Select device",
     description: ios ? "Explicitly select the endpoint returned by discovery, verify physical iOS 17+ device identity, and create an owned WDA session without launching an App or capturing. Requires a dedicated Runner with no foreign session. Reselection deletes only the identifiable owned session and invalidates prior tokens." : "Select exactly the endpoint the user chose from mobile_list_devices. Verify a real Android 11+ device and modern paired wireless when applicable. Does not pair or connect devices. Every selection invalidates prior target/observation tokens.",
     inputSchema: z.strictObject({ endpointId: z.string().min(1).max(512) }),
-    annotations: ios ? { ...mutation, destructiveHint: false } : readOnly,
+    annotations: ios ? mutation : readOnly,
   }, (input, ctx) => execute(async () => result(await service.selectDevice(input.endpointId, ctx.mcpReq.signal))));
 
   server.registerTool("mobile_observe", {

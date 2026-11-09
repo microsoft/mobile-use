@@ -25,7 +25,10 @@ test("startup is inert; failed discovery is not an empty device list", async (t)
   assert.equal(adb.calls.length, 0);
   assert.equal(adb.startServerCalls, 0);
   assert.equal(monitors.sessions.length, 0);
-  assert.equal((await service.doctor()).platformToolsVersion, "36.0.0");
+  assert.deepEqual(await service.doctor(), {
+    status: "ready", platform: "android",
+    adbExecutable: "C:\\fixture-only\\adb.exe", platformToolsVersion: "36.0.0",
+  });
   assert.deepEqual(adb.calls.map((call) => call.args), [["version"]]);
   assert.equal(adb.startServerCalls, 0, "doctor must never start the server");
   assert.equal(monitors.sessions.length, 0, "host checks must not start transport monitoring");
