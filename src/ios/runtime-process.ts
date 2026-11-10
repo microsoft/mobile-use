@@ -22,11 +22,15 @@ export interface OwnedProcess {
 
 export interface RuntimeCommands {
   run(file: string, args: string[], timeoutMs: number, signal?: AbortSignal, mutating?: boolean, logPath?: string,
-    environment?: NodeJS.ProcessEnv): Promise<string>;
+    environment?: NodeJS.ProcessEnv, output?: "stdout" | "stderr"): Promise<string>;
   start(file: string, args: string[], logPath: string, environment?: NodeJS.ProcessEnv): Promise<OwnedProcess>;
 }
 
 const execute = promisify(execFile);
+function childEnvironment(environment?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...process.env, ...environment, ENABLE_GO_IOS_AGENT: "", GO_IOS_AGENT_HOST: "127.0.0.1" };
+}
+
 async function commandLog(logPath: string | undefined, value: unknown, mutating: boolean) {
   if (!logPath) return;
   const record = isRecord(value) ? value : {};
@@ -36,13 +40,13 @@ async function commandLog(logPath: string | undefined, value: unknown, mutating:
 }
 
 export const runtimeCommands: RuntimeCommands = {
-  async run(file, args, timeout, signal, mutating = false, logPath, environment) {
+  async run(file, args, timeout, signal, mutating = false, logPath, environment, stream = "stdout") {
     checkCancelled(signal);
     let output: { stdout: string; stderr: string };
     try {
       output = await execute(file, args, {
         timeout, signal, maxBuffer: 8 * 1024 * 1024, windowsHide: true,
-        env: { ...process.env, ...environment, ENABLE_GO_IOS_AGENT: "" },
+        env: childEnvironment(environment),
       });
     } catch (error) {
       await commandLog(logPath, error, mutating);
@@ -53,14 +57,14 @@ export const runtimeCommands: RuntimeCommands = {
       throw runtimeFailure("IOS_RUNTIME_FAILED", mutating);
     }
     await commandLog(logPath, output, mutating);
-    return output.stdout;
+    return output[stream];
   },
   async start(file, args, logPath, environment) {
     const log = createWriteStream(logPath, { flags: "wx", mode: 0o600 });
     try { await once(log, "open"); } catch { throw runtimeFailure("IOS_RUNTIME_FAILED"); }
     const child = spawn(file, args, {
       stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
-      env: { ...process.env, ...environment, ENABLE_GO_IOS_AGENT: "" },
+      env: childEnvironment(environment),
     });
     let ended = false;
     const exited = new Promise<void>((resolve) => {

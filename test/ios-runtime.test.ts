@@ -43,6 +43,25 @@ test("tunnel-info allocation leaves room for the derived userspace listener, inc
   await assert.rejects(availableTunnelPort(0, async () => 65535), { code: "IOS_RUNTIME_CONFLICT" });
 });
 
+test("tunnel allocation rejects an occupied adjacent listener and retries an automatic port pair", async (t) => {
+  const candidate = await availableTunnelPort(0);
+  const occupied = createServer((socket) => socket.destroy());
+  await new Promise<void>((resolve, reject) => {
+    occupied.once("error", reject);
+    occupied.listen(candidate + 1, "127.0.0.1", resolve);
+  });
+  t.after(() => new Promise<void>((resolve) => occupied.close(() => resolve())));
+  await assert.rejects(availableTunnelPort(candidate), { code: "IOS_RUNTIME_CONFLICT" });
+  let attempts = 0;
+  const automatic = await availableTunnelPort(0, async () => {
+    attempts++;
+    return availableTunnelPort(attempts === 1 ? candidate : 0);
+  });
+  assert.notEqual(automatic, candidate);
+  assert.equal(attempts, 2);
+  assert.equal(occupied.listening, true);
+});
+
 test("managed userspace tunnels reject unsupported iOS versions before acquiring resources", async (t) => {
   for (const version of ["16.7", "17.0", "17.3.1", "17.4", "17.4.0"]) {
     const f = await runtimeFixture(t);
@@ -111,9 +130,37 @@ test("explicit install uses the supplied IPA once and retains it on shutdown", a
   assert.equal(installation.length, 1);
   assert.equal(installation[0]?.signal, undefined);
   assert.ok(installation[0]?.args.includes(join(f.directory, "signed.ipa")));
+  const imageAuto = f.calls.findIndex((call) => call.args.includes("image") && call.args.includes("auto"));
+  const imageList = f.calls.findIndex((call) => call.args.includes("image") && call.args.includes("list"));
+  const install = f.calls.findIndex((call) => call.args.includes("install"));
+  assert.ok(imageAuto >= 0 && imageAuto < imageList && imageList < install);
   await f.service.stop();
   assert.equal(f.calls.some((entry) => entry.args.includes("uninstall")), false);
   assert.deepEqual(f.events, ["start-tunnel", "image", "install", "start-wda", "stop-wda", "stop-tunnel"]);
+});
+
+test("zero-exit image preparation requires mounted-image evidence before installation or trust", async (t) => {
+  for (const failure of ["not-mounted", "malformed", "invalid-signature", "error-after-signature"]) {
+    const f = await runtimeFixture(t, { ipa: true });
+    if (failure === "not-mounted") f.state.imageAutoNoMount = true;
+    if (failure === "malformed") f.state.imageListOutput = "not-json";
+    if (failure === "invalid-signature") {
+      f.state.imageListOutput = JSON.stringify({ level: "INFO", msg: "image signature", signature: "not-a-signature" });
+    }
+    if (failure === "error-after-signature") {
+      f.state.imageListOutput = [
+        JSON.stringify({ level: "INFO", msg: "image signature", signature: "aabbccdd" }),
+        JSON.stringify({ level: "ERROR", msg: "image lookup failed" }),
+      ].join("\n");
+    }
+    await assert.rejects(f.start(), (error: unknown) =>
+      error instanceof MobileUseError && error.code === "IOS_RUNTIME_FAILED" && error.actionMayHaveRun);
+    assert.equal(f.runtime.status().state, "failed");
+    assert.equal(f.runtime.status().error?.code, "IOS_RUNTIME_FAILED");
+    assert.equal(f.events.includes("install"), false);
+    assert.equal(f.events.includes("start-wda"), false);
+    assert.deepEqual(f.events, ["start-tunnel", "image", "stop-tunnel"]);
+  }
 });
 
 test("all device subprocesses share an owned USB-only endpoint and shutdown closes it", async (t) => {
@@ -325,6 +372,32 @@ test("cleanup failures retain the matching-token UDID lock and prevent another r
   }
 });
 
+test("failed owned-session DELETE retains the UDID lock and cleanup-failed status on tool stop and shutdown", async (t) => {
+  for (const stop of ["tool", "shutdown"]) {
+    const f = await runtimeFixture(t);
+    const ready = await f.ready();
+    assert.ok(ready.runtimeToken);
+    await f.service.selectDevice(IOS_ENDPOINT);
+    f.http.state.failSessionDelete = true;
+    f.allowCleanupFailure();
+    assert.ok(f.service.iosRuntime);
+    const operation = stop === "tool"
+      ? f.service.iosRuntime({ kind: "stop", runtimeToken: ready.runtimeToken })
+      : f.service.stop();
+    await assert.rejects(operation, { code: "IOS_RUNTIME_CLEANUP_FAILED" });
+    assert.equal(f.runtime.status().state, "cleanup-failed");
+    assert.equal(f.runtime.status().error?.code, "IOS_RUNTIME_CLEANUP_FAILED");
+    assert.equal(f.runtime.status().wdaPortClosed, true);
+    assert.equal(f.http.calls.filter((call) => call.method === "DELETE").length, 1);
+    assert.deepEqual(f.events.slice(-2), ["stop-wda", "stop-tunnel"]);
+    const lock = JSON.parse(await readFile(join(f.directory, "locks", `${IOS_UDID}.lock`), "utf8"));
+    assert.equal(lock.token, ready.runtimeToken);
+    const other = await runtimeFixture(t, { directory: f.directory });
+    await assert.rejects(other.start(), { code: "IOS_RUNTIME_CONFLICT" });
+    assert.deepEqual(other.events, []);
+  }
+});
+
 test("WDA port closure is verified after both owned launcher and tunnel have exited", async (t) => {
   const f = await runtimeFixture(t);
   const ready = await f.ready();
@@ -352,19 +425,29 @@ test("native launcher isolates stdout in logs, observes child exit and stops onl
   const directory = await mkdtemp(join(tmpdir(), "mobile-use-runtime-native-"));
   const log = join(directory, "child.log");
   const inherited = process.env.USBMUXD_SOCKET_ADDRESS;
-  const environment = { USBMUXD_SOCKET_ADDRESS: "tcp://127.0.0.1:12345" };
+  const inheritedHost = process.env.GO_IOS_AGENT_HOST;
+  const environment = { USBMUXD_SOCKET_ADDRESS: "tcp://127.0.0.1:12345", GO_IOS_AGENT_HOST: "192.0.2.1",
+    ENABLE_GO_IOS_AGENT: "user" };
   const child = await runtimeCommands.start(process.execPath, [
-    "-e", "console.log('fixture-output', process.env.USBMUXD_SOCKET_ADDRESS); setInterval(() => {}, 1000)",
+    "-e", "console.log('fixture-output', process.env.USBMUXD_SOCKET_ADDRESS, process.env.GO_IOS_AGENT_HOST, JSON.stringify(process.env.ENABLE_GO_IOS_AGENT)); setInterval(() => {}, 1000)",
   ], log, environment);
   t.after(async () => { await child.stop(); await rm(directory, { recursive: true, force: true }); });
   child.assertRunning();
   for (let attempt = 0; attempt < 100 && !(await readFile(log, "utf8")).includes("fixture-output"); attempt++) await delay(10);
   assert.match(await readFile(log, "utf8"), /fixture-output/);
   assert.match(await readFile(log, "utf8"), /tcp:\/\/127\.0\.0\.1:12345/);
+  assert.match(await readFile(log, "utf8"), /12345 127\.0\.0\.1 ""/);
   assert.equal((await runtimeCommands.run(process.execPath,
     ["-e", "console.log(process.env.USBMUXD_SOCKET_ADDRESS)"], 1000, undefined, false, undefined, environment)).trim(),
   environment.USBMUXD_SOCKET_ADDRESS);
+  assert.deepEqual(JSON.parse(await runtimeCommands.run(process.execPath,
+    ["-e", "console.log(JSON.stringify({host:process.env.GO_IOS_AGENT_HOST,agent:process.env.ENABLE_GO_IOS_AGENT}))"],
+    1000, undefined, false, undefined, environment)), { host: "127.0.0.1", agent: "" });
+  assert.equal((await runtimeCommands.run(process.execPath,
+    ["-e", "console.error('fixture-stderr-evidence')"], 1000, undefined, false, undefined, environment, "stderr")).trim(),
+  "fixture-stderr-evidence");
   assert.equal(process.env.USBMUXD_SOCKET_ADDRESS, inherited);
+  assert.equal(process.env.GO_IOS_AGENT_HOST, inheritedHost);
   await child.stop();
   await child.exited;
   assert.throws(() => child.assertRunning(), { code: "IOS_RUNTIME_FAILED" });

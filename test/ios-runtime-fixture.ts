@@ -40,6 +40,7 @@ export async function runtimeFixture(t: TestContext, options: { directory?: stri
   const state = {
     connected: true, running: false, leaveRunnerRunning: false, closeRunnerWithTunnel: false, failImage: false, failInstall: false,
     failTunnelStop: false, badInfo: false, productVersion: "18.5",
+    imageAutoNoMount: false, imageMounted: false, imageListOutput: undefined as string | undefined,
     installHook: undefined as (() => Promise<void>) | undefined,
     imageHook: undefined as (() => Promise<void>) | undefined,
     listHook: undefined as (() => Promise<void>) | undefined,
@@ -67,16 +68,23 @@ export async function runtimeFixture(t: TestContext, options: { directory?: stri
     },
   };
   const commands: RuntimeCommands = {
-    async run(_file, args, _timeout, signal, _mutating, _logPath, environment) {
+    async run(_file, args, _timeout, signal, _mutating, _logPath, environment, output) {
       calls.push({ kind: "run", args, signal, ...(environment ? { environment } : {}) });
       if (args[0] === "version") return JSON.stringify({ version: "v1.3.2" });
       assert.deepEqual(args.slice(0, 2), ["--udid", IOS_UDID]);
       if (args.includes("info")) return state.badInfo ? "broken JSON" :
         JSON.stringify({ UniqueDeviceID: IOS_UDID, ProductVersion: state.productVersion });
+      if (args.includes("image") && args.includes("list")) {
+        assert.equal(output, "stderr");
+        return state.imageListOutput ?? JSON.stringify(state.imageMounted
+          ? { level: "INFO", msg: "image signature", signature: "aabbccdd" }
+          : { level: "INFO", msg: "none" });
+      }
       if (args.includes("image")) {
         events.push("image");
         await state.imageHook?.();
         if (state.failImage) throw runtimeFailure("IOS_RUNTIME_FAILED", true);
+        state.imageMounted = !state.imageAutoNoMount;
       }
       if (args.includes("install")) {
         events.push("install");

@@ -113,7 +113,7 @@ Optional settings:
 | `MOBILE_USE_GO_IOS_PATH` | Executable path or PATH command; default `ios`. |
 | `MOBILE_USE_IOS_STATE_DIR` | Absolute local state directory; default `.mobile-use\ios-runtime` under the user's home (native separators on macOS). |
 | `MOBILE_USE_IOS_WDA_PORT` | Device-side port matching the prepared Runner; default 8100. |
-| `MOBILE_USE_IOS_TUNNEL_PORT` | Local go-ios tunnel-info port, 1-65534; default 0 chooses a free ephemeral port below 65535, leaving room for the derived userspace listener. An occupied explicit port is rejected. |
+| `MOBILE_USE_IOS_TUNNEL_PORT` | Local go-ios tunnel-info port, 1-65534; default 0 chooses a free ephemeral port pair. Both this port and its derived userspace listener at port + 1 must be available; an explicit conflict is rejected. |
 
 The WDA proxy always binds an ephemeral **127.0.0.1** port and connects only to
 the selected USB UDID. This HTTP proxy is distinct from the developer/XCTest
@@ -126,6 +126,9 @@ inventory, so a preceding Wi-Fi entry or USB loss cannot retarget installation,
 tunnel preparation or Runner startup to Wi-Fi. Only the selected device's existing
 pairing record can be read; pairing-record writes and other commands are rejected.
 Shutdown closes the bridge alongside the owned forwarding resources.
+Native children also pin `GO_IOS_AGENT_HOST` to `127.0.0.1`, independently of the
+tunnel-info flags, and disable automatic agent startup. Parent environment
+settings cannot redirect the userspace connection to another host.
 
 1. `mobile_doctor` checks go-ios and returns `runtime-not-ready` until WDA is
    ready; it never starts or installs anything. `mobile_list_devices` enumerates
@@ -137,8 +140,10 @@ Shutdown closes the bridge alongside the owned forwarding resources.
    the server never installs as a fallback.
 3. Start immediately returns `preparing` and a new `runtimeToken`, while
    background preparation acquires a per-UDID lock and refuses an existing listener on the WDA
-   port, starts its tunnel, prepares the developer image, and optionally installs
-   the IPA. Poll `action: { kind: "status" }` until `awaiting-developer-trust`
+   port, starts its tunnel, prepares the developer image, verifies its mounted
+   signature through `image list`, and only then optionally installs the IPA.
+   The exit code of `image auto` alone is not success evidence.
+   Poll `action: { kind: "status" }` until `awaiting-developer-trust`
    or `failed`; inspect the structured error on failure. Status remains readable
    during long image downloads/installations without blocking on the UI queue.
 4. The user verifies Developer App trust on that device. Only after that
@@ -228,6 +233,9 @@ process and tunnel. It verifies the WDA device port is closed through an explici
 connection-refused result, then closes its proxy and releases its
 lock only if cleanup succeeds. Cleanup or port-verification failure retains the
 matching-token lock to block another runtime until manual recovery.
+An owned-session verification/DELETE failure also produces `cleanup-failed` and
+retains the lock, for both explicit runtime stop and server shutdown, even when
+the remaining teardown succeeds and the WDA port closes.
 `wdaPortClosed: true` means that port closure was verified, **not** that all
 device-side asynchronous work is quiescent. An open port yields `false`;
 disconnect/service failure yields `null` and a cleanup error, never a claimed

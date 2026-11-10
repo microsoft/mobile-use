@@ -207,6 +207,9 @@ Opt-in `managed` mode separates lifecycle/transport from UI semantics:
 explicit IPA install, human-trust gate, `runwda` and per-UDID lock.
 Its userspace tunnel path requires iOS 17.4.1+; tunnel-info ports must be below
 65535 because go-ios derives its first userspace listener at the next port.
+Availability probing binds both ports together; automatic allocation retries a
+conflicting pair, while an explicit conflict fails. The sockets are released
+before native launch, so readiness/ownership checks still guard the handoff.
 `src\ios\usb.ts` implements Apple usbmux framing and a loopback-only proxy,
 using the Windows Apple service or macOS system socket; it is not a developer
 tunnel or Wi-Fi fallback. `usbmux-bridge.ts` isolates every device-scoped go-ios
@@ -217,6 +220,10 @@ pairing reads are allowed only for that device; writes and unsupported commands
 fail closed. The owned bridge closes during cleanup, including failed startup.
 `runtime-process.ts` owns child processes and local
 logs, with no shell interpolation or raw command output in MCP errors.
+Both execution paths force `GO_IOS_AGENT_HOST=127.0.0.1` and disable agent
+auto-start. After `image auto`, preparation independently invokes `image list`
+and requires a valid mounted-image signature from the pinned CLI's structured
+stderr logs before installation/trust; a zero exit status alone is insufficient.
 The extra `mobile_ios_runtime` tool is an optional explicit `MobileService`
 capability, registered only for managed iOS. Discovery and selection never
 install or start. Runner installation defaults off and is retained on exit.
@@ -245,6 +252,9 @@ Managed cleanup deletes only a still-identifiable owned HTTP session, stops the
 owned launcher and tunnel, checks device-port closure, then closes the owned proxies
 and releases its matching-token lock only after successful cleanup. Failures
 retain the lock and do not suppress the remaining resource-cleanup steps.
+The service passes owned-session verification/DELETE failure into runtime cleanup
+on both explicit stop and shutdown, so successful process/port teardown cannot
+erase that failure or release the matching-token lock.
 A device disconnect is not proof of WDA shutdown; port closure
 is not proof of XCTest quiescence. Retained installation, manual restart and
 non-atomic ownership checks are intentional; never silently retry installation,

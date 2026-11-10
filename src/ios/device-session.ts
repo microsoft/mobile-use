@@ -528,7 +528,7 @@ export class IosMobileUseService implements MobileService {
         try { await this.releaseOwnedSession(); } catch (error) { errors.push(error); }
         let status: IosRuntimeStatus | undefined;
         // Once stop invalidates the target, finish cleanup even if the request is cancelled.
-        try { status = await runtime.control(action); } catch (error) { errors.push(error); }
+        try { status = await runtime.control(action, undefined, errors.length > 0); } catch (error) { errors.push(error); }
         this.invalidate();
         this.client = undefined;
         if (errors.length) throw publicError(errors[errors.length - 1]);
@@ -551,7 +551,7 @@ export class IosMobileUseService implements MobileService {
       await this.queue;
       const errors: unknown[] = [];
       try { await this.releaseOwnedSession(); } catch (error) { errors.push(error); }
-      try { await this.runtime?.close(); } catch (error) { errors.push(error); }
+      try { await this.runtime?.close(errors.length > 0); } catch (error) { errors.push(error); }
       if (errors.length) throw publicError(errors[errors.length - 1]);
     })();
     return this.closing;

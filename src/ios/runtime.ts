@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
-import { createServer } from "node:net";
+import { createServer, type Server } from "node:net";
 import { isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
@@ -39,9 +39,9 @@ export interface IosRuntime {
   devices(signal?: AbortSignal): Promise<DeviceEndpoint[]>;
   binding(): RuntimeBinding;
   verify(token: string, signal?: AbortSignal): Promise<void>;
-  control(action: IosRuntimeAction, signal?: AbortSignal): Promise<IosRuntimeStatus>;
+  control(action: IosRuntimeAction, signal?: AbortSignal, priorCleanupFailed?: boolean): Promise<IosRuntimeStatus>;
   cancelPending(token?: string): void;
-  close(): Promise<void>;
+  close(priorCleanupFailed?: boolean): Promise<void>;
 }
 export interface RuntimeConfig {
   executable: string;
@@ -76,26 +76,54 @@ export function readRuntimeConfig(environment: NodeJS.ProcessEnv): RuntimeConfig
   };
 }
 
-async function reservePort(port: number): Promise<number> {
-  const server = createServer();
+async function listenPort(server: Server, port: number): Promise<number> {
   await new Promise<void>((resolve, reject) => {
     server.once("error", () => reject(runtimeFailure("IOS_RUNTIME_CONFLICT")));
     server.listen(port, "127.0.0.1", resolve);
   });
   const address = server.address();
-  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(runtimeFailure("IOS_RUNTIME_FAILED")) : resolve()));
   if (!address || typeof address === "string") throw runtimeFailure("IOS_RUNTIME_FAILED");
   return address.port;
 }
 
-export async function availableTunnelPort(port: number, reserve: (port: number) => Promise<number> = reservePort): Promise<number> {
+async function reservePortPair(port: number): Promise<number> {
+  const primary = createServer((socket) => socket.destroy());
+  const adjacent = createServer((socket) => socket.destroy());
+  try {
+    const candidate = await listenPort(primary, port);
+    if (candidate <= maxTunnelPort) await listenPort(adjacent, candidate + 1);
+    return candidate;
+  } finally {
+    await Promise.all([primary, adjacent].filter((server) => server.listening).map((server) =>
+      new Promise<void>((resolve, reject) => server.close((error) => error ? reject(runtimeFailure("IOS_RUNTIME_FAILED")) : resolve()))));
+  }
+}
+
+export async function availableTunnelPort(port: number, reserve: (port: number) => Promise<number> = reservePortPair): Promise<number> {
   if (!Number.isInteger(port) || port < 0 || port > maxTunnelPort) throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
   // go-ios derives its first userspace listener as tunnel-info port + 1.
   for (let attempt = 0; attempt < 10; attempt++) {
-    const candidate = await reserve(port);
-    if (candidate > 0 && candidate <= maxTunnelPort) return candidate;
+    try {
+      const candidate = await reserve(port);
+      if (candidate > 0 && candidate <= maxTunnelPort) return candidate;
+    } catch (error) {
+      if (port !== 0 || !(error instanceof MobileUseError) || error.code !== "IOS_RUNTIME_CONFLICT") throw error;
+    }
   }
   throw runtimeFailure("IOS_RUNTIME_CONFLICT");
+}
+
+function assertMountedImage(output: string): void {
+  let mounted = false;
+  for (const line of output.split(/\r?\n/).filter((entry) => entry.trim())) {
+    let value: unknown;
+    try { value = JSON.parse(line); } catch { throw runtimeFailure("IOS_RUNTIME_FAILED", true); }
+    const entry = z.object({ level: z.string(), msg: z.string(), signature: z.string().optional() }).safeParse(value);
+    if (!entry.success || entry.data.level === "ERROR") throw runtimeFailure("IOS_RUNTIME_FAILED", true);
+    if (entry.data.level === "INFO" && entry.data.msg === "image signature" &&
+      /^(?:[a-fA-F0-9]{2})+$/.test(entry.data.signature ?? "")) mounted = true;
+  }
+  if (!mounted) throw runtimeFailure("IOS_RUNTIME_FAILED", true);
 }
 
 async function checkTunnel(port: number, udid: string, signal: AbortSignal): Promise<void> {
@@ -145,6 +173,7 @@ export class ManagedIosRuntime implements IosRuntime {
   private pending: Promise<unknown> = Promise.resolve();
   private cleaning: Promise<void> | undefined;
   private retiring = false;
+  private priorCleanupFailed = false;
 
   constructor(private readonly config: RuntimeConfig, private readonly usb: UsbBackend = new AppleUsbBackend(),
     private readonly commands: RuntimeCommands = runtimeCommands,
@@ -249,12 +278,12 @@ export class ManagedIosRuntime implements IosRuntime {
     throw runtimeFailure("IOS_RUNTIME_FAILED");
   }
 
-  async control(action: IosRuntimeAction, signal?: AbortSignal): Promise<IosRuntimeStatus> {
+  async control(action: IosRuntimeAction, signal?: AbortSignal, priorCleanupFailed = false): Promise<IosRuntimeStatus> {
     checkCancelled(signal);
     if (action.kind === "status") return Promise.resolve(this.status());
     if (action.kind === "stop") {
       if (!this.token || action.runtimeToken !== this.token) return Promise.reject(runtimeFailure("IOS_RUNTIME_CONFLICT"));
-      return this.close().then(() => this.status());
+      return this.close(priorCleanupFailed).then(() => this.status());
     }
     if (action.kind === "start") {
       if (!["idle", "stopped"].includes(this.state)) return Promise.reject(runtimeFailure("IOS_RUNTIME_CONFLICT"));
@@ -294,6 +323,7 @@ export class ManagedIosRuntime implements IosRuntime {
     const signal = this.controller.signal;
     this.state = "preparing";
     this.retiring = false;
+    this.priorCleanupFailed = false;
     this.cleaning = undefined;
     this.failure = null;
     this.installed = false;
@@ -353,6 +383,10 @@ export class ManagedIosRuntime implements IosRuntime {
       this.mutated = true;
       checkCancelled(signal);
       this.assertRunning();
+      // go-ios image auto can exit zero after a download failure; verify the mounted-image postcondition.
+      const mounted = await this.commands.run(this.config.executable, [...global, "image", "list"], 30000, signal, false,
+        join(logs, `image-check-${this.token}.log`), this.nativeEnvironment(), "stderr");
+      assertMountedImage(mounted);
       if (install) {
         await this.assertNoWda(signal);
         const ipaPath = this.config.ipaPath;
@@ -407,7 +441,8 @@ export class ManagedIosRuntime implements IosRuntime {
     this.controller.abort();
   }
 
-  async close(): Promise<void> {
+  async close(priorCleanupFailed = false): Promise<void> {
+    this.priorCleanupFailed ||= priorCleanupFailed;
     this.cancelPending();
     try { await this.pending; } catch { /* Recorded in runtime status. */ }
     if (!this.cleaning) this.state = "stopping";
@@ -448,15 +483,17 @@ export class ManagedIosRuntime implements IosRuntime {
       }
       try { await this.proxy?.close(); } catch (error) { errors.push(error); }
       try { await this.nativeUsb?.close(); } catch (error) { errors.push(error); }
-      if (this.lockPath && errors.length === 0) {
+      if (this.lockPath && errors.length === 0 && !this.priorCleanupFailed) {
         try {
           const record = z.object({ token: z.literal(this.token) }).safeParse(JSON.parse(await readFile(this.lockPath, "utf8")));
           if (!record.success) throw runtimeFailure("IOS_RUNTIME_CLEANUP_FAILED");
-          await unlink(this.lockPath);
-          this.lockPath = undefined;
+          if (!this.priorCleanupFailed) {
+            await unlink(this.lockPath);
+            this.lockPath = undefined;
+          }
         } catch (error) { errors.push(error); }
       }
-      if (errors.length) {
+      if (errors.length || this.priorCleanupFailed) {
         this.state = "cleanup-failed";
         this.failure = runtimeFailure("IOS_RUNTIME_CLEANUP_FAILED", this.mutated || this.installed).toJSON();
         throw runtimeFailure("IOS_RUNTIME_CLEANUP_FAILED", this.mutated || this.installed);
