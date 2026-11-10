@@ -19,8 +19,9 @@ from a successful empty inventory, dispatch from verified UI state, and
 fixture-only results from actual App/USB/wireless results.
 
 For source-only iOS development, include the source revision, iOS/WDA versions,
-server mode, stable error code, and whether the failure concerns user-managed
-forwarding, session selection, capture or input. The checked-in plugin does not
+external/managed runtime mode, host OS/go-ios version, stable error code, and
+whether the failure concerns USB/tunnel, Runner installation/trust/start/stop,
+user-managed forwarding, session selection, capture or input. The checked-in plugin does not
 include this adapter. Personal-signing/onboarding support and real iOS hardware
 acceptance are pending; see [iOS MVP status](docs/ios-mvp.md). Never post signing
 materials, device identifiers or unreviewed WDA responses/logs.

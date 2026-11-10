@@ -12,12 +12,14 @@ import { matchesWdaElement, nodeSignature, parseIosHierarchy } from "./hierarchy
 import type { IosNode } from "./hierarchy.js";
 import { iosBundleIdSchema, readWdaUrl, WdaClient, wdaFailure } from "./wda.js";
 import type { WdaElement, WdaProbe } from "./wda.js";
+import { iosRuntimeActionSchema, type IosRuntime, type IosRuntimeAction, type IosRuntimeStatus } from "./runtime.js";
 
 interface Target {
   token: string;
   sessionId: string;
   probe: WdaProbe;
   controller: AbortController;
+  runtimeToken?: string;
 }
 
 interface Snapshot {
@@ -31,7 +33,8 @@ interface Snapshot {
 
 const unsupported = ["adb", "wake", "BACK", "ENTER", "helper-prepare", "recording",
   "app-list", "app-terminate", "app-install", "app-uninstall"] as const;
-const invalidatingCodes = new Set(["WDA_UNAVAILABLE", "TRANSPORT_LOST", "WDA_RESPONSE_INVALID", "DEVICE_UNSUPPORTED"]);
+const invalidatingCodes = new Set(["WDA_UNAVAILABLE", "TRANSPORT_LOST", "WDA_RESPONSE_INVALID", "DEVICE_UNSUPPORTED",
+  "IOS_USB_UNAVAILABLE", "IOS_RUNTIME_FAILED", "IOS_RUNTIME_NOT_READY"]);
 
 export class IosMobileUseService implements MobileService {
   readonly platform = "ios";
@@ -44,12 +47,20 @@ export class IosMobileUseService implements MobileService {
   private transportLost = false;
   private readonly lifetime = new AbortController();
   private closing: Promise<void> | undefined;
+  readonly iosRuntime?: (action: IosRuntimeAction, signal?: AbortSignal) => Promise<IosRuntimeStatus>;
 
   constructor(private readonly configuredUrl: string | undefined,
-    private readonly now: () => number = Date.now) {}
+    private readonly now: () => number = Date.now, private readonly runtime?: IosRuntime) {
+    if (runtime) {
+      runtime.onLost = () => { this.invalidate(true); this.client = undefined; };
+      this.iosRuntime = (action, signal) => this.controlRuntime(action, signal);
+    }
+  }
 
   private get wda(): WdaClient {
-    return this.client ??= new WdaClient(readWdaUrl(this.configuredUrl));
+    const url = this.runtime?.binding().url ?? readWdaUrl(this.configuredUrl);
+    if (this.client?.url !== url) this.client = new WdaClient(url);
+    return this.client;
   }
 
   private serialize<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -86,6 +97,7 @@ export class IosMobileUseService implements MobileService {
 
   private async ensure(target: Target, signal: AbortSignal) {
     this.target(target.token);
+    if (this.runtime) await this.runtime.verify(target.runtimeToken ?? "", signal);
     const probe = await this.wda.probe(signal);
     if (probe.sessionId !== target.sessionId || probe.vendorId !== target.probe.vendorId ||
       probe.build !== target.probe.build || probe.iosVersion !== target.probe.iosVersion) {
@@ -97,31 +109,45 @@ export class IosMobileUseService implements MobileService {
 
   private endpoint(probe: WdaProbe): DeviceEndpoint {
     const conflict = probe.sessionId !== null && probe.sessionId !== this.owned?.sessionId;
+    const binding = this.runtime?.binding();
     return {
-      platform: "ios", endpointId: `ios:${new URL(this.wda.url).host}`, transportId: null,
-      kind: "unknown", state: "device", model: probe.model,
+      platform: "ios", endpointId: binding ? `ios:usb:${binding.udid}` : `ios:${new URL(this.wda.url).host}`,
+      transportId: binding?.udid ?? null, kind: binding ? "usb" : "unknown", state: "device", model: probe.model,
       selectable: !conflict,
       reason: conflict ? "A foreign WDA session is active. Use a dedicated Runner; never replace another controller's session."
-        : "User-managed local WDA forwarding; its physical USB/network transport is not independently verified.",
+        : binding ? "Managed WDA bound to the verified USB UDID."
+          : "User-managed local WDA forwarding; its physical USB/network transport is not independently verified.",
     };
   }
 
   doctor(signal?: AbortSignal): Promise<IosDoctor> {
     return this.serialize(async () => {
+      if (this.runtime) {
+        const goIosVersion = await this.runtime.prerequisites(signal);
+        if (this.runtime.status().state !== "ready") {
+          return { status: "runtime-not-ready" as const, platform: "ios" as const,
+            goIosVersion, runtime: this.runtime.status() };
+        }
+        await this.runtime.verify(this.runtime.binding().token, signal);
+      }
       const probe = await this.wda.probe(signal);
       return { status: "ready" as const, platform: "ios" as const, wdaUrl: this.wda.url,
-        iosVersion: probe.iosVersion, model: probe.model };
+        iosVersion: probe.iosVersion, model: probe.model,
+        ...(this.runtime ? { runtime: this.runtime.status() } : {}) };
     }, signal);
   }
 
   listDevices(signal?: AbortSignal): Promise<DeviceEndpoint[]> {
     return this.serialize(async () => {
+      const devices = this.runtime ? await this.runtime.devices(signal) : undefined;
+      if (devices && this.runtime?.status().state !== "ready") return devices;
       const probe = await this.wda.probe(signal);
       if (this.selected && (probe.vendorId !== this.selected.probe.vendorId ||
         probe.build !== this.selected.probe.build || probe.sessionId !== this.selected.sessionId)) {
         this.invalidate(true);
       }
-      return [this.endpoint(probe)];
+      const endpoint = this.endpoint(probe);
+      return devices ? devices.map((entry) => entry.endpointId === endpoint.endpointId ? endpoint : entry) : [endpoint];
     }, signal);
   }
 
@@ -129,6 +155,7 @@ export class IosMobileUseService implements MobileService {
     return this.serialize(async () => {
       this.invalidate();
       const signal = AbortSignal.any([this.lifetime.signal, ...(request ? [request] : [])]);
+      if (this.runtime) await this.runtime.verify(this.runtime.binding().token, signal);
       const probe = await this.wda.probe(signal);
       if (endpointId !== this.endpoint(probe).endpointId) throw wdaFailure("DEVICE_NOT_FOUND");
       if (this.owned) {
@@ -145,14 +172,16 @@ export class IosMobileUseService implements MobileService {
         throw wdaFailure("WDA_SESSION_CONFLICT");
       }
       const sessionId = await this.wda.createSession(signal);
-      const target: Target = { token: randomUUID(), sessionId, probe: before, controller: new AbortController() };
+      const target: Target = { token: randomUUID(), sessionId, probe: before, controller: new AbortController(),
+        ...(this.runtime ? { runtimeToken: this.runtime.binding().token } : {}) };
       this.owned = target;
       checkCancelled(signal);
       this.selected = target;
       await this.ensure(target, signal);
       return {
         targetToken: target.token, endpoint: this.endpoint({ ...before, sessionId }),
-        identity: { platform: "ios", vendorId: before.vendorId, iosVersion: before.iosVersion, model: before.model },
+        identity: { platform: "ios", vendorId: before.vendorId, iosVersion: before.iosVersion, model: before.model,
+          ...(this.runtime ? { udid: this.runtime.binding().udid } : {}) },
         capabilities: { tap: true, swipe: true, text: true, home: true, appLaunch: true, screenshot: true, unsupported },
       };
     }, request);
@@ -466,21 +495,64 @@ export class IosMobileUseService implements MobileService {
     return this.rejectSelected(token, signal);
   }
 
+  private async releaseOwnedSession(): Promise<void> {
+    const owned = this.owned;
+    const client = this.client;
+    this.selected = undefined;
+    this.owned = undefined;
+    if (!owned) return;
+    if (!client) throw wdaFailure("TRANSPORT_LOST");
+    const probe = await client.probe();
+    if (probe.vendorId !== owned.probe.vendorId || probe.build !== owned.probe.build ||
+      probe.sessionId !== owned.sessionId) throw wdaFailure("TRANSPORT_LOST");
+    await client.closeSession(owned.sessionId);
+  }
+
+  private async controlRuntime(input: IosRuntimeAction, signal?: AbortSignal): Promise<IosRuntimeStatus> {
+    const parsed = iosRuntimeActionSchema.safeParse(input);
+    if (!parsed.success || !this.runtime) return Promise.reject(wdaFailure("INVALID_INPUT"));
+    checkCancelled(signal);
+    const runtime = this.runtime;
+    const action = parsed.data;
+    if (action.kind === "status") {
+      if (this.stopped) throw wdaFailure("SERVER_STOPPED");
+      return runtime.status();
+    }
+    if (action.kind === "stop") {
+      runtime.cancelPending(action.runtimeToken);
+      this.selected?.controller.abort();
+    }
+    return this.serialize(async () => {
+      if (action.kind === "stop") {
+        const errors: unknown[] = [];
+        try { await this.releaseOwnedSession(); } catch (error) { errors.push(error); }
+        let status: IosRuntimeStatus | undefined;
+        // Once stop invalidates the target, finish cleanup even if the request is cancelled.
+        try { status = await runtime.control(action, undefined, errors.length > 0); } catch (error) { errors.push(error); }
+        this.invalidate();
+        this.client = undefined;
+        if (errors.length) throw publicError(errors[errors.length - 1]);
+        if (!status) throw wdaFailure("INTERNAL_ERROR");
+        return status;
+      }
+      const status = await runtime.control(action, signal);
+      if (action.kind === "start") { this.invalidate(); this.client = undefined; }
+      return status;
+    }, action.kind === "stop" ? undefined : signal);
+  }
+
   stop(): Promise<void> {
     this.stopped = true;
     this.lifetime.abort();
+    this.runtime?.cancelPending();
     this.selected?.controller.abort();
     this.snapshot = undefined;
     this.closing ??= (async () => {
       await this.queue;
-      const owned = this.owned;
-      this.selected = undefined;
-      this.owned = undefined;
-      if (!owned) return;
-      const probe = await this.wda.probe();
-      if (probe.vendorId !== owned.probe.vendorId || probe.build !== owned.probe.build ||
-        probe.sessionId !== owned.sessionId) throw wdaFailure("TRANSPORT_LOST");
-      await this.wda.closeSession(owned.sessionId);
+      const errors: unknown[] = [];
+      try { await this.releaseOwnedSession(); } catch (error) { errors.push(error); }
+      try { await this.runtime?.close(errors.length > 0); } catch (error) { errors.push(error); }
+      if (errors.length) throw publicError(errors[errors.length - 1]);
     })();
     return this.closing;
   }

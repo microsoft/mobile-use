@@ -13,8 +13,9 @@ setup in the README, plus specific consent for the device and task.
 
 ## Build and check the plugin
 
-Source validation, matching the default Windows CI, runs `npm run typecheck`
-and `npm test`. The commands below additionally validate the plugin package.
+Source validation, matching the default Windows CI, runs `npm run typecheck`,
+`npm test`, and `npm run build:plugin`. The commands below additionally validate
+the checked-in plugin package.
 
 From the repository directory in PowerShell:
 
@@ -29,9 +30,11 @@ The default Windows workflow runs source checks on Node 22 and 24 and retains
 the Android helper/DEX checks. Source-only development does not require updating
 the checked-in plugin.
 
-The separate `plugin-release.yml` workflow runs on plugin package, packaging
-script/test, dependency or licensing changes in PRs and pushes to main, or through
-manual dispatch. It builds the candidate plugin and runs the unchanged strict
+The separate `plugin-release.yml` workflow runs on checked-in plugin package or
+packaging script/test changes in PRs and pushes to main, or through manual
+dispatch. Source dependency and licensing changes are covered by the candidate
+build in the default workflow without implying a marketplace update.
+The release workflow builds the candidate plugin and runs the unchanged strict
 parity and copied-artifact tests on Node 22 and 24; it does not generate or publish
 marketplace updates. Before intentional package updates, run
 `npm run build:marketplace` locally, then `check`, and commit the updated package.
@@ -193,21 +196,73 @@ Each service has a required `platform`; doctor results discriminate on the same
 field. Android source doctor adds `platform: "android"` while preserving its
 existing fields. The Android driver, queue, guards and helpers remain unchanged.
 
-The iOS adapter connects only to the explicitly configured local WDA URL. It
-does not deploy/sign/start a Runner or add a Host/IPC/Grant layer. This MVP uses
-an independently started, dedicated Runner and user-managed forwarding. The
+The default `MOBILE_USE_IOS_RUNTIME=external` adapter connects only to the
+explicitly configured local WDA URL. It never deploys/starts/stops that external
+Runner or forwarding. Neither iOS mode adds a Host/IPC/Grant layer. The
 development guide describes setup and platform-specific tool semantics; setting
 iOS environment variables on the checked-in plugin does not enable this adapter.
 
-`doctor`/inventory read `/status` and `/wda/device/info`, require real iOS 17+
+Opt-in `managed` mode separates lifecycle/transport from UI semantics:
+`src\ios\runtime.ts` owns the go-ios v1.3.2 tunnel, image preparation, optional
+explicit IPA install, human-trust gate, `runwda` and per-UDID lock.
+Its userspace tunnel path requires iOS 17.4.1+; tunnel-info ports must be below
+65535 because go-ios derives its first userspace listener at the next port.
+Availability probing binds both ports together; automatic allocation retries a
+conflicting pair, while an explicit conflict fails. The sockets are released
+before native launch, so readiness/ownership checks still guard the handoff.
+`src\ios\usb.ts` implements Apple usbmux framing and a loopback-only proxy,
+using the Windows Apple service or macOS system socket; it is not a developer
+tunnel or Wi-Fi fallback. `usbmux-bridge.ts` isolates every device-scoped go-ios
+subprocess with a child-only `USBMUXD_SOCKET_ADDRESS` override: ListDevices exposes
+only the approved USB UDID with a synthetic ID; Connect maps that ID through fresh
+USB discovery, never through an unfiltered native inventory. Existing host/device
+pairing reads are allowed only for that device; writes and unsupported commands
+fail closed. The owned bridge closes during cleanup, including failed startup.
+`runtime-process.ts` owns child processes and local
+logs, with no shell interpolation or raw command output in MCP errors.
+Both execution paths force `GO_IOS_AGENT_HOST=127.0.0.1` and disable agent
+auto-start. After `image auto`, preparation independently invokes `image list`
+and requires a valid mounted-image signature from the pinned CLI's structured
+stderr logs before installation/trust; a zero exit status alone is insufficient.
+The extra `mobile_ios_runtime` tool is an optional explicit `MobileService`
+capability, registered only for managed iOS. Discovery and selection never
+install or start. Runner installation defaults off and is retained on exit.
+Start/trust confirmation acknowledge background preparation/launch; status
+bypasses the UI queue so long native operations do not hold an MCP call open.
+Background errors are recorded in status and logged as stable codes. Explicit
+stop and shutdown wait for installation to settle before owned cleanup.
+The user supplies validated signed bits; no signature validator, signing or
+automatic device-trust acceptance is implemented.
+
+External `doctor`/inventory read `/status` and `/wda/device/info`, require real iOS 17+
 hardware, and do not capture or create sessions. The reported vendor UUID is
-IDFV, not UDID; no physical USB discovery is claimed. Explicit selection
+IDFV, not UDID; external mode claims no physical USB discovery. Managed inventory
+reports physical USB UDIDs before readiness; managed doctor discriminates
+`runtime-not-ready` from `ready`. Only the running runtime's USB endpoint can be
+selected, and each selected request additionally revalidates USB binding and
+runtime generation. Explicit selection
 rejects a foreign session, then creates a session without an initial App,
 with automatic XCTest screenshots and terminate-on-session-end disabled.
 Noncompact element responses provide allowlisted fields for target resolution.
 iOS selection is annotated as a destructive, non-idempotent mutation because it
 creates or deletes an owned WDA session; Android selection retains its existing
 read-only annotations.
+
+Managed cleanup deletes only a still-identifiable owned HTTP session, stops the
+owned launcher and tunnel, checks device-port closure, then closes the owned proxies
+and releases its matching-token lock only after successful cleanup. Failures
+retain the lock and do not suppress the remaining resource-cleanup steps.
+The service passes owned-session verification/DELETE failure into runtime cleanup
+on both explicit stop and shutdown, so successful process/port teardown cannot
+erase that failure or release the matching-token lock.
+A device disconnect is not proof of WDA shutdown; port closure
+is not proof of XCTest quiescence. Retained installation, manual restart and
+non-atomic ownership checks are intentional; never silently retry installation,
+reuse foreign listeners or steal stale locks. Lifecycle and transport patterns
+reference the sibling go-ios integration, not its older MCP/WDA UI implementation.
+The usbmux result-code contract is described in the
+[libusbmuxd protocol header](https://github.com/libimobiledevice/libusbmuxd/blob/master/include/usbmuxd-proto.h);
+only `RESULT_CONNREFUSED` is accepted as port-closure evidence.
 
 Every selected request is serialized and checks the endpoint's vendor identity,
 WDA build and owned session. Observation reads lock state, pixel geometry from
@@ -256,8 +311,9 @@ material or third-party iOS implementation is bundled.
 `test\ios.test.ts` covers adapter state/guards/failure semantics and
 `test\ios-tools.test.ts` exercises the actual stdio entry point over both MCP
 protocol modes, using a local synthetic WDA. Run `npm run typecheck` and
-`npm test` for source validation; the default CI runs these independently of
-plugin packaging. `npm run check` additionally rebuilds the plugin and enforces
+`npm test` for source validation; the default CI also builds the candidate bundle
+and dependency notices independently of checked-in plugin parity.
+`npm run check` additionally rebuilds the plugin and enforces
 parity with `plugins\mobile-use`; with the plugin frozen, that local full check
 is expected to fail. The release workflow retains this gate for package-related
 changes or manual dispatch. It is not a waived check or evidence that the current

@@ -16,5 +16,6 @@ license texts below, without duplicating the source audit records in the plugin.
 An SDK update requires a new audit; missing audit/license/provenance files fail
 the build rather than silently omitting embedded dependency notices.
 
-Android Platform-Tools, Node.js, OEM drivers, and phone-side software are not
+Android Platform-Tools, go-ios, Apple USB services, Node.js, OEM drivers,
+WebDriverAgent and other phone-side software are not
 redistributed by this plugin.

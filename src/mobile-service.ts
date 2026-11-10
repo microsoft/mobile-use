@@ -2,6 +2,7 @@ import type {
   ActionResult, AdbServerResult, AppOperationResult, DeviceEndpoint, ForegroundApp, InstalledApps,
   ObservedScreen, PreparedGestures, PreparedTextInput, RecordingAction, RecordingResult, SelectedTarget, WakeResult,
 } from "./types.js";
+import type { IosRuntimeAction, IosRuntimeStatus } from "./ios/runtime.js";
 
 export interface AndroidDoctor {
   status: "ready";
@@ -10,20 +11,26 @@ export interface AndroidDoctor {
   platformToolsVersion: string;
 }
 
-export interface IosDoctor {
+export type IosDoctor = {
   status: "ready";
   platform: "ios";
   wdaUrl: string;
   iosVersion: string;
   model: string;
-}
+  runtime?: IosRuntimeStatus;
+} | {
+  status: "runtime-not-ready";
+  platform: "ios";
+  goIosVersion: string;
+  runtime: IosRuntimeStatus;
+};
 
 export type MobileDoctor = AndroidDoctor | IosDoctor;
 
 export interface IosSelectedTarget {
   targetToken: string;
   endpoint: DeviceEndpoint;
-  identity: { platform: "ios"; vendorId: string; iosVersion: string; model: string };
+  identity: { platform: "ios"; vendorId: string; iosVersion: string; model: string; udid?: string };
   capabilities: {
     tap: true;
     swipe: true;
@@ -64,6 +71,7 @@ interface CommonMethods {
 
 export interface MobileService extends CommonMethods {
   readonly platform: "android" | "ios";
+  readonly iosRuntime?: (action: IosRuntimeAction, signal?: AbortSignal) => Promise<IosRuntimeStatus>;
   doctor(signal?: AbortSignal): Promise<MobileDoctor>;
   selectDevice(endpointId: string, signal?: AbortSignal): Promise<SelectedTarget | IosSelectedTarget>;
   getForegroundApp(targetToken: string, signal?: AbortSignal): Promise<ForegroundApp | IosForegroundApp | null>;

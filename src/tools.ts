@@ -5,8 +5,9 @@ import packageInfo from "../package.json" with { type: "json" };
 import type { MobileService } from "./mobile-service.js";
 import { publicError } from "./errors.js";
 import { onboardingInstructions, phoneSetup, setupForDevices, setupForError } from "./setup.js";
-import { iosInstructions, iosSetup, setupForIosDevices, setupForIosError } from "./ios/setup.js";
+import { iosInstructions, iosSetup, managedIosInstructions, managedIosSetup, setupForIosDevices, setupForIosError } from "./ios/setup.js";
 import { iosBundleIdSchema } from "./ios/wda.js";
+import { iosRuntimeActionSchema } from "./ios/runtime.js";
 import {
   doubleTapActionSchema, keyActionSchema, longPressActionSchema, packageNameSchema, swipeActionSchema,
   recordingActionSchema, tapActionSchema, textActionSchema,
@@ -19,12 +20,12 @@ function result(payload: unknown, image: Buffer | null = null, isError = false):
   return { content, ...(isError ? { isError: true } : {}) };
 }
 
-async function safely(operation: () => Promise<CallToolResult>, ios = false): Promise<CallToolResult> {
+async function safely(operation: () => Promise<CallToolResult>, ios = false, managed = false): Promise<CallToolResult> {
   try {
     return await operation();
   } catch (error) {
     const failure = publicError(error);
-    const setup = ios ? setupForIosError(failure.code) : setupForError(failure.code, failure.actionMayHaveRun);
+    const setup = ios ? setupForIosError(failure.code, managed) : setupForError(failure.code, failure.actionMayHaveRun);
     process.stderr.write(`mobile-use: ${failure.code}\n`);
     return result({ error: failure.toJSON(), ...(setup ? { setup } : {}) }, null, true);
   }
@@ -46,10 +47,12 @@ function actionResult(action: ActionResult): CallToolResult {
 
 export function createMobileUseServer(service: MobileService): McpServer {
   const ios = service.platform === "ios";
-  const execute = (operation: () => Promise<CallToolResult>) => safely(operation, ios);
+  const controlRuntime = ios ? service.iosRuntime : undefined;
+  const managed = controlRuntime !== undefined;
+  const execute = (operation: () => Promise<CallToolResult>) => safely(operation, ios, managed);
   const server = new McpServer(
     { name: "mobile-use", version: packageInfo.version },
-    { instructions: ios ? iosInstructions : onboardingInstructions },
+    { instructions: ios ? managed ? managedIosInstructions : iosInstructions : onboardingInstructions },
   );
   const readOnly = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };
   const mutation = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true };
@@ -58,18 +61,27 @@ export function createMobileUseServer(service: MobileService): McpServer {
   const appIdentifier = ios ? iosBundleIdSchema : packageNameSchema;
   const prepareAction = z.strictObject({ kind: z.literal("prepare") });
 
+  if (controlRuntime) server.registerTool("mobile_ios_runtime", {
+    title: "Manage iOS USB runtime",
+    description: "Explicit managed-iOS lifecycle only. action.kind=status reads state/errors without waiting for the UI queue. start requires the user's exact USB endpoint approval and immediately returns preparing plus a runtimeToken; poll until awaiting-developer-trust or failed. installRunner defaults to false (already-installed Runner); true explicitly installs/replaces the configured user-signed validated IPA. Never signs or pairs. Only after user-confirmed Developer App trust, confirm_trust with this token returns starting; poll until ready or failed. Acknowledged background work continues until explicit stop or server shutdown, not cancellation of the completed request. Selection cannot start/install. stop requires that token, waits for an in-flight install, stops only owned resources, verifies WDA device-port closure and retains Runner installation/caches. Failures invalidate targets; never automatically restart, replay installation, steal locks or confirm trust for the user.",
+    inputSchema: z.strictObject({ action: iosRuntimeActionSchema }),
+    annotations: mutation,
+  }, (input, ctx) => execute(async () => result(await controlRuntime(input.action, ctx.mcpReq.signal))));
+
   server.registerTool("mobile_doctor", {
     title: "Check mobile setup",
-    description: ios ? "Read the configured local WDA status and physical iOS 17+ device metadata. Does not create a session, capture, deploy, sign, start forwarding, or authorize control. Then list and explicitly select the endpoint." : "Start here on first use: diagnose Windows/ADB prerequisites and return step-by-step setup guidance. Ready means host Platform-Tools only; then call mobile_list_devices before guiding missing phone setup. Guide Platform-Tools installation, Developer options, and USB/Wireless debugging only as needed. Never installs software, pairs, changes settings, lists, or controls devices.",
+    description: ios ? managed ? "Read go-ios v1.3.2 prerequisites and managed runtime state; when ready, verify USB/WDA device metadata. Never starts, installs, pairs, signs, captures or creates a session. runtime-not-ready is not UI readiness; list USB endpoints and explicitly prepare the chosen one with mobile_ios_runtime."
+      : "Read the configured local WDA status and physical iOS 17+ device metadata. Does not create a session, capture, deploy, sign, start forwarding, or authorize control. Then list and explicitly select the endpoint." : "Start here on first use: diagnose Windows/ADB prerequisites and return step-by-step setup guidance. Ready means host Platform-Tools only; then call mobile_list_devices before guiding missing phone setup. Guide Platform-Tools installation, Developer options, and USB/Wireless debugging only as needed. Never installs software, pairs, changes settings, lists, or controls devices.",
     inputSchema: z.strictObject({}),
     annotations: readOnly,
   }, (_input, ctx) => execute(async () => result({
-    ...await service.doctor(ctx.mcpReq.signal), scope: "host", setup: ios ? iosSetup : phoneSetup,
+    ...await service.doctor(ctx.mcpReq.signal), scope: "host", setup: ios ? managed ? managedIosSetup : iosSetup : phoneSetup,
   })));
 
   server.registerTool("mobile_start_adb_server", {
     title: "Start ADB server",
-    description: ios ? "Unsupported in iOS mode. The user starts WDA and forwarding outside this plugin; never fall back to ADB." : "Only after the user explicitly approves starting the local ADB server: reuse a compatible server at 127.0.0.1:5037 or start a missing one, verify readiness, and retry read-only device discovery. The shared server may remain running after this plugin exits and may initialize standard local ADB host keys. Never kills, replaces, or restarts a server, changes settings, pairs, approves phone trust, or controls devices. Conflicts fail explicitly. Reuse an already explicit exact authorization rather than asking twice. Never automatically retry uncertain startup.",
+    description: ios ? managed ? "Unsupported in iOS mode. Use the explicit mobile_ios_runtime lifecycle, never ADB."
+      : "Unsupported in iOS mode. The user starts WDA and forwarding outside this plugin; never fall back to ADB." : "Only after the user explicitly approves starting the local ADB server: reuse a compatible server at 127.0.0.1:5037 or start a missing one, verify readiness, and retry read-only device discovery. The shared server may remain running after this plugin exits and may initialize standard local ADB host keys. Never kills, replaces, or restarts a server, changes settings, pairs, approves phone trust, or controls devices. Conflicts fail explicitly. Reuse an already explicit exact authorization rather than asking twice. Never automatically retry uncertain startup.",
     inputSchema: z.strictObject({}),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, (_input, ctx) => execute(async () => {
@@ -79,12 +91,13 @@ export function createMobileUseServer(service: MobileService): McpServer {
 
   server.registerTool("mobile_list_devices", {
     title: "List devices",
-    description: ios ? "Read the single configured local WDA endpoint and whether an exclusive session can be selected. Not USB discovery: forwarding is user-managed. Foreign sessions are unavailable, not silently replaced. No capture or session creation." : "After mobile_doctor, list local ADB endpoints with online/unauthorized/offline states and the next setup steps. Empty inventory prompts Developer options/USB debugging guidance; unauthorized/offline entries need user setup. USB and Wi-Fi may be the same phone. Do not silently select a device or confuse endpoint identity with physical identity.",
+    description: ios ? managed ? "Enumerate real Apple USB UDIDs only. No Wi-Fi fallback, startup, installation or selection. Only this runtime's ready endpoint is selectable; explicitly prepare the user's chosen endpoint with mobile_ios_runtime. Foreign WDA sessions are never replaced."
+      : "Read the single configured local WDA endpoint and whether an exclusive session can be selected. Not USB discovery: forwarding is user-managed. Foreign sessions are unavailable, not silently replaced. No capture or session creation." : "After mobile_doctor, list local ADB endpoints with online/unauthorized/offline states and the next setup steps. Empty inventory prompts Developer options/USB debugging guidance; unauthorized/offline entries need user setup. USB and Wi-Fi may be the same phone. Do not silently select a device or confuse endpoint identity with physical identity.",
     inputSchema: z.strictObject({}),
     annotations: readOnly,
   }, (_input, ctx) => execute(async () => {
     const devices = await service.listDevices(ctx.mcpReq.signal);
-    return result({ devices, setup: ios ? setupForIosDevices(devices) : setupForDevices(devices) });
+    return result({ devices, setup: ios ? setupForIosDevices(devices, managed) : setupForDevices(devices) });
   }));
 
   server.registerTool("mobile_select_device", {
