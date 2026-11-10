@@ -13,7 +13,7 @@ export async function createIosFixture() {
     windowName: "Main", value: "safe", focusId: "editor", focusType: "XCUIElementTypeTextField",
     overlay: false,
     prettySource: true, screenshot: undefined as string | undefined,
-    failAction: false, failAfterAction: false, corruptSource: false,
+    failAction: false, failAfterAction: false, corruptSource: false, failSessionDelete: false,
     sourceHook: undefined as (() => void) | undefined,
     actionHook: undefined as (() => Promise<void>) | undefined,
   };
@@ -82,6 +82,7 @@ export async function createIosFixture() {
         return;
       }
       if (path === `/session/${state.sessionId}` && request.method === "DELETE") {
+        if (state.failSessionDelete) { reply({ error: "unknown error", message: "private-error" }, 500); return; }
         state.sessionId = null;
         reply(null);
         return;

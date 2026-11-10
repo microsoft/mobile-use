@@ -6,9 +6,9 @@ tablet** from Windows, over USB or modern paired wireless ADB.
 Read screens or UI text, tap and swipe, enter text, manage apps, and record
 silent screen videos on a device you explicitly select.
 
-An **iOS 17+ source adapter** is in development and is **not included in the
-checked-in plugin**. WDA personal signing/onboarding and real-device acceptance
-are not ready; see the [iOS MVP status](docs/ios-mvp.md).
+An **iOS 17+ source adapter**, including opt-in managed USB runtime for a
+user-signed WDA, is **not included in the checked-in plugin**. Personal signing
+and real-device acceptance remain pending; see the [iOS MVP status](docs/ios-mvp.md).
 
 **Experimental:** this is a proof of concept, not a released or
 production-supported product. USB workflows, including screen recording, have

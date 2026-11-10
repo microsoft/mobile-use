@@ -1,4 +1,3 @@
 plugins/mobile-use/** text eol=lf
-*.png binary
 # Bundled dependencies retain upstream formatting.
 plugins/mobile-use/server/index.mjs linguist-generated=true -whitespace

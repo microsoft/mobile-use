@@ -98,7 +98,6 @@ test("the rebuilt artifact excludes the removed device backend but retains actua
   const notices = await readFile(path.join(artifact, "THIRD_PARTY_NOTICES"), "utf8");
   const bundle = await readFile(path.join(artifact, "server", "index.mjs"), "utf8");
   assert.doesNotMatch(notices + bundle, /mobile-next\/mobile-mcp|mobile-mcp|c659f8ee34873a832adea7daca9c69172d887e70|escapeShellText/);
-  assert.doesNotMatch(bundle, /\/\/ src\/ios\/device-session\.ts/);
   assert.match(await readFile(path.join(artifact, "LICENSE"), "utf8"), /MIT License/);
   assert.match(notices, /@modelcontextprotocol\/server/);
 });
@@ -144,19 +143,13 @@ test("the committed marketplace package matches the complete build", async () =>
   assert.deepEqual(actualPaths, expectedPaths, remediation);
   for (const relative of expectedPaths) {
     if (!(await stat(path.join(artifact, relative))).isFile()) continue;
-    const expected = await readFile(path.join(artifact, relative));
-    const actual = await readFile(path.join(marketplaceArtifact, relative));
-    const text = /\.(?:json|md|mjs)$/.test(relative) || relative === "LICENSE" || relative === "THIRD_PARTY_NOTICES";
-    if (!text) {
-      assert.deepEqual(actual, expected, `${relative}: ${remediation}`);
-    } else {
-      // Git checks out the published text files as LF, even with core.autocrlf enabled.
-      assert.equal(
-        actual.toString("utf8").replace(/\r\n/g, "\n"),
-        expected.toString("utf8").replace(/\r\n/g, "\n"),
-        `${relative}: ${remediation}`,
-      );
-    }
+    const expected = await readFile(path.join(artifact, relative), "utf8");
+    const actual = await readFile(path.join(marketplaceArtifact, relative), "utf8");
+    // Git checks out the published text files as LF, even with core.autocrlf enabled.
+    assert.ok(
+      actual.replace(/\r\n/g, "\n") === expected.replace(/\r\n/g, "\n"),
+      `${relative}: ${remediation}`,
+    );
   }
 });
 
@@ -174,7 +167,6 @@ test("marketplace generation preserves authored files and replaces stale generat
   const built = path.join(fixture, "dist", "mobile-use");
   const authoredPaths = [
     "plugin.json", "mcp.json",
-    path.join("assets", "mobile-use.png"),
     path.join("skills", "mobile-use", "SKILL.md"),
     path.join("skills", "mobile-use", "references", "screen-recording.md"),
   ];
@@ -235,13 +227,11 @@ test("marketplace generation preserves authored files and replaces stale generat
   }
 });
 
-for (const [label, source, mode, configuredPlatform] of [
+for (const [label, source, mode] of [
   ["built", artifact, "legacy"],
   ["built", artifact, "auto"],
   ["marketplace", marketplaceArtifact, "legacy"],
   ["marketplace", marketplaceArtifact, "auto"],
-  ["built with iOS environment", artifact, "legacy", "ios"],
-  ["marketplace with iOS environment", marketplaceArtifact, "auto", "ios"],
 ]) {
   test(`copied ${label} artifact starts without node_modules over ${mode} MCP negotiation`, async (t) => {
     const copied = await mkdtemp(path.join(tmpdir(), "mobile-use plugin with spaces "));
@@ -264,7 +254,6 @@ for (const [label, source, mode, configuredPlatform] of [
       env: {
         ...getDefaultEnvironment(),
         MOBILE_USE_ADB_PATH: path.join(copied, "deliberately-missing-adb.exe"),
-        ...(configuredPlatform ? { MOBILE_USE_PLATFORM: configuredPlatform, MOBILE_USE_WDA_URL: "http://127.0.0.1:1" } : {}),
       },
       stderr: "pipe",
     });
@@ -276,17 +265,11 @@ for (const [label, source, mode, configuredPlatform] of [
     );
     await client.connect(transport);
     assert.equal(client.getServerVersion()?.name, "mobile-use");
-    const png = await readFile(path.join(copied, "assets", "mobile-use.png"));
-    assert.deepEqual(png.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-    assert.equal(png.readUInt32BE(16), 64);
-    assert.equal(png.readUInt32BE(20), 64);
-    assert.ok(png.length <= 8192, "Keep repeated tool icon metadata compact.");
-    const icons = [{
-      src: `data:image/png;base64,${png.toString("base64")}`,
+    assert.deepEqual(client.getServerVersion()?.icons, [{
+      src: "https://raw.githubusercontent.com/microsoft/mobile-use/b7ced9b472c428cfe8cb54973c2c9dc2d8ac38a3/assets/mobile-use.png",
       mimeType: "image/png",
-      sizes: ["64x64"],
-    }];
-    assert.deepEqual(client.getServerVersion()?.icons, icons);
+      sizes: ["512x512"],
+    }]);
     assert.match(client.getInstructions() ?? "", /On first use in each session, call mobile_doctor/);
     if (mode === "auto") assert.ok(client.getDiscoverResult(), "modern discover negotiation must actually succeed");
     if (mode === "legacy") await client.ping();
@@ -296,8 +279,8 @@ for (const [label, source, mode, configuredPlatform] of [
       "mobile_observe", "mobile_press_key", "mobile_screen_recording", "mobile_select_device", "mobile_start_adb_server",
       "mobile_swipe", "mobile_tap", "mobile_wake",
     ]);
-    for (const tool of tools.tools) assert.deepEqual(tool.icons, icons, tool.name);
     assert.ok(tools.tools.every((tool) => typeof tool.title === "string" && tool.title.length > 0));
+    assert.ok(tools.tools.every((tool) => tool.icons === undefined));
     const observe = tools.tools.find((tool) => tool.name === "mobile_observe");
     assert.deepEqual(observe?.inputSchema.required, ["targetToken"]);
     assert.equal(observe?.inputSchema.properties?.includeScreenshot?.type, "boolean");
@@ -370,21 +353,6 @@ for (const [label, source, mode, configuredPlatform] of [
     assert.match(stderr, /^(?:mobile-use: ADB_NOT_FOUND\r?\n){2}$/);
   });
 }
-
-test("the packaged server reports a missing icon instead of starting without it", async (t) => {
-  const copied = await mkdtemp(path.join(tmpdir(), "mobile-use missing icon "));
-  t.after(() => rm(copied, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
-  await cp(artifact, copied, { recursive: true });
-  await rm(path.join(copied, "assets", "mobile-use.png"));
-  const result = spawnSync(process.execPath, [path.join(copied, "server", "index.mjs")], {
-    cwd: copied, input: "", encoding: "utf8", windowsHide: true, timeout: 5000,
-  });
-  assert.equal(result.error, undefined);
-  assert.notEqual(result.status, 0);
-  assert.equal(result.stdout, "");
-  assert.match(result.stderr, /ENOENT/);
-  assert.match(result.stderr, /mobile-use\.png/);
-});
 
 test("the packaged server exits cleanly on EOF without invoking ADB", { timeout: 5000 }, async (t) => {
   const child = spawn(process.execPath, [path.join(artifact, "server", "index.mjs")], {

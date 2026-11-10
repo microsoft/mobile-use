@@ -10,7 +10,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build:tests": "tsc && node scripts\\stage-test-assets.mjs",
+    "build:tests": "tsc",
     "test": "npm run build:tests && node --test .test-build\\test\\*.test.js",
     "build:plugin": "node scripts\\build-plugin.mjs",
     "build:marketplace": "node scripts\\build-plugin.mjs --marketplace",
@@ -24,6 +24,7 @@
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
     "fast-xml-parser": "5.11.2",
+    "plist": "5.0.0",
     "zod": "4.6.7"
   },
   "devDependencies": {

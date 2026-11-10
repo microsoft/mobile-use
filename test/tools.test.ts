@@ -9,7 +9,6 @@ import { Client } from "@modelcontextprotocol/client";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { isRecord } from "../src/errors.js";
 import { mp4, USB } from "./helpers.js";
-import { assertMobileIcons } from "./icon-assertions.js";
 
 async function fixture(t: TestContext, mode: "legacy" | "auto", scenario = "") {
   const transport = new StdioClientTransport({
@@ -704,8 +703,13 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.equal(entered.content.length, 1);
   });
 
-  test(`twelve categorized tools expose icons and typed setup, recording, wake, and input results over ${mode}`, async (t) => {
+  test(`twelve categorized tools expose typed setup, recording, wake, and input results over ${mode}`, async (t) => {
     const { client } = await fixture(t, mode);
+    assert.deepEqual(client.getServerVersion()?.icons, [{
+      src: "https://raw.githubusercontent.com/microsoft/mobile-use/b7ced9b472c428cfe8cb54973c2c9dc2d8ac38a3/assets/mobile-use.png",
+      mimeType: "image/png",
+      sizes: ["512x512"],
+    }]);
     assert.match(client.getInstructions() ?? "", /On first use in each session, call mobile_doctor/);
     assert.match(client.getInstructions() ?? "", /call mobile_list_devices before offering phone setup/);
     assert.match(client.getInstructions() ?? "", /Never install software, enable debugging, pair devices, or accept trust automatically/);
@@ -715,8 +719,8 @@ for (const mode of ["legacy", "auto"] as const) {
       "mobile_observe", "mobile_press_key", "mobile_screen_recording", "mobile_select_device", "mobile_start_adb_server",
       "mobile_swipe", "mobile_tap", "mobile_wake",
     ]);
-    await assertMobileIcons(client, tools.tools);
     assert.ok(tools.tools.every((tool) => typeof tool.title === "string" && tool.title.length > 0));
+    assert.ok(tools.tools.every((tool) => tool.icons === undefined));
     const selection = tools.tools.find((tool) => tool.name === "mobile_select_device");
     assert.equal(selection?.annotations?.readOnlyHint, true);
     assert.equal(selection?.annotations?.destructiveHint, false);
