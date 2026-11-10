@@ -710,7 +710,11 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.equal(icon.mimeType, "image/png");
     assert.deepEqual(icon.sizes, ["128x128"]);
     assert.match(icon.src, /^data:image\/png;base64,/);
-    const iconPng = Buffer.from(icon.src.slice("data:image/png;base64,".length), "base64");
+    const encodedIcon = icon.src.slice("data:image/png;base64,".length);
+    assert.match(encodedIcon, /^[A-Za-z0-9+/]+={0,2}$/);
+    assert.equal(encodedIcon.length % 4, 0);
+    const iconPng = Buffer.from(encodedIcon, "base64");
+    assert.equal(iconPng.toString("base64"), encodedIcon);
     assert.deepEqual(iconPng.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
     assert.equal(iconPng.readUInt32BE(16), 128);
     assert.equal(iconPng.readUInt32BE(20), 128);

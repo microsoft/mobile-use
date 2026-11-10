@@ -202,4 +202,4 @@ const iconBase64 = [
   "n/RJn/TJ/1fyfwFTQRB70J9SjQAAAABJRU5ErkJggg=="
 ];
 
-export const mobileUseIcon = `data:image/png;base64,${iconBase64}`;
+export const mobileUseIcon = `data:image/png;base64,${iconBase64.join("")}`;
