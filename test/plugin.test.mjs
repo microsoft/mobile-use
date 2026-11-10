@@ -265,11 +265,6 @@ for (const [label, source, mode] of [
     );
     await client.connect(transport);
     assert.equal(client.getServerVersion()?.name, "mobile-use");
-    assert.deepEqual(client.getServerVersion()?.icons, [{
-      src: "https://raw.githubusercontent.com/microsoft/mobile-use/b7ced9b472c428cfe8cb54973c2c9dc2d8ac38a3/assets/mobile-use.png",
-      mimeType: "image/png",
-      sizes: ["512x512"],
-    }]);
     assert.match(client.getInstructions() ?? "", /On first use in each session, call mobile_doctor/);
     if (mode === "auto") assert.ok(client.getDiscoverResult(), "modern discover negotiation must actually succeed");
     if (mode === "legacy") await client.ping();
@@ -280,7 +275,6 @@ for (const [label, source, mode] of [
       "mobile_swipe", "mobile_tap", "mobile_wake",
     ]);
     assert.ok(tools.tools.every((tool) => typeof tool.title === "string" && tool.title.length > 0));
-    assert.ok(tools.tools.every((tool) => tool.icons === undefined));
     const observe = tools.tools.find((tool) => tool.name === "mobile_observe");
     assert.deepEqual(observe?.inputSchema.required, ["targetToken"]);
     assert.equal(observe?.inputSchema.properties?.includeScreenshot?.type, "boolean");

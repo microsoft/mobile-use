@@ -41858,11 +41858,7 @@ function actionResult(action) {
 }
 function createMobileUseServer(service) {
   const server = new McpServer(
-    { name: "mobile-use", version: package_default.version, icons: [{
-      src: "https://raw.githubusercontent.com/microsoft/mobile-use/b7ced9b472c428cfe8cb54973c2c9dc2d8ac38a3/assets/mobile-use.png",
-      mimeType: "image/png",
-      sizes: ["512x512"]
-    }] },
+    { name: "mobile-use", version: package_default.version },
     { instructions: onboardingInstructions }
   );
   const readOnly = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };
