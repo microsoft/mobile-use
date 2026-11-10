@@ -9,7 +9,7 @@ try {
     onerror: () => process.stderr.write("mobile-use: MCP protocol/transport error.\n"),
   });
   const stop = (): Promise<void> => Promise.resolve(service.stop()).catch(() => {
-    process.stderr.write("mobile-use: device session cleanup failed; check the owned session on the device.\n");
+    process.stderr.write("mobile-use: device session/runtime cleanup failed; check the owned resources on the device.\n");
     process.exitCode = 1;
   });
   const shutdown = (): void => {

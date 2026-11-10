@@ -193,21 +193,54 @@ Each service has a required `platform`; doctor results discriminate on the same
 field. Android source doctor adds `platform: "android"` while preserving its
 existing fields. The Android driver, queue, guards and helpers remain unchanged.
 
-The iOS adapter connects only to the explicitly configured local WDA URL. It
-does not deploy/sign/start a Runner or add a Host/IPC/Grant layer. This MVP uses
-an independently started, dedicated Runner and user-managed forwarding. The
+The default `MOBILE_USE_IOS_RUNTIME=external` adapter connects only to the
+explicitly configured local WDA URL. It never deploys/starts/stops that external
+Runner or forwarding. Neither iOS mode adds a Host/IPC/Grant layer. The
 development guide describes setup and platform-specific tool semantics; setting
 iOS environment variables on the checked-in plugin does not enable this adapter.
 
-`doctor`/inventory read `/status` and `/wda/device/info`, require real iOS 17+
+Opt-in `managed` mode separates lifecycle/transport from UI semantics:
+`src\ios\runtime.ts` owns the go-ios v1.3.2 tunnel, image preparation, optional
+explicit IPA install, human-trust gate, `runwda` and per-UDID lock.
+`src\ios\usb.ts` implements Apple usbmux framing and a loopback-only proxy,
+using the Windows Apple service or macOS system socket; it is not a developer
+tunnel or Wi-Fi fallback. `runtime-process.ts` owns child processes and local
+logs, with no shell interpolation or raw command output in MCP errors.
+The extra `mobile_ios_runtime` tool is an optional explicit `MobileService`
+capability, registered only for managed iOS. Discovery and selection never
+install or start. Runner installation defaults off and is retained on exit.
+Start/trust confirmation acknowledge background preparation/launch; status
+bypasses the UI queue so long native operations do not hold an MCP call open.
+Background errors are recorded in status and logged as stable codes. Explicit
+stop and shutdown wait for installation to settle before owned cleanup.
+The user supplies validated signed bits; no signature validator, signing or
+automatic device-trust acceptance is implemented.
+
+External `doctor`/inventory read `/status` and `/wda/device/info`, require real iOS 17+
 hardware, and do not capture or create sessions. The reported vendor UUID is
-IDFV, not UDID; no physical USB discovery is claimed. Explicit selection
+IDFV, not UDID; external mode claims no physical USB discovery. Managed inventory
+reports physical USB UDIDs before readiness; managed doctor discriminates
+`runtime-not-ready` from `ready`. Only the running runtime's USB endpoint can be
+selected, and each selected request additionally revalidates USB binding and
+runtime generation. Explicit selection
 rejects a foreign session, then creates a session without an initial App,
 with automatic XCTest screenshots and terminate-on-session-end disabled.
 Noncompact element responses provide allowlisted fields for target resolution.
 iOS selection is annotated as a destructive, non-idempotent mutation because it
 creates or deletes an owned WDA session; Android selection retains its existing
 read-only annotations.
+
+Managed cleanup deletes only a still-identifiable owned HTTP session, stops the
+owned launcher and tunnel, checks device-port closure, then closes the owned proxy
+and releases its matching-token lock. Cleanup errors do not suppress later
+cleanup attempts. A device disconnect is not proof of WDA shutdown; port closure
+is not proof of XCTest quiescence. Retained installation, manual restart and
+non-atomic ownership checks are intentional; never silently retry installation,
+reuse foreign listeners or steal stale locks. Lifecycle and transport patterns
+reference the sibling go-ios integration, not its older MCP/WDA UI implementation.
+The usbmux result-code contract is described in the
+[libusbmuxd protocol header](https://github.com/libimobiledevice/libusbmuxd/blob/master/include/usbmuxd-proto.h);
+only `RESULT_CONNREFUSED` is accepted as port-closure evidence.
 
 Every selected request is serialized and checks the endpoint's vendor identity,
 WDA build and owned session. Observation reads lock state, pixel geometry from
