@@ -248,10 +248,11 @@ sockets and owned Node child processes. They do not install a real Runner or
 establish Windows/macOS hardware acceptance. The sibling go-ios integration's
 documented macOS acceptance is reference evidence, not acceptance of this adapter.
 
-Default Windows CI runs source validation and Android helper/DEX checks.
-The separate plugin release workflow runs for package-related changes or manual
-dispatch, preserving strict parity and copied-artifact checks without requiring
-source-only development to update the checked-in plugin.
+Default Windows CI runs source validation, candidate bundle/dependency-notice
+generation and Android helper/DEX checks. The separate plugin release workflow
+runs for checked-in plugin or packaging script/test changes, or manual dispatch,
+preserving strict parity and copied-artifact checks without requiring source-only
+dependency/licensing changes to update the checked-in plugin.
 
 The local `npm run check` also rebuilds the plugin and requires its output
 to match `plugins\mobile-use`. Because the checked-in plugin is intentionally

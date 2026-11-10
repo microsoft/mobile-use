@@ -13,8 +13,9 @@ setup in the README, plus specific consent for the device and task.
 
 ## Build and check the plugin
 
-Source validation, matching the default Windows CI, runs `npm run typecheck`
-and `npm test`. The commands below additionally validate the plugin package.
+Source validation, matching the default Windows CI, runs `npm run typecheck`,
+`npm test`, and `npm run build:plugin`. The commands below additionally validate
+the checked-in plugin package.
 
 From the repository directory in PowerShell:
 
@@ -29,9 +30,11 @@ The default Windows workflow runs source checks on Node 22 and 24 and retains
 the Android helper/DEX checks. Source-only development does not require updating
 the checked-in plugin.
 
-The separate `plugin-release.yml` workflow runs on plugin package, packaging
-script/test, dependency or licensing changes in PRs and pushes to main, or through
-manual dispatch. It builds the candidate plugin and runs the unchanged strict
+The separate `plugin-release.yml` workflow runs on checked-in plugin package or
+packaging script/test changes in PRs and pushes to main, or through manual
+dispatch. Source dependency and licensing changes are covered by the candidate
+build in the default workflow without implying a marketplace update.
+The release workflow builds the candidate plugin and runs the unchanged strict
 parity and copied-artifact tests on Node 22 and 24; it does not generate or publish
 marketplace updates. Before intentional package updates, run
 `npm run build:marketplace` locally, then `check`, and commit the updated package.
@@ -289,8 +292,9 @@ material or third-party iOS implementation is bundled.
 `test\ios.test.ts` covers adapter state/guards/failure semantics and
 `test\ios-tools.test.ts` exercises the actual stdio entry point over both MCP
 protocol modes, using a local synthetic WDA. Run `npm run typecheck` and
-`npm test` for source validation; the default CI runs these independently of
-plugin packaging. `npm run check` additionally rebuilds the plugin and enforces
+`npm test` for source validation; the default CI also builds the candidate bundle
+and dependency notices independently of checked-in plugin parity.
+`npm run check` additionally rebuilds the plugin and enforces
 parity with `plugins\mobile-use`; with the plugin frozen, that local full check
 is expected to fail. The release workflow retains this gate for package-related
 changes or manual dispatch. It is not a waived check or evidence that the current

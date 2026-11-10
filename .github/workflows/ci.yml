@@ -32,6 +32,8 @@ jobs:
         run: npm run typecheck
       - name: Android and iOS source tests
         run: npm test
+      - name: Build candidate plugin and dependency notices
+        run: npm run build:plugin
   gesture-helper:
     name: Android helper sources and embedded DEX
     runs-on: windows-latest

@@ -7,21 +7,11 @@ on:
       - "plugins/mobile-use/**"
       - "scripts/build-plugin.mjs"
       - "test/plugin.test.mjs"
-      - "package.json"
-      - "package-lock.json"
-      - "LICENSE"
-      - "THIRD_PARTY_NOTICES"
-      - "third_party/**"
   pull_request:
     paths:
       - "plugins/mobile-use/**"
       - "scripts/build-plugin.mjs"
       - "test/plugin.test.mjs"
-      - "package.json"
-      - "package-lock.json"
-      - "LICENSE"
-      - "THIRD_PARTY_NOTICES"
-      - "third_party/**"
   workflow_dispatch:
 
 permissions:
