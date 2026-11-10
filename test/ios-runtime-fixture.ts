@@ -39,7 +39,7 @@ export async function runtimeFixture(t: TestContext, options: { directory?: stri
   const events: string[] = [];
   const state = {
     connected: true, running: false, leaveRunnerRunning: false, closeRunnerWithTunnel: false, failImage: false, failInstall: false,
-    failTunnelStop: false, badInfo: false,
+    failTunnelStop: false, badInfo: false, productVersion: "18.5",
     installHook: undefined as (() => Promise<void>) | undefined,
     imageHook: undefined as (() => Promise<void>) | undefined,
     listHook: undefined as (() => Promise<void>) | undefined,
@@ -70,7 +70,7 @@ export async function runtimeFixture(t: TestContext, options: { directory?: stri
       if (args[0] === "version") return JSON.stringify({ version: "v1.3.2" });
       assert.deepEqual(args.slice(0, 2), ["--udid", IOS_UDID]);
       if (args.includes("info")) return state.badInfo ? "broken JSON" :
-        JSON.stringify({ UniqueDeviceID: IOS_UDID, ProductVersion: "18.5" });
+        JSON.stringify({ UniqueDeviceID: IOS_UDID, ProductVersion: state.productVersion });
       if (args.includes("image")) {
         events.push("image");
         await state.imageHook?.();

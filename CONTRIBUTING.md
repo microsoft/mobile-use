@@ -205,6 +205,8 @@ iOS environment variables on the checked-in plugin does not enable this adapter.
 Opt-in `managed` mode separates lifecycle/transport from UI semantics:
 `src\ios\runtime.ts` owns the go-ios v1.3.2 tunnel, image preparation, optional
 explicit IPA install, human-trust gate, `runwda` and per-UDID lock.
+Its userspace tunnel path requires iOS 17.4.1+; tunnel-info ports must be below
+65535 because go-ios derives its first userspace listener at the next port.
 `src\ios\usb.ts` implements Apple usbmux framing and a loopback-only proxy,
 using the Windows Apple service or macOS system socket; it is not a developer
 tunnel or Wi-Fi fallback. `runtime-process.ts` owns child processes and local
@@ -235,8 +237,9 @@ read-only annotations.
 
 Managed cleanup deletes only a still-identifiable owned HTTP session, stops the
 owned launcher and tunnel, checks device-port closure, then closes the owned proxy
-and releases its matching-token lock. Cleanup errors do not suppress later
-cleanup attempts. A device disconnect is not proof of WDA shutdown; port closure
+and releases its matching-token lock only after successful cleanup. Failures
+retain the lock and do not suppress the remaining resource-cleanup steps.
+A device disconnect is not proof of WDA shutdown; port closure
 is not proof of XCTest quiescence. Retained installation, manual restart and
 non-atomic ownership checks are intentional; never silently retry installation,
 reuse foreign listeners or steal stale locks. Lifecycle and transport patterns

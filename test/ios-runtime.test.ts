@@ -9,6 +9,7 @@ import test from "node:test";
 import { MobileUseError } from "../src/errors.js";
 import { createMobileService } from "../src/service-factory.js";
 import { runtimeCommands } from "../src/ios/runtime-process.js";
+import { availableTunnelPort } from "../src/ios/runtime.js";
 import { IOS_ENDPOINT, IOS_UDID, runtimeFixture, waitRuntimeState } from "./ios-runtime-fixture.js";
 
 test("managed mode is explicit, rejects ambiguous endpoint/configuration and leaves external mode unchanged", async () => {
@@ -21,8 +22,38 @@ test("managed mode is explicit, rejects ambiguous endpoint/configuration and lea
     { ...config, MOBILE_USE_IOS_RUNTIME: "automatic" },
     { ...config, MOBILE_USE_IOS_RUNNER_BUNDLE_ID: "example.runner" },
     { ...config, MOBILE_USE_IOS_RUNNER_IPA: "relative.ipa" },
+    { ...config, MOBILE_USE_IOS_TUNNEL_PORT: "65535" },
     { ...config, MOBILE_USE_IOS_TUNNEL_PORT: "65536" },
   ]) assert.throws(() => createMobileService(environment), { code: "IOS_RUNTIME_CONFIG_INVALID" });
+});
+
+test("tunnel-info allocation leaves room for the derived userspace listener, including ephemeral allocations", async () => {
+  const allocations = [65535, 65534];
+  assert.equal(await availableTunnelPort(0, async () => {
+    const port = allocations.shift();
+    assert.ok(port);
+    return port;
+  }), 65534);
+  assert.equal(allocations.length, 0);
+  await assert.rejects(availableTunnelPort(65535, async () => {
+    assert.fail("Invalid explicit ports must fail before binding.");
+  }), { code: "IOS_RUNTIME_CONFIG_INVALID" });
+  await assert.rejects(availableTunnelPort(0, async () => 65535), { code: "IOS_RUNTIME_CONFLICT" });
+});
+
+test("managed userspace tunnels reject unsupported iOS versions before acquiring resources", async (t) => {
+  for (const version of ["16.7", "17.0", "17.3.1", "17.4", "17.4.0"]) {
+    const f = await runtimeFixture(t);
+    f.state.productVersion = version;
+    await assert.rejects(f.start(), { code: "DEVICE_UNSUPPORTED" });
+    assert.deepEqual(f.events, []);
+    await assert.rejects(readFile(join(f.directory, "locks", `${IOS_UDID}.lock`)), { code: "ENOENT" });
+  }
+  for (const version of ["17.4.1", "17.5", "18.0"]) {
+    const f = await runtimeFixture(t);
+    f.state.productVersion = version;
+    assert.equal((await f.start()).state, "awaiting-developer-trust");
+  }
 });
 
 test("doctor/discovery never launch or install; trust gates WDA and USB identity remains distinct from IDFV", async (t) => {
@@ -245,6 +276,26 @@ test("host process exit alone is not device stop; remaining cleanup still runs a
   assert.equal(f.runtime.status().wdaPortClosed, false);
   assert.equal(f.runtime.status().state, "cleanup-failed");
   assert.deepEqual(f.events.slice(-2), ["stop-wda", "stop-tunnel"]);
+});
+
+test("cleanup failures retain the matching-token UDID lock and prevent another runtime from starting", async (t) => {
+  for (const failure of ["tunnel-stop", "open-port", "device-loss"]) {
+    const f = await runtimeFixture(t);
+    const ready = await f.ready();
+    assert.ok(ready.runtimeToken);
+    f.allowCleanupFailure();
+    if (failure === "tunnel-stop") f.state.failTunnelStop = true;
+    if (failure === "open-port") f.state.leaveRunnerRunning = true;
+    if (failure === "device-loss") f.state.connected = false;
+    await assert.rejects(f.runtime.control({ kind: "stop", runtimeToken: ready.runtimeToken }),
+      { code: "IOS_RUNTIME_CLEANUP_FAILED" });
+    assert.equal(f.runtime.status().state, "cleanup-failed");
+    const lock = JSON.parse(await readFile(join(f.directory, "locks", `${IOS_UDID}.lock`), "utf8"));
+    assert.equal(lock.token, ready.runtimeToken);
+    const other = await runtimeFixture(t, { directory: f.directory });
+    await assert.rejects(other.start(), { code: "IOS_RUNTIME_CONFLICT" });
+    assert.deepEqual(other.events, []);
+  }
 });
 
 test("WDA port closure is verified after both owned launcher and tunnel have exited", async (t) => {

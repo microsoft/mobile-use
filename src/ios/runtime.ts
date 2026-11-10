@@ -51,6 +51,8 @@ export interface RuntimeConfig {
   tunnelPort: number;
 }
 
+const maxTunnelPort = 65534;
+
 export function readRuntimeConfig(environment: NodeJS.ProcessEnv): RuntimeConfig {
   const config = z.object({
     MOBILE_USE_GO_IOS_PATH: z.string().min(1).max(4096).default("ios"),
@@ -58,7 +60,7 @@ export function readRuntimeConfig(environment: NodeJS.ProcessEnv): RuntimeConfig
     MOBILE_USE_IOS_RUNNER_IPA: z.string().optional(),
     MOBILE_USE_IOS_STATE_DIR: z.string().default(join(homedir(), ".mobile-use", "ios-runtime")),
     MOBILE_USE_IOS_WDA_PORT: z.coerce.number().int().min(1).max(65535).default(8100),
-    MOBILE_USE_IOS_TUNNEL_PORT: z.coerce.number().int().min(0).max(65535).default(0),
+    MOBILE_USE_IOS_TUNNEL_PORT: z.coerce.number().int().min(0).max(maxTunnelPort).default(0),
   }).safeParse(environment);
   if (!config.success || !isAbsolute(config.data.MOBILE_USE_IOS_STATE_DIR) ||
     (config.data.MOBILE_USE_IOS_RUNNER_IPA !== undefined &&
@@ -73,7 +75,7 @@ export function readRuntimeConfig(environment: NodeJS.ProcessEnv): RuntimeConfig
   };
 }
 
-async function availablePort(port: number): Promise<number> {
+async function reservePort(port: number): Promise<number> {
   const server = createServer();
   await new Promise<void>((resolve, reject) => {
     server.once("error", () => reject(runtimeFailure("IOS_RUNTIME_CONFLICT")));
@@ -83,6 +85,16 @@ async function availablePort(port: number): Promise<number> {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(runtimeFailure("IOS_RUNTIME_FAILED")) : resolve()));
   if (!address || typeof address === "string") throw runtimeFailure("IOS_RUNTIME_FAILED");
   return address.port;
+}
+
+export async function availableTunnelPort(port: number, reserve: (port: number) => Promise<number> = reservePort): Promise<number> {
+  if (!Number.isInteger(port) || port < 0 || port > maxTunnelPort) throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
+  // go-ios derives its first userspace listener as tunnel-info port + 1.
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const candidate = await reserve(port);
+    if (candidate > 0 && candidate <= maxTunnelPort) return candidate;
+  }
+  throw runtimeFailure("IOS_RUNTIME_CONFLICT");
 }
 
 async function checkTunnel(port: number, udid: string, signal: AbortSignal): Promise<void> {
@@ -297,9 +309,10 @@ export class ManagedIosRuntime implements IosRuntime {
       try { infoValue = JSON.parse(info); } catch { throw runtimeFailure("IOS_RUNTIME_FAILED"); }
       const device = z.object({ UniqueDeviceID: z.literal(this.udid),
         ProductVersion: z.string().regex(/^\d+\.\d+(?:\.\d+)?$/) }).safeParse(infoValue);
-      if (!device.success || Number(device.data.ProductVersion.split(".")[0]) < 17) {
-        throw new MobileUseError("DEVICE_UNSUPPORTED", "Managed WDA requires the selected physical iOS 17+ device.",
-          "Verify the device UDID and iOS version.");
+      const [major = 0, minor = 0, patch = 0] = device.success ? device.data.ProductVersion.split(".").map(Number) : [];
+      if (!device.success || !(major > 17 || (major === 17 && (minor > 4 || (minor === 4 && patch > 0))))) {
+        throw new MobileUseError("DEVICE_UNSUPPORTED", "Managed WDA requires a physical iOS 17.4.1+ device for go-ios userspace tunnels.",
+          "Verify the device UDID and use iOS 17.4.1+ or an externally managed WDA endpoint.");
       }
       await mkdir(join(this.config.stateDirectory, "locks"), { recursive: true, mode: 0o700 });
       const lockPath = join(this.config.stateDirectory, "locks", `${this.udid}.lock`);
@@ -314,7 +327,7 @@ export class ManagedIosRuntime implements IosRuntime {
       });
       await this.assertNoWda(signal);
       checkCancelled(signal);
-      const port = await availablePort(this.config.tunnelPort);
+      const port = await availableTunnelPort(this.config.tunnelPort);
       this.tunnelPort = port;
       const pairs = join(this.config.stateDirectory, "pairing", this.udid);
       const images = join(this.config.stateDirectory, "devimages");
@@ -424,7 +437,7 @@ export class ManagedIosRuntime implements IosRuntime {
         try { await this.confirmStopped(); } catch (error) { errors.push(error); }
       }
       try { await this.proxy?.close(); } catch (error) { errors.push(error); }
-      if (this.lockPath) {
+      if (this.lockPath && errors.length === 0) {
         try {
           const record = z.object({ token: z.literal(this.token) }).safeParse(JSON.parse(await readFile(this.lockPath, "utf8")));
           if (!record.success) throw runtimeFailure("IOS_RUNTIME_CLEANUP_FAILED");

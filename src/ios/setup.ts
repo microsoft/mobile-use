@@ -14,7 +14,7 @@ export const iosSetup = {
 export const managedIosSetup = {
   stage: "connection",
   steps: [
-    "Use Windows with Apple USB services or macOS, go-ios v1.3.2, and a physical iOS 17+ device. The user supplies an already signed/validated Runner and completes pairing, Developer Mode and developer trust manually.",
+    "Use Windows with Apple USB services or macOS, go-ios v1.3.2, and a physical iOS 17.4.1+ device for userspace tunnels. The user supplies an already signed/validated Runner and completes pairing, Developer Mode and developer trust manually.",
     "Configure MOBILE_USE_PLATFORM=ios, MOBILE_USE_IOS_RUNTIME=managed and MOBILE_USE_IOS_RUNNER_BUNDLE_ID with the full .xctrunner ID. Do not set MOBILE_USE_WDA_URL. See docs/ios-mvp.md for optional go-ios, signed IPA and state-directory configuration.",
     "Run mobile_doctor and mobile_list_devices. After explicit approval for the exact USB endpoint, call mobile_ios_runtime with action.kind=start. installRunner defaults to false; true explicitly installs/replaces the configured signed IPA.",
     "start returns preparing with a runtimeToken; poll action.kind=status. When awaiting-developer-trust, ask the user to verify Developer App trust on that device. Only after confirmation call confirm_trust with this token, then poll starting until ready. Never confirm for the user or silently install during discovery.",

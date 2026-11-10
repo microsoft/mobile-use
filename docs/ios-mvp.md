@@ -78,7 +78,8 @@ forwarded port during a task; explicitly reselect after a lost connection.
 ## Managed USB runtime (opt-in)
 
 This mode supports Windows with Apple USB services and macOS with the system
-usbmux daemon. Install official go-ios **v1.3.2** separately; it is not bundled.
+usbmux daemon, with a real **iOS 17.4.1+** device for go-ios userspace tunnels.
+Install official go-ios **v1.3.2** separately; it is not bundled.
 The version command must return its normal JSON output. Use a dedicated
 Appium WDA Runner (adapter protocol reference: 16.16.5), already signed and
 validated by the user for the chosen device. Complete computer trust/pairing,
@@ -112,7 +113,7 @@ Optional settings:
 | `MOBILE_USE_GO_IOS_PATH` | Executable path or PATH command; default `ios`. |
 | `MOBILE_USE_IOS_STATE_DIR` | Absolute local state directory; default `.mobile-use\ios-runtime` under the user's home (native separators on macOS). |
 | `MOBILE_USE_IOS_WDA_PORT` | Device-side port matching the prepared Runner; default 8100. |
-| `MOBILE_USE_IOS_TUNNEL_PORT` | Local go-ios tunnel-info port; default 0 chooses a free ephemeral port. An occupied explicit port is rejected. |
+| `MOBILE_USE_IOS_TUNNEL_PORT` | Local go-ios tunnel-info port, 1-65534; default 0 chooses a free ephemeral port below 65535, leaving room for the derived userspace listener. An occupied explicit port is rejected. |
 
 The WDA proxy always binds an ephemeral **127.0.0.1** port and connects only to
 the selected USB UDID. This HTTP proxy is distinct from the developer/XCTest
@@ -218,7 +219,9 @@ In managed mode, stop/shutdown invalidates selections, waits for queued work,
 attempts owned HTTP-session deletion, then stops only this runtime's `runwda`
 process and tunnel. It verifies the WDA device port is closed through an explicit usbmux
 connection-refused result, then closes its proxy and releases its
-lock. `wdaPortClosed: true` means that port closure was verified, **not** that all
+lock only if cleanup succeeds. Cleanup or port-verification failure retains the
+matching-token lock to block another runtime until manual recovery.
+`wdaPortClosed: true` means that port closure was verified, **not** that all
 device-side asynchronous work is quiescent. An open port yields `false`;
 disconnect/service failure yields `null` and a cleanup error, never a claimed
 successful device stop. Remaining cleanup still runs after failures.
