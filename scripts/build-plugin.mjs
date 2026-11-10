@@ -29,14 +29,14 @@ if (
 
 await rm(output, { recursive: true, force: true });
 await mkdir(path.join(output, "server"), { recursive: true });
-for (const relative of ["plugin.json", "mcp.json", "skills"]) {
+for (const relative of ["plugin.json", "mcp.json", "skills", "assets"]) {
   await cp(path.join(pluginRoot, relative), path.join(output, relative), { recursive: true });
 }
 await cp(path.join(root, "LICENSE"), path.join(output, "LICENSE"));
 
 const result = await build({
   absWorkingDir: root,
-  entryPoints: [path.join(root, "src", "index.ts")],
+  entryPoints: [path.join(root, "src", "plugin-index.ts")],
   outfile: path.join(output, "server", "index.mjs"),
   bundle: true,
   platform: "node",
@@ -49,6 +49,11 @@ const result = await build({
   },
   logLevel: "warning",
 });
+
+const iosAdapter = path.join(root, "src", "ios", "device-session.ts");
+if (Object.keys(result.metafile.inputs).some((input) => path.resolve(root, input) === iosAdapter)) {
+  throw new Error("The published plugin must not bundle the source-only iOS adapter.");
+}
 
 for (const bundle of Object.values(result.metafile.outputs)) {
   for (const dependency of bundle.imports) {
@@ -114,6 +119,7 @@ for (const relative of [
   "plugin.json",
   "mcp.json",
   path.join("server", "index.mjs"),
+  path.join("assets", "mobile-use.png"),
   path.join("skills", "mobile-use", "SKILL.md"),
   path.join("skills", "mobile-use", "references", "screen-recording.md"),
   "LICENSE",
@@ -133,5 +139,5 @@ if (args.includes("--marketplace")) {
     await rm(destination, { recursive: true, force: true });
     await cp(source, destination, { recursive: true });
   }
-  console.log("Updated generated assets in plugins\\mobile-use. Authored manifests and skills are unchanged.");
+  console.log("Updated generated assets in plugins\\mobile-use. Authored manifests, skills, and assets are unchanged.");
 }

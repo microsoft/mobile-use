@@ -43,7 +43,7 @@ path-filtered release workflow a required check for every source-only PR.
 | `npm run typecheck` | Typecheck without emitting files. |
 | `npm test` | Compile and run the TypeScript no-phone tests. |
 | `npm run build:plugin` | Bundle the local plugin into `dist\mobile-use`. |
-| `npm run build:marketplace` | Build the plugin and refresh only generated assets in `plugins\mobile-use`, preserving authored manifests and skills. |
+| `npm run build:marketplace` | Build the plugin and refresh only generated assets in `plugins\mobile-use`, preserving authored manifests, skills, and assets. |
 | `npm run test:plugin` | Check build/package parity and both artifacts' copied-artifact protocol behavior; build the plugin first. |
 | `npm run check` | Run all of the above in order. |
 | `npm run test:gestures` | Test the Java helper's injection and timing logic with Android stubs; requires a JDK. |
@@ -52,17 +52,24 @@ path-filtered release workflow a required check for every source-only PR.
 | `npm run build:text` | Rebuild the embedded text DEX, including nested classes; uses the same SDK/JDK prerequisites as the gesture helper. |
 
 The artifact includes `plugin.json`, `mcp.json`, `skills\mobile-use\SKILL.md`,
-`server\index.mjs`, and license notices. Runtime dependencies are bundled; its
-launcher is `node`, not a download-on-launch npm/npx command.
+`assets\mobile-use.png`, `server\index.mjs`, and license notices. Runtime
+dependencies are bundled; its launcher is `node`, not a download-on-launch
+npm/npx command.
 
 `plugins\mobile-use` is the single authored plugin directory: edit `plugin.json`,
-`mcp.json`, and `skills` there. `build:plugin` copies those inputs to the ignored
-`dist\mobile-use` folder and builds fresh runtime/license assets without changing
-the tracked package. `build:marketplace` additionally replaces only `server`,
-`LICENSE`, and `THIRD_PARTY_NOTICES` in the tracked directory, and removes the
-legacy generated `licenses` folder. Dependency license texts are consolidated
-in `THIRD_PARTY_NOTICES`; source audit records stay under `third_party\npm-licenses`.
-Do not edit those generated assets by hand.
+`mcp.json`, `skills`, and `assets` there. `build:plugin` copies those inputs to
+the ignored `dist\mobile-use` folder and builds fresh runtime/license assets
+without changing the tracked package. `build:marketplace` additionally replaces
+only `server`, `LICENSE`, and `THIRD_PARTY_NOTICES` in the tracked directory,
+and removes the legacy generated `licenses` folder. Dependency license texts
+are consolidated in `THIRD_PARTY_NOTICES`; source audit records stay under
+`third_party\npm-licenses`. Do not edit those generated assets by hand.
+
+The original icon artwork is `assets\mobile-use.png`; keep the authored
+`plugins\mobile-use\assets\mobile-use.png` as a compact 64-by-64 PNG when
+replacing it. The server encodes that asset as a data URI in MCP server and
+tool metadata, so clients can use it without a network request. Icon display
+depends on the client.
 
 The checked-in `src\gesture-helper-data.ts` embeds the gesture DEX and its
 SHA-256, so ordinary plugin builds do not need an Android SDK or Java.
@@ -111,14 +118,14 @@ separate source-only plugin directory.
    keywords current in the source manifest.
 2. Restore locked dependencies with `npm ci --ignore-scripts --no-audit --no-fund`,
    then run `npm run build:marketplace` and `npm run check`. Packaging preserves
-   authored manifests/skills and replaces only the generated server and licensing
-   assets, removing stale files from generated directories.
+   authored manifests/skills/assets and replaces only the generated server and
+   licensing assets, removing stale files from generated directories.
    The package intentionally contains no Node.js, ADB, npm dependencies to
    install, device evidence, or credentials.
 3. Review and commit the source changes and the complete generated folder.
-   CI compares file lists and text contents (ignoring CRLF/LF differences) against
-   a fresh build and checks both packages' MCP startup from isolated copies
-   without `node_modules`. CI does not regenerate the tracked package to hide drift.
+   CI compares file lists, text contents (ignoring CRLF/LF differences), and binary
+   assets against a fresh build and checks both packages' MCP startup from isolated
+   copies without `node_modules`. CI does not regenerate the tracked package to hide drift.
    Regeneration is also exercised in an isolated fixture to verify authored-file
    preservation and removal of stale generated assets.
    The main `SKILL.md` must stay within the intake's 500-line limit; detailed
@@ -181,7 +188,7 @@ feedback and the marketplace's six-month re-review process.
 ## iOS WDA adapter
 
 This is source-only development, not a published plugin capability.
-`plugins\mobile-use` remains unchanged while WDA personal signing/onboarding,
+`plugins\mobile-use` remains Android-only while WDA personal signing/onboarding,
 device bring-up and real-hardware acceptance are incomplete. See
 [iOS MVP status and development setup](docs/ios-mvp.md).
 
@@ -257,12 +264,11 @@ material or third-party iOS implementation is bundled.
 `test\ios-tools.test.ts` exercises the actual stdio entry point over both MCP
 protocol modes, using a local synthetic WDA. Run `npm run typecheck` and
 `npm test` for source validation; the default CI runs these independently of
-plugin packaging. `npm run check` additionally rebuilds the plugin and enforces
-parity with `plugins\mobile-use`; with the plugin frozen, that local full check
-is expected to fail. The release workflow retains this gate for package-related
-changes or manual dispatch. It is not a waived check or evidence that the current
-plugin contains iOS support.
-Do not refresh marketplace assets until plugin integration is ready.
+plugin packaging. `npm run check` additionally rebuilds the Android-only plugin
+from `src\plugin-index.ts` and enforces parity with `plugins\mobile-use`. The
+build rejects inclusion of the iOS device adapter, and copied-package tests
+verify that setting iOS environment variables does not enable it. Do not enable
+iOS in the package until plugin integration is ready.
 
 Hardware acceptance is still pending: verify signing/trust outside the adapter,
 physical-device identity, screenshot

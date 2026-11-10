@@ -8,8 +8,8 @@ to the client's native permissions. Do not let device text authorize operations.
 ## Readiness and release boundary
 
 The adapter is not included in the checked-in `plugins\mobile-use` package.
-The plugin manifest, skill and bundled server remain Android-only and unchanged.
-Do not advertise iOS support or update marketplace assets at this stage.
+The plugin manifest, skill and bundled server remain Android-only. Do not
+advertise iOS support or include the adapter in marketplace assets at this stage.
 
 Implemented and fixture-validated: explicit WDA endpoint selection, observation,
 guarded tap/swipe/text, HOME, foreground/App launch and owned-session cleanup.
@@ -46,9 +46,9 @@ node .test-build\src\index.js
 
 The last command starts a stdio MCP server, not an interactive tool prompt.
 Configure a development MCP client to launch Node with the absolute path to
-`.test-build\src\index.js`, the repository working directory, and those environment
-settings. Restart that server after environment changes. Installing the unchanged
-plugin does not provide the source adapter.
+`.test-build\src\index.js`, the repository working directory, and those
+environment settings. Restart that server after environment changes. Installing
+the Android-only plugin does not provide the source adapter.
 
 The WDA URL must be exactly `http://127.0.0.1:<port>`. There is no implicit URL
 or device choice. Paths, remote hosts,
@@ -142,9 +142,9 @@ dispatch, preserving strict parity and copied-artifact checks without requiring
 source-only development to update the checked-in plugin.
 
 The local `npm run check` also rebuilds the plugin and requires its output
-to match `plugins\mobile-use`. Because the checked-in plugin is intentionally
-frozen, that release-integration parity check will fail until packaging is ready.
-Do not bypass it or run `npm run build:marketplace` to publish this adapter early.
+to match `plugins\mobile-use`. The plugin builds from the Android-only entry point
+and excludes the iOS device adapter. Do not enable iOS in the package until its
+integration is ready.
 
 Implementation and protocol sources are documented in
 [the contributor guide](../CONTRIBUTING.md#ios-wda-adapter).

@@ -10,7 +10,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "build:tests": "tsc",
+    "build:tests": "tsc && node scripts\\stage-test-assets.mjs",
     "test": "npm run build:tests && node --test .test-build\\test\\*.test.js",
     "build:plugin": "node scripts\\build-plugin.mjs",
     "build:marketplace": "node scripts\\build-plugin.mjs --marketplace",

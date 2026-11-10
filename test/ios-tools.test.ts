@@ -5,6 +5,7 @@ import test from "node:test";
 import { Client } from "@modelcontextprotocol/client";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { isRecord } from "../src/errors.js";
+import { assertMobileIcons } from "./icon-assertions.js";
 import { createIosFixture } from "./ios-fixture.js";
 
 function payload(result: { content?: unknown }): Record<string, unknown> {
@@ -38,6 +39,8 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.match(client.getInstructions() ?? "", /server is in iOS mode/);
     assert.doesNotMatch(client.getInstructions() ?? "", /MSMT|WAITING_APPROVAL/);
     const tools = (await client.listTools()).tools;
+    assert.equal(tools.length, 12);
+    await assertMobileIcons(client, tools);
     for (const name of ["mobile_doctor", "mobile_list_devices", "mobile_select_device", "mobile_observe",
       "mobile_tap", "mobile_swipe", "mobile_input_text", "mobile_press_key", "mobile_app_management"]) {
       assert.ok(tools.some((tool) => tool.name === name));
