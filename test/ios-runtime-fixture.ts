@@ -35,7 +35,7 @@ export async function runtimeFixture(t: TestContext, options: { directory?: stri
   const directory = options.directory ?? await mkdtemp(join(tmpdir(), "mobile-use-runtime-"));
   const ipaPath = join(directory, "signed.ipa");
   if (options.ipa) await writeFile(ipaPath, "fixture-user-validated-signed-package");
-  const calls: Array<{ kind: "run" | "start"; args: string[]; signal: AbortSignal | undefined }> = [];
+  const calls: Array<{ kind: "run" | "start"; args: string[]; signal: AbortSignal | undefined; environment?: NodeJS.ProcessEnv }> = [];
   const events: string[] = [];
   const state = {
     connected: true, running: false, leaveRunnerRunning: false, closeRunnerWithTunnel: false, failImage: false, failInstall: false,
@@ -46,6 +46,8 @@ export async function runtimeFixture(t: TestContext, options: { directory?: stri
   };
   const exits = new Map<string, () => void>();
   const usb: UsbBackend = {
+    async readBuid() { return "fixture-host-buid"; },
+    async readPairRecord(udid) { assert.equal(udid, IOS_UDID); return Buffer.from("fixture-pair-record"); },
     async list() {
       await state.listHook?.();
       return [
@@ -65,8 +67,8 @@ export async function runtimeFixture(t: TestContext, options: { directory?: stri
     },
   };
   const commands: RuntimeCommands = {
-    async run(_file, args, _timeout, signal) {
-      calls.push({ kind: "run", args, signal });
+    async run(_file, args, _timeout, signal, _mutating, _logPath, environment) {
+      calls.push({ kind: "run", args, signal, ...(environment ? { environment } : {}) });
       if (args[0] === "version") return JSON.stringify({ version: "v1.3.2" });
       assert.deepEqual(args.slice(0, 2), ["--udid", IOS_UDID]);
       if (args.includes("info")) return state.badInfo ? "broken JSON" :
@@ -84,8 +86,8 @@ export async function runtimeFixture(t: TestContext, options: { directory?: stri
       assert.equal(args.includes("uninstall"), false, "retention policy never uninstalls");
       return "";
     },
-    async start(_file, args) {
-      calls.push({ kind: "start", args, signal: undefined });
+    async start(_file, args, _logPath, environment) {
+      calls.push({ kind: "start", args, signal: undefined, ...(environment ? { environment } : {}) });
       assert.deepEqual(args.slice(0, 2), ["--udid", IOS_UDID]);
       const name = args.includes("runwda") ? "wda" : "tunnel";
       events.push(`start-${name}`);

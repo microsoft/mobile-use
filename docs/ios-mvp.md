@@ -119,6 +119,13 @@ The WDA proxy always binds an ephemeral **127.0.0.1** port and connects only to
 the selected USB UDID. This HTTP proxy is distinct from the developer/XCTest
 tunnel. Wi-Fi devices are excluded, and every USB connection re-enumerates the
 UDID rather than trusting an old usbmux DeviceID.
+All device-scoped go-ios subprocesses also use a per-runtime loopback usbmux
+bridge through a child-only `USBMUXD_SOCKET_ADDRESS` override. It exposes only
+the selected USB UDID and resolves every native connection against current USB
+inventory, so a preceding Wi-Fi entry or USB loss cannot retarget installation,
+tunnel preparation or Runner startup to Wi-Fi. Only the selected device's existing
+pairing record can be read; pairing-record writes and other commands are rejected.
+Shutdown closes the bridge alongside the owned forwarding resources.
 
 1. `mobile_doctor` checks go-ios and returns `runtime-not-ready` until WDA is
    ready; it never starts or installs anything. `mobile_list_devices` enumerates

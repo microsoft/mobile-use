@@ -8,6 +8,8 @@ export interface UsbDevice { udid: string; deviceId: number }
 export interface UsbBackend {
   list(signal?: AbortSignal): Promise<UsbDevice[]>;
   connect(udid: string, port: number, signal?: AbortSignal): Promise<Socket>;
+  readBuid(signal?: AbortSignal): Promise<string>;
+  readPairRecord(udid: string, signal?: AbortSignal): Promise<Buffer>;
 }
 
 export function usbFailure(code: "IOS_USB_UNAVAILABLE" | "DEVICE_NOT_FOUND" | "INVALID_DEVICE_LIST" | "WDA_UNAVAILABLE") {
@@ -22,19 +24,30 @@ export function usbMuxEndpoint(platform: NodeJS.Platform = process.platform): { 
     "Use an external local WDA endpoint on another host.");
 }
 
+export function writeMuxMessage(socket: Socket, value: plist.PlistValue, tag: number): void {
+  const body = Buffer.from(plist.build(value));
+  const header = Buffer.alloc(16);
+  header.writeUInt32LE(body.length + 16, 0);
+  header.writeUInt32LE(1, 4);
+  header.writeUInt32LE(8, 8);
+  header.writeUInt32LE(tag, 12);
+  socket.write(Buffer.concat([header, body]));
+}
+
 export class MuxConnection {
   private tag = 0;
   constructor(readonly socket: Socket, private readonly timeoutMs = 5000) { socket.pause(); }
 
   request(message: Record<string, string | number>, signal?: AbortSignal): Promise<unknown> {
     checkCancelled(signal);
-    const body = Buffer.from(plist.build({ ProgName: "mobile-use", ClientVersionString: "mobile-use-0.1", ...message }));
-    const header = Buffer.alloc(16);
     const tag = ++this.tag;
-    header.writeUInt32LE(body.length + 16, 0);
-    header.writeUInt32LE(1, 4);
-    header.writeUInt32LE(8, 8);
-    header.writeUInt32LE(tag, 12);
+    const response = this.receive(tag, signal);
+    if (!this.socket.destroyed) writeMuxMessage(this.socket, { ProgName: "mobile-use", ClientVersionString: "mobile-use-0.1", ...message }, tag);
+    return response.then((reply) => reply.value);
+  }
+
+  receive(expectedTag?: number, signal?: AbortSignal): Promise<{ tag: number; value: plist.PlistValue }> {
+    checkCancelled(signal);
     return new Promise((resolve, reject) => {
       let received: Buffer = Buffer.alloc(0);
       const cleanup = () => {
@@ -60,11 +73,11 @@ export class MuxConnection {
         if (received.length < 16) return;
         const length = received.readUInt32LE(0);
         if (length < 16 || length > 8 * 1024 * 1024 || received.readUInt32LE(4) !== 1 ||
-          received.readUInt32LE(8) !== 8 || received.readUInt32LE(12) !== tag) {
+          received.readUInt32LE(8) !== 8 || (expectedTag !== undefined && received.readUInt32LE(12) !== expectedTag)) {
           fail(usbFailure("IOS_USB_UNAVAILABLE")); return;
         }
         if (received.length < length) return;
-        let value: unknown;
+        let value: plist.PlistValue;
         try {
           const xml = received.subarray(16, length).toString("utf8");
           if (/<!ENTITY/i.test(xml)) throw usbFailure("IOS_USB_UNAVAILABLE");
@@ -74,7 +87,7 @@ export class MuxConnection {
         }
         cleanup();
         if (received.length > length) this.socket.unshift(received.subarray(length));
-        resolve(value);
+        resolve({ tag: received.readUInt32LE(12), value });
       };
       const timer = setTimeout(closed, this.timeoutMs);
       this.socket.on("data", data);
@@ -83,7 +96,6 @@ export class MuxConnection {
       signal?.addEventListener("abort", aborted, { once: true });
       if (signal?.aborted) { aborted(); return; }
       this.socket.resume();
-      this.socket.write(Buffer.concat([header, body]));
     });
   }
 }
@@ -142,6 +154,25 @@ export class AppleUsbBackend implements UsbBackend {
       if (!reply.success) throw usbFailure("INVALID_DEVICE_LIST");
       return parseUsbDevices(reply.data.DeviceList);
     } finally { mux.socket.destroy(); }
+  }
+
+  private async hostRequest(message: Record<string, string | number>, signal?: AbortSignal): Promise<unknown> {
+    const mux = new MuxConnection(await this.open(signal));
+    try { return await mux.request(message, signal); }
+    finally { mux.socket.destroy(); }
+  }
+
+  async readBuid(signal?: AbortSignal): Promise<string> {
+    const reply = z.object({ BUID: z.string().min(1) }).safeParse(await this.hostRequest({ MessageType: "ReadBUID" }, signal));
+    if (!reply.success) throw usbFailure("IOS_USB_UNAVAILABLE");
+    return reply.data.BUID;
+  }
+
+  async readPairRecord(udid: string, signal?: AbortSignal): Promise<Buffer> {
+    const reply = z.object({ PairRecordData: z.instanceof(Uint8Array) }).safeParse(
+      await this.hostRequest({ MessageType: "ReadPairRecord", PairRecordID: udid }, signal));
+    if (!reply.success) throw usbFailure("IOS_USB_UNAVAILABLE");
+    return Buffer.from(reply.data.PairRecordData);
   }
 
   async connect(udid: string, port: number, signal?: AbortSignal): Promise<Socket> {

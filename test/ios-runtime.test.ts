@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
+import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -10,6 +11,7 @@ import { MobileUseError } from "../src/errors.js";
 import { createMobileService } from "../src/service-factory.js";
 import { runtimeCommands } from "../src/ios/runtime-process.js";
 import { availableTunnelPort } from "../src/ios/runtime.js";
+import { MuxConnection } from "../src/ios/usb.js";
 import { IOS_ENDPOINT, IOS_UDID, runtimeFixture, waitRuntimeState } from "./ios-runtime-fixture.js";
 
 test("managed mode is explicit, rejects ambiguous endpoint/configuration and leaves external mode unchanged", async () => {
@@ -112,6 +114,31 @@ test("explicit install uses the supplied IPA once and retains it on shutdown", a
   await f.service.stop();
   assert.equal(f.calls.some((entry) => entry.args.includes("uninstall")), false);
   assert.deepEqual(f.events, ["start-tunnel", "image", "install", "start-wda", "stop-wda", "stop-tunnel"]);
+});
+
+test("all device subprocesses share an owned USB-only endpoint and shutdown closes it", async (t) => {
+  const f = await runtimeFixture(t, { ipa: true });
+  const inherited = process.env.USBMUXD_SOCKET_ADDRESS;
+  await f.ready();
+  const calls = f.calls.filter((call) => call.args.includes("--udid"));
+  const endpoint = calls[0]?.environment?.USBMUXD_SOCKET_ADDRESS;
+  assert.ok(endpoint);
+  assert.match(endpoint, /^tcp:\/\/127\.0\.0\.1:\d+$/);
+  assert.ok(calls.some((call) => call.args.includes("install")));
+  for (const call of calls) assert.equal(call.environment?.USBMUXD_SOCKET_ADDRESS, endpoint);
+  assert.equal(f.calls.find((call) => call.args.includes("version"))?.environment, undefined);
+  assert.equal(process.env.USBMUXD_SOCKET_ADDRESS, inherited);
+  const socket = createConnection(Number(new URL(endpoint).port), "127.0.0.1");
+  socket.on("error", () => {});
+  t.after(() => socket.destroy());
+  await once(socket, "connect");
+  const reply = await new MuxConnection(socket).request({ MessageType: "ListDevices" });
+  assert.deepEqual(reply, { DeviceList: [{
+    DeviceID: 1, MessageType: "Attached", Properties: { DeviceID: 1, SerialNumber: IOS_UDID, ConnectionType: "USB" },
+  }] });
+  const closed = new Promise<void>((resolve) => socket.once("close", resolve));
+  await f.service.stop();
+  await closed;
 });
 
 test("long preparation is acknowledged immediately and status/doctor stay available after request completion", async (t) => {
@@ -324,13 +351,20 @@ test("USB revalidation cannot verify an old token across a concurrent runtime ge
 test("native launcher isolates stdout in logs, observes child exit and stops only its owned child", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "mobile-use-runtime-native-"));
   const log = join(directory, "child.log");
+  const inherited = process.env.USBMUXD_SOCKET_ADDRESS;
+  const environment = { USBMUXD_SOCKET_ADDRESS: "tcp://127.0.0.1:12345" };
   const child = await runtimeCommands.start(process.execPath, [
-    "-e", "console.log('fixture-output'); setInterval(() => {}, 1000)",
-  ], log);
+    "-e", "console.log('fixture-output', process.env.USBMUXD_SOCKET_ADDRESS); setInterval(() => {}, 1000)",
+  ], log, environment);
   t.after(async () => { await child.stop(); await rm(directory, { recursive: true, force: true }); });
   child.assertRunning();
   for (let attempt = 0; attempt < 100 && !(await readFile(log, "utf8")).includes("fixture-output"); attempt++) await delay(10);
   assert.match(await readFile(log, "utf8"), /fixture-output/);
+  assert.match(await readFile(log, "utf8"), /tcp:\/\/127\.0\.0\.1:12345/);
+  assert.equal((await runtimeCommands.run(process.execPath,
+    ["-e", "console.log(process.env.USBMUXD_SOCKET_ADDRESS)"], 1000, undefined, false, undefined, environment)).trim(),
+  environment.USBMUXD_SOCKET_ADDRESS);
+  assert.equal(process.env.USBMUXD_SOCKET_ADDRESS, inherited);
   await child.stop();
   await child.exited;
   assert.throws(() => child.assertRunning(), { code: "IOS_RUNTIME_FAILED" });

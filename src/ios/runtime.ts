@@ -9,6 +9,7 @@ import { checkCancelled, MobileUseError, publicError, type ErrorInfo } from "../
 import type { DeviceEndpoint } from "../types.js";
 import { iosBundleIdSchema, WdaClient } from "./wda.js";
 import { AppleUsbBackend, udidSchema, UsbProxy, usbMuxEndpoint, type UsbBackend } from "./usb.js";
+import { NativeUsbBridge } from "./usbmux-bridge.js";
 import { runtimeCommands, runtimeFailure, type OwnedProcess, type RuntimeCommands } from "./runtime-process.js";
 
 export const iosRuntimeActionSchema = z.discriminatedUnion("kind", [
@@ -131,6 +132,7 @@ export class ManagedIosRuntime implements IosRuntime {
   private token: string | undefined;
   private udid: string | undefined;
   private proxy: UsbProxy | undefined;
+  private nativeUsb: NativeUsbBridge | undefined;
   private tunnel: OwnedProcess | undefined;
   private tunnelPort = 0;
   private wda: OwnedProcess | undefined;
@@ -271,6 +273,11 @@ export class ManagedIosRuntime implements IosRuntime {
     if (!await this.portClosed(signal)) throw runtimeFailure("IOS_RUNTIME_CONFLICT");
   }
 
+  private nativeEnvironment(): NodeJS.ProcessEnv {
+    if (!this.nativeUsb) throw runtimeFailure("IOS_RUNTIME_NOT_READY");
+    return { USBMUXD_SOCKET_ADDRESS: this.nativeUsb.address };
+  }
+
   private async portClosed(signal?: AbortSignal): Promise<boolean> {
     if (!this.udid) throw runtimeFailure("IOS_RUNTIME_NOT_READY");
     try {
@@ -304,7 +311,9 @@ export class ManagedIosRuntime implements IosRuntime {
         const packageFile = await stat(this.config.ipaPath).catch(() => { throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID"); });
         if (!packageFile.isFile() || packageFile.size === 0) throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
       }
-      const info = await this.commands.run(this.config.executable, ["--udid", this.udid, "info"], 30000, signal);
+      this.nativeUsb = await NativeUsbBridge.start(this.usb, this.udid, (error) => this.fail(error));
+      const info = await this.commands.run(this.config.executable, ["--udid", this.udid, "info"], 30000, signal,
+        false, undefined, this.nativeEnvironment());
       let infoValue: unknown;
       try { infoValue = JSON.parse(info); } catch { throw runtimeFailure("IOS_RUNTIME_FAILED"); }
       const device = z.object({ UniqueDeviceID: z.literal(this.udid),
@@ -335,11 +344,12 @@ export class ManagedIosRuntime implements IosRuntime {
       for (const directory of [pairs, images, logs]) await mkdir(directory, { recursive: true, mode: 0o700 });
       const global = ["--udid", this.udid, "--tunnel-info-host", "127.0.0.1", "--tunnel-info-port", String(port)];
       this.tunnel = await this.commands.start(this.config.executable,
-        [...global, "tunnel", "start", "--userspace", "--pair-record-path", pairs], join(logs, `tunnel-${this.token}.log`));
+        [...global, "tunnel", "start", "--userspace", "--pair-record-path", pairs], join(logs, `tunnel-${this.token}.log`),
+        this.nativeEnvironment());
       this.watch(this.tunnel);
       await this.wait(() => (this.options.tunnelCheck ?? checkTunnel)(port, selected.udid, signal), signal);
       await this.commands.run(this.config.executable, [...global, "image", "auto", "--basedir", images], 600000, signal, true,
-        join(logs, `image-${this.token}.log`));
+        join(logs, `image-${this.token}.log`), this.nativeEnvironment());
       this.mutated = true;
       checkCancelled(signal);
       this.assertRunning();
@@ -349,7 +359,7 @@ export class ManagedIosRuntime implements IosRuntime {
         if (!ipaPath) throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
         // Do not abort an in-flight install: its acknowledgement is needed for an honest outcome.
         await this.commands.run(this.config.executable, [...global, "install", "--path", ipaPath], 300000, undefined, true,
-          join(logs, `install-${this.token}.log`));
+          join(logs, `install-${this.token}.log`), this.nativeEnvironment());
         this.installed = true;
       }
       checkCancelled(signal);
@@ -371,7 +381,7 @@ export class ManagedIosRuntime implements IosRuntime {
         "--udid", this.udid, "--tunnel-info-host", "127.0.0.1", "--tunnel-info-port", String(this.tunnelPort),
         "runwda", "--bundleid", this.config.bundleId,
         "--testrunnerbundleid", this.config.bundleId, "--xctestconfig", "WebDriverAgentRunner.xctest",
-      ], join(this.config.stateDirectory, "logs", `wda-${this.token}.log`));
+      ], join(this.config.stateDirectory, "logs", `wda-${this.token}.log`), this.nativeEnvironment());
       this.watch(this.wda);
       const client = new WdaClient(this.proxy.url, 2000);
       await this.wait(async () => {
@@ -437,6 +447,7 @@ export class ManagedIosRuntime implements IosRuntime {
         try { await this.confirmStopped(); } catch (error) { errors.push(error); }
       }
       try { await this.proxy?.close(); } catch (error) { errors.push(error); }
+      try { await this.nativeUsb?.close(); } catch (error) { errors.push(error); }
       if (this.lockPath && errors.length === 0) {
         try {
           const record = z.object({ token: z.literal(this.token) }).safeParse(JSON.parse(await readFile(this.lockPath, "utf8")));
@@ -451,6 +462,7 @@ export class ManagedIosRuntime implements IosRuntime {
         throw runtimeFailure("IOS_RUNTIME_CLEANUP_FAILED", this.mutated || this.installed);
       }
       this.proxy = undefined;
+      this.nativeUsb = undefined;
       this.tunnel = undefined;
       this.wda = undefined;
     })();

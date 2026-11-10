@@ -209,7 +209,13 @@ Its userspace tunnel path requires iOS 17.4.1+; tunnel-info ports must be below
 65535 because go-ios derives its first userspace listener at the next port.
 `src\ios\usb.ts` implements Apple usbmux framing and a loopback-only proxy,
 using the Windows Apple service or macOS system socket; it is not a developer
-tunnel or Wi-Fi fallback. `runtime-process.ts` owns child processes and local
+tunnel or Wi-Fi fallback. `usbmux-bridge.ts` isolates every device-scoped go-ios
+subprocess with a child-only `USBMUXD_SOCKET_ADDRESS` override: ListDevices exposes
+only the approved USB UDID with a synthetic ID; Connect maps that ID through fresh
+USB discovery, never through an unfiltered native inventory. Existing host/device
+pairing reads are allowed only for that device; writes and unsupported commands
+fail closed. The owned bridge closes during cleanup, including failed startup.
+`runtime-process.ts` owns child processes and local
 logs, with no shell interpolation or raw command output in MCP errors.
 The extra `mobile_ios_runtime` tool is an optional explicit `MobileService`
 capability, registered only for managed iOS. Discovery and selection never
@@ -236,7 +242,7 @@ creates or deletes an owned WDA session; Android selection retains its existing
 read-only annotations.
 
 Managed cleanup deletes only a still-identifiable owned HTTP session, stops the
-owned launcher and tunnel, checks device-port closure, then closes the owned proxy
+owned launcher and tunnel, checks device-port closure, then closes the owned proxies
 and releases its matching-token lock only after successful cleanup. Failures
 retain the lock and do not suppress the remaining resource-cleanup steps.
 A device disconnect is not proof of WDA shutdown; port closure
