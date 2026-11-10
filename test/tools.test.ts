@@ -705,11 +705,15 @@ for (const mode of ["legacy", "auto"] as const) {
 
   test(`twelve categorized tools expose typed setup, recording, wake, and input results over ${mode}`, async (t) => {
     const { client } = await fixture(t, mode);
-    assert.deepEqual(client.getServerVersion()?.icons, [{
-      src: "https://raw.githubusercontent.com/microsoft/mobile-use/b7ced9b472c428cfe8cb54973c2c9dc2d8ac38a3/assets/mobile-use.png",
-      mimeType: "image/png",
-      sizes: ["512x512"],
-    }]);
+    const icon = client.getServerVersion()?.icons?.[0];
+    assert.ok(icon);
+    assert.equal(icon.mimeType, "image/png");
+    assert.deepEqual(icon.sizes, ["128x128"]);
+    assert.match(icon.src, /^data:image\/png;base64,/);
+    const iconPng = Buffer.from(icon.src.slice("data:image/png;base64,".length), "base64");
+    assert.deepEqual(iconPng.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+    assert.equal(iconPng.readUInt32BE(16), 128);
+    assert.equal(iconPng.readUInt32BE(20), 128);
     assert.match(client.getInstructions() ?? "", /On first use in each session, call mobile_doctor/);
     assert.match(client.getInstructions() ?? "", /call mobile_list_devices before offering phone setup/);
     assert.match(client.getInstructions() ?? "", /Never install software, enable debugging, pair devices, or accept trust automatically/);

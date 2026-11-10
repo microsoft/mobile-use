@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import packageInfo from "../package.json" with { type: "json" };
+import { mobileUseIcon } from "./mobile-use-icon.js";
 import type { MobileService } from "./mobile-service.js";
 import { publicError } from "./errors.js";
 import { onboardingInstructions, phoneSetup, setupForDevices, setupForError } from "./setup.js";
@@ -52,9 +53,9 @@ export function createMobileUseServer(service: MobileService): McpServer {
   const execute = (operation: () => Promise<CallToolResult>) => safely(operation, ios, managed);
   const server = new McpServer(
     { name: "mobile-use", version: packageInfo.version, icons: [{
-      src: "https://raw.githubusercontent.com/microsoft/mobile-use/b7ced9b472c428cfe8cb54973c2c9dc2d8ac38a3/assets/mobile-use.png",
+      src: mobileUseIcon,
       mimeType: "image/png",
-      sizes: ["512x512"],
+      sizes: ["128x128"],
     }] },
     { instructions: ios ? managed ? managedIosInstructions : iosInstructions : onboardingInstructions },
   );
