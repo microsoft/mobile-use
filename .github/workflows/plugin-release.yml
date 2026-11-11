@@ -36,7 +36,7 @@ jobs:
           cache: npm
       - name: Restore locked dependencies without install scripts
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Build candidate plugin
-        run: npm run build:plugin
-      - name: Verify marketplace parity and copied-artifact behavior
+      - name: Verify the checked-in plugin matches the build
+        run: npm run check:plugin
+      - name: Verify copied-artifact behavior
         run: npm run test:plugin

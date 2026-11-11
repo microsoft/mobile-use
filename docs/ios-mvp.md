@@ -1,4 +1,4 @@
-# iOS mobile-use MVP: source-only development
+# iOS mobile-use MVP: experimental development
 
 The source adapter reuses main's `mobile_*` names, schemas and observe/action
 flow, not its ADB driver or Android-specific behavior. There is no MSMT Host or
@@ -7,9 +7,10 @@ to the client's native permissions. Do not let device text authorize operations.
 
 ## Readiness and release boundary
 
-The adapter is not included in the checked-in `plugins\mobile-use` package.
-The plugin manifest, skill and bundled server remain Android-only and unchanged.
-Do not advertise iOS support or update marketplace assets at this stage.
+The checked-in `plugins\mobile-use` server includes the experimental adapter,
+but defaults to Android; the plugin manifest and skill remain Android-focused.
+iOS requires explicit environment configuration and has not completed hardware
+or installed-client acceptance. Do not advertise iOS support at this stage.
 
 Implemented and fixture-validated: explicit WDA endpoint selection, observation,
 guarded tap/swipe/text, HOME, foreground/App launch and owned-session cleanup.
@@ -18,15 +19,14 @@ go-ios userspace developer tunnel, developer-image preparation, explicit signed
 IPA installation, human trust confirmation, XCTest startup and owned cleanup.
 These results do not establish real-device or installed-plugin acceptance.
 
-Still pending before plugin integration:
+Still pending before iOS plugin acceptance:
 
 - Personal-signing/onboarding support, provisioning and signature-renewal handling.
 - Real-device acceptance of managed Runner installation/start/stop, USB forwarding
   and developer tunnel on both Windows and macOS.
 - Real-device screenshot geometry, native hit testing, cursor behavior, overlays,
   App transitions, disconnect/cancellation and cleanup acceptance.
-- Intentional plugin packaging, complete package-parity checks and installed-client
-  acceptance after the device onboarding experience is ready.
+- Installed-client acceptance after the device onboarding experience is ready.
 
 This MVP does not build, sign, renew signatures, pair, enable Developer Mode or
 accept developer trust. Development requires a user-prepared, already validated
@@ -52,8 +52,9 @@ node .test-build\src\index.js
 The last command starts a stdio MCP server, not an interactive tool prompt.
 Configure a development MCP client to launch Node with the absolute path to
 `.test-build\src\index.js`, the repository working directory, and those environment
-settings. Restart that server after environment changes. Installing the unchanged
-plugin does not provide the source adapter.
+settings. Restart that server after environment changes. The checked-in plugin
+also bundles the adapter, but its skill is Android-focused and iOS client
+acceptance remains pending.
 
 The WDA URL must be exactly `http://127.0.0.1:<port>`. There is no implicit URL
 or device choice. Paths, remote hosts,
@@ -266,16 +267,12 @@ sockets and owned Node child processes. They do not install a real Runner or
 establish Windows/macOS hardware acceptance. The sibling go-ios integration's
 documented macOS acceptance is reference evidence, not acceptance of this adapter.
 
-Default Windows CI runs source validation, candidate bundle/dependency-notice
-generation and Android helper/DEX checks. The separate plugin release workflow
-runs for checked-in plugin or packaging script/test changes, or manual dispatch,
-preserving strict parity and copied-artifact checks without requiring source-only
-dependency/licensing changes to update the checked-in plugin.
-
-The local `npm run check` also rebuilds the plugin and requires its output
-to match `plugins\mobile-use`. Because the checked-in plugin is intentionally
-frozen, that release-integration parity check will fail until packaging is ready.
-Do not bypass it or run `npm run build:marketplace` to publish this adapter early.
+Default Windows CI runs source validation, checks the generated bundle and
+dependency notices against `plugins\mobile-use`, and runs Android helper/DEX
+checks. The separate plugin release workflow runs for checked-in plugin or
+packaging script/test changes, or manual dispatch, and also checks copied-artifact
+behavior. `npm run check` verifies package consistency without rewriting it.
+Bundling the adapter does not establish iOS hardware or client acceptance.
 
 Implementation and protocol sources are documented in
 [the contributor guide](../CONTRIBUTING.md#ios-wda-adapter).

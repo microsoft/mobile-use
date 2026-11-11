@@ -13,42 +13,38 @@ setup in the README, plus specific consent for the device and task.
 
 ## Build and check the plugin
 
-Source validation, matching the default Windows CI, runs `npm run typecheck`,
-`npm test`, and `npm run build:plugin`. The commands below additionally validate
-the checked-in plugin package.
+The checked-in plugin package is the build target. Regenerate it after changes
+that affect the bundle or notices, then run the checks:
 
 From the repository directory in PowerShell:
 
 ```powershell
 npm ci --ignore-scripts --no-audit --no-fund
+npm run build:plugin
 npm run check
 ```
 
-`check` typechecks, runs no-phone tests, builds/checks `dist\mobile-use`, and
-verifies that the committed `plugins\mobile-use` package matches the build.
-The default Windows workflow runs source checks on Node 22 and 24 and retains
-the Android helper/DEX checks. Source-only development does not require updating
-the checked-in plugin.
+`check` typechecks, runs no-phone tests, verifies that `plugins\mobile-use`
+matches a fresh build without rewriting it, and tests the packaged server.
+Commit any generated package changes along with their source changes.
+The default Windows workflow verifies this consistency on Node 22 and 24 and
+retains the Android helper/DEX checks.
 
 The separate `plugin-release.yml` workflow runs on checked-in plugin package or
-packaging script/test changes in PRs and pushes to main, or through manual
-dispatch. Source dependency and licensing changes are covered by the candidate
-build in the default workflow without implying a marketplace update.
-The release workflow builds the candidate plugin and runs the unchanged strict
-parity and copied-artifact tests on Node 22 and 24; it does not generate or publish
-marketplace updates. Before intentional package updates, run
-`npm run build:marketplace` locally, then `check`, and commit the updated package.
-Keep the always-running source/helper checks required. Do not make the
-path-filtered release workflow a required check for every source-only PR.
+packaging script/test changes in PRs and pushes to main, or through manual dispatch.
+It verifies consistency and copied-artifact behavior on Node 22 and 24; it does
+not publish a marketplace release. Keep the always-running source/helper checks
+required. Do not make the path-filtered release workflow required for every PR.
 
 | Command | Purpose |
 | --- | --- |
 | `npm run typecheck` | Typecheck without emitting files. |
 | `npm test` | Compile and run the TypeScript no-phone tests. |
-| `npm run build:plugin` | Bundle the local plugin into `dist\mobile-use`. |
-| `npm run build:marketplace` | Build the plugin and refresh only generated assets in `plugins\mobile-use`, preserving authored manifests and skills. |
-| `npm run test:plugin` | Check build/package parity and both artifacts' copied-artifact protocol behavior; build the plugin first. |
-| `npm run check` | Run all of the above in order. |
+| `npm run build:plugin` | Regenerate the plugin assets in `plugins\mobile-use`, preserving authored manifests and skills. |
+| `npm run build:marketplace` | Alias for `build:plugin`; produces the same tracked package. |
+| `npm run check:plugin` | Compare the package with a fresh in-memory build without changing files. |
+| `npm run test:plugin` | Check package consistency and copied-artifact protocol behavior. |
+| `npm run check` | Run typechecking, source tests, package consistency and plugin tests. |
 | `npm run test:gestures` | Test the Java helper's injection and timing logic with Android stubs; requires a JDK. |
 | `npm run build:gestures` | Rebuild the embedded gesture DEX; requires JDK 21, Android SDK platform 35, and build-tools 35.0.0. |
 | `npm run test:text` | Test the Java Unicode helper, field guards, append/readback and cleanup using Android stubs; requires a JDK. |
@@ -59,13 +55,11 @@ The artifact includes `plugin.json`, `mcp.json`, `skills\mobile-use\SKILL.md`,
 launcher is `node`, not a download-on-launch npm/npx command.
 
 `plugins\mobile-use` is the single authored plugin directory: edit `plugin.json`,
-`mcp.json`, and `skills` there. `build:plugin` copies those inputs to the ignored
-`dist\mobile-use` folder and builds fresh runtime/license assets without changing
-the tracked package. `build:marketplace` additionally replaces only `server`,
-`LICENSE`, and `THIRD_PARTY_NOTICES` in the tracked directory, and removes the
-legacy generated `licenses` folder. Dependency license texts are consolidated
-in `THIRD_PARTY_NOTICES`; source audit records stay under `third_party\npm-licenses`.
-Do not edit those generated assets by hand.
+`mcp.json`, and `skills` there. Both build commands replace only `server`,
+`LICENSE`, and `THIRD_PARTY_NOTICES` in that directory, and remove the legacy
+generated `licenses` folder. Dependency license texts are consolidated in
+`THIRD_PARTY_NOTICES`; source audit records stay under `third_party\npm-licenses`.
+Do not edit generated assets by hand.
 
 The checked-in `src\gesture-helper-data.ts` embeds the gesture DEX and its
 SHA-256, so ordinary plugin builds do not need an Android SDK or Java.
@@ -81,12 +75,12 @@ The helper CI job checks both Java helpers and their rebuilt embedded artifacts.
 
 After reviewing and explicitly approving installation, follow the
 [local installation instructions](README.md#install-the-plugin). Use an
-absolute artifact path, not the source repository root. To try uncommitted
-development changes, build and install `dist\mobile-use` instead:
+absolute artifact path, not the source repository root. To try development
+changes, rebuild and install the same package:
 
 ```powershell
 npm run build:plugin
-copilot plugin install (Resolve-Path .\dist\mobile-use).Path
+copilot plugin install (Resolve-Path .\plugins\mobile-use).Path
 ```
 
 Confirm the plugin, skill, and twelve tools appear in the actual Copilot App
@@ -101,10 +95,9 @@ distribution remains outside this POC.
 
 The plugin stays hosted in `microsoft/mobile-use`. The intended Awesome Copilot
 listing points to the tracked `plugins/mobile-use` folder at an immutable
-commit. Intake installs that Git snapshot without building it; the ignored
-`dist` output is not a submission path. Authored metadata/skills and generated
-runtime/license assets live together in `plugins\mobile-use`; there is no
-separate source-only plugin directory.
+commit. Intake installs that Git snapshot without building it. Authored
+metadata/skills and generated runtime/license assets live together in
+`plugins\mobile-use`.
 
 ### Prepare a reviewable revision
 
@@ -119,9 +112,9 @@ separate source-only plugin directory.
    The package intentionally contains no Node.js, ADB, npm dependencies to
    install, device evidence, or credentials.
 3. Review and commit the source changes and the complete generated folder.
-   CI compares file lists and text contents (ignoring CRLF/LF differences) against
-   a fresh build and checks both packages' MCP startup from isolated copies
-   without `node_modules`. CI does not regenerate the tracked package to hide drift.
+   CI compares generated files (ignoring CRLF/LF differences) against a fresh
+   in-memory build and checks package MCP startup from an isolated copy without
+   `node_modules`. CI does not rewrite the tracked package to hide drift.
    Regeneration is also exercised in an isolated fixture to verify authored-file
    preservation and removal of stale generated assets.
    The main `SKILL.md` must stay within the intake's 500-line limit; detailed
@@ -183,8 +176,8 @@ feedback and the marketplace's six-month re-review process.
 
 ## iOS WDA adapter
 
-This is source-only development, not a published plugin capability.
-`plugins\mobile-use` remains unchanged while WDA personal signing/onboarding,
+The bundle includes this experimental adapter, but Android remains the default
+and iOS is not an accepted plugin capability while WDA personal signing/onboarding,
 device bring-up and real-hardware acceptance are incomplete. See
 [iOS MVP status and development setup](docs/ios-mvp.md).
 
@@ -199,8 +192,8 @@ existing fields. The Android driver, queue, guards and helpers remain unchanged.
 The default `MOBILE_USE_IOS_RUNTIME=external` adapter connects only to the
 explicitly configured local WDA URL. It never deploys/starts/stops that external
 Runner or forwarding. Neither iOS mode adds a Host/IPC/Grant layer. The
-development guide describes setup and platform-specific tool semantics; setting
-iOS environment variables on the checked-in plugin does not enable this adapter.
+development guide describes setup and platform-specific tool semantics; iOS
+requires explicit environment configuration even in the checked-in plugin.
 
 Opt-in `managed` mode separates lifecycle/transport from UI semantics:
 `src\ios\runtime.ts` owns the go-ios v1.3.2 tunnel, image preparation, optional
@@ -311,14 +304,10 @@ material or third-party iOS implementation is bundled.
 `test\ios.test.ts` covers adapter state/guards/failure semantics and
 `test\ios-tools.test.ts` exercises the actual stdio entry point over both MCP
 protocol modes, using a local synthetic WDA. Run `npm run typecheck` and
-`npm test` for source validation; the default CI also builds the candidate bundle
-and dependency notices independently of checked-in plugin parity.
-`npm run check` additionally rebuilds the plugin and enforces
-parity with `plugins\mobile-use`; with the plugin frozen, that local full check
-is expected to fail. The release workflow retains this gate for package-related
-changes or manual dispatch. It is not a waived check or evidence that the current
-plugin contains iOS support.
-Do not refresh marketplace assets until plugin integration is ready.
+`npm test` for source validation; CI also checks the tracked plugin against a
+fresh bundle and dependency notices. `npm run check` includes that consistency
+check and packaged-server tests. Bundling is not evidence of iOS hardware or
+installed-client acceptance.
 
 Hardware acceptance is still pending: verify signing/trust outside the adapter,
 physical-device identity, screenshot

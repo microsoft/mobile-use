@@ -9,8 +9,7 @@ import { Client } from "@modelcontextprotocol/client";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const artifact = path.join(root, "dist", "mobile-use");
-const marketplaceArtifact = path.join(root, "plugins", "mobile-use");
+const artifact = path.join(root, "plugins", "mobile-use");
 const json = async (file) => JSON.parse(await readFile(file, "utf8"));
 
 test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launcher", async () => {
@@ -89,7 +88,7 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   const fallbackLicense = await readFile(
     path.join(root, "third_party", "npm-licenses", "@nodable", "entities", "3.1.0", "LICENSE"), "utf8",
   );
-  assert.ok(notices.includes(fallbackLicense), "Preserve the complete fallback license text in notices.");
+  assert.ok(notices.includes(fallbackLicense.replace(/\r\n/g, "\n")), "Preserve the complete fallback license text in notices.");
 });
 
 test("the rebuilt artifact excludes the removed device backend but retains actual dependency notices", async () => {
@@ -126,34 +125,22 @@ test("the artifact includes complete embedded dependency notices using source-on
     const license = await readFile(path.join(root, "third_party", relative, "LICENSE"), "utf8");
     const provenance = await readFile(path.join(root, "third_party", relative, "PROVENANCE"), "utf8");
     assert.ok(notices.includes(`=== ${dependency.name}@${dependency.version} (${dependency.license}) ===`));
-    assert.ok(notices.includes(license), `${dependency.name}: preserve the complete license text in notices.`);
+    assert.ok(notices.includes(license.replace(/\r\n/g, "\n")), `${dependency.name}: preserve the complete license text in notices.`);
     assert.ok(license.includes(dependency.copyright));
     assert.match(provenance, /Published package gitHead: [0-9a-f]{40}\r?\n/);
     assert.match(provenance, /https:\/\/github\.com\/.+\/blob\/[0-9a-f]{40}\/LICENSE/);
   }
-  for (const source of [artifact, marketplaceArtifact]) {
-    await assert.rejects(stat(path.join(source, "licenses")), { code: "ENOENT" });
-  }
+  await assert.rejects(stat(path.join(artifact, "licenses")), { code: "ENOENT" });
 });
 
-test("the committed marketplace package matches the complete build", async () => {
-  const expectedPaths = (await readdir(artifact, { recursive: true })).sort();
-  const actualPaths = (await readdir(marketplaceArtifact, { recursive: true })).sort();
-  const remediation = "Run npm run build:marketplace and commit plugins\\mobile-use.";
-  assert.deepEqual(actualPaths, expectedPaths, remediation);
-  for (const relative of expectedPaths) {
-    if (!(await stat(path.join(artifact, relative))).isFile()) continue;
-    const expected = await readFile(path.join(artifact, relative), "utf8");
-    const actual = await readFile(path.join(marketplaceArtifact, relative), "utf8");
-    // Git checks out the published text files as LF, even with core.autocrlf enabled.
-    assert.ok(
-      actual.replace(/\r\n/g, "\n") === expected.replace(/\r\n/g, "\n"),
-      `${relative}: ${remediation}`,
-    );
-  }
+test("the checked-in plugin matches a fresh build", async () => {
+  const result = spawnSync(process.execPath, [path.join(root, "scripts", "build-plugin.mjs"), "--check"], {
+    cwd: root, encoding: "utf8", windowsHide: true, timeout: 120_000,
+  });
+  assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
 });
 
-test("marketplace generation preserves authored files and replaces stale generated assets", async (t) => {
+test("plugin generation preserves authored files and detects stale assets without rewriting them", async (t) => {
   const fixture = await mkdtemp(path.join(tmpdir(), "mobile-use build with spaces "));
   t.after(() => rm(fixture, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   await mkdir(path.join(fixture, "scripts"));
@@ -162,9 +149,14 @@ test("marketplace generation preserves authored files and replaces stale generat
     await cp(path.join(root, relative), path.join(fixture, relative), { recursive: true });
   }
   await symlink(path.join(root, "node_modules"), path.join(fixture, "node_modules"), "junction");
+  for (const relative of ["LICENSE", "THIRD_PARTY_NOTICES"]) {
+    const file = path.join(fixture, relative);
+    await writeFile(file, (await readFile(file, "utf8")).replace(/\r?\n/g, "\r\n"));
+  }
 
   const published = path.join(fixture, "plugins", "mobile-use");
-  const built = path.join(fixture, "dist", "mobile-use");
+  const scripts = (await json(path.join(fixture, "package.json"))).scripts;
+  assert.equal(scripts["build:plugin"], scripts["build:marketplace"]);
   const authoredPaths = [
     "plugin.json", "mcp.json",
     path.join("skills", "mobile-use", "SKILL.md"),
@@ -181,35 +173,53 @@ test("marketplace generation preserves authored files and replaces stale generat
     });
     if (expectedError) {
       assert.equal(result.error, undefined);
-      assert.notEqual(result.status, 0, "Missing license metadata must fail the build.");
+      assert.notEqual(result.status, 0, "The build or consistency check must fail.");
       assert.match(result.stderr, expectedError);
       return;
     }
     assert.equal(result.status, 0, `${result.error ?? ""}\n${result.stdout}\n${result.stderr}`);
   };
 
-  runBuild([]);
+  runBuild(["--check"], /Plugin package is out of date/);
   for (const relative of ["server", "licenses"]) {
-    await assert.rejects(stat(path.join(built, relative, "stale-build-probe.txt")), { code: "ENOENT" });
     assert.equal(await readFile(path.join(published, relative, "stale-build-probe.txt"), "utf8"), "stale\n");
   }
-  runBuild(["--marketplace"]);
+  runBuild([]);
   for (const [index, relative] of authoredPaths.entries()) {
     assert.deepEqual(await readFile(path.join(published, relative)), authored[index], `${relative} must not be rewritten.`);
   }
   for (const relative of ["server", "licenses"]) {
     await assert.rejects(stat(path.join(published, relative, "stale-build-probe.txt")), { code: "ENOENT" });
   }
-  for (const source of [built, published]) {
-    await assert.rejects(stat(path.join(source, "licenses")), { code: "ENOENT" });
+  await assert.rejects(stat(path.join(published, "licenses")), { code: "ENOENT" });
+  await assert.rejects(stat(path.join(fixture, "dist")), { code: "ENOENT" });
+  for (const relative of ["LICENSE", "THIRD_PARTY_NOTICES"]) {
+    assert.doesNotMatch(await readFile(path.join(published, relative), "utf8"), /\r\n/);
   }
-  const paths = (await readdir(built, { recursive: true })).sort();
-  assert.deepEqual((await readdir(published, { recursive: true })).sort(), paths);
-  for (const relative of paths) {
-    if (!(await stat(path.join(built, relative))).isFile()) continue;
-    assert.deepEqual(await readFile(path.join(published, relative)), await readFile(path.join(built, relative)));
+  runBuild(["--check"]);
+
+  const bundlePath = path.join(published, "server", "index.mjs");
+  const bundle = await readFile(bundlePath);
+  for (const relative of ["LICENSE", "THIRD_PARTY_NOTICES"]) {
+    assert.deepEqual(await readFile(path.join(published, relative)), await readFile(path.join(artifact, relative)));
   }
+  const sourcePath = path.join(fixture, "src", "index.ts");
+  const source = await readFile(sourcePath, "utf8");
+  await writeFile(sourcePath, `${source}\nconsole.error("fixture source change");\n`);
+  runBuild(["--check"], /server[\\/]index\.mjs/);
+  assert.deepEqual(await readFile(bundlePath), bundle);
+  await writeFile(sourcePath, source);
+  runBuild(["--check"]);
+
+  await writeFile(bundlePath, "stale bundle\n");
+  runBuild(["--check"], /server[\\/]index\.mjs/);
+  assert.equal(await readFile(bundlePath, "utf8"), "stale bundle\n");
+  runBuild(["--marketplace"]);
+  assert.deepEqual(await readFile(bundlePath), bundle);
+  runBuild(["--check"]);
+
   const publishedNotices = await readFile(path.join(published, "THIRD_PARTY_NOTICES"));
+  const publishedLicense = await readFile(path.join(published, "LICENSE"));
   for (const [relative, expectedError] of [
     [path.join("@modelcontextprotocol", "server", "2.3.1", "embedded-dependencies.json"),
       /Embedded dependency audit\/provenance missing for @modelcontextprotocol\/server@2\.3\.1/],
@@ -221,19 +231,16 @@ test("marketplace generation preserves authored files and replaces stale generat
     const file = path.join(fixture, "third_party", "npm-licenses", relative);
     const original = await readFile(file);
     await rm(file);
-    runBuild(["--marketplace"], expectedError);
+    runBuild([], expectedError);
     assert.deepEqual(await readFile(path.join(published, "THIRD_PARTY_NOTICES")), publishedNotices);
+    assert.deepEqual(await readFile(path.join(published, "LICENSE")), publishedLicense);
+    assert.deepEqual(await readFile(bundlePath), bundle);
     await writeFile(file, original);
   }
 });
 
-for (const [label, source, mode] of [
-  ["built", artifact, "legacy"],
-  ["built", artifact, "auto"],
-  ["marketplace", marketplaceArtifact, "legacy"],
-  ["marketplace", marketplaceArtifact, "auto"],
-]) {
-  test(`copied ${label} artifact starts without node_modules over ${mode} MCP negotiation`, async (t) => {
+for (const mode of ["legacy", "auto"]) {
+  test(`copied plugin starts without node_modules over ${mode} MCP negotiation`, async (t) => {
     const copied = await mkdtemp(path.join(tmpdir(), "mobile-use plugin with spaces "));
     let client;
     t.after(async () => {
@@ -245,7 +252,7 @@ for (const [label, source, mode] of [
     });
     const relative = path.relative(root, copied);
     assert.ok(relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative), "copy must not resolve dependencies from this checkout");
-    await cp(source, copied, { recursive: true });
+    await cp(artifact, copied, { recursive: true });
     await assert.rejects(stat(path.join(copied, "node_modules")), { code: "ENOENT" });
     const transport = new StdioClientTransport({
       command: process.execPath,
@@ -345,6 +352,44 @@ for (const [label, source, mode] of [
     assert.equal(startup.isError, true);
     assert.equal(JSON.parse(startup.content.find((block) => block.type === "text")?.text).error.code, "ADB_NOT_FOUND");
     assert.match(stderr, /^(?:mobile-use: ADB_NOT_FOUND\r?\n){2}$/);
+  });
+}
+
+for (const runtime of ["external", "managed"]) {
+  test(`copied plugin starts the experimental ${runtime} iOS adapter`, async (t) => {
+    const copied = await mkdtemp(path.join(tmpdir(), "mobile-use ios plugin with spaces "));
+    let client;
+    t.after(async () => {
+      try {
+        await client?.close();
+      } finally {
+        await rm(copied, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+    });
+    await cp(artifact, copied, { recursive: true });
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(copied, "server", "index.mjs")],
+      cwd: copied,
+      env: {
+        ...getDefaultEnvironment(),
+        MOBILE_USE_PLATFORM: "ios",
+        MOBILE_USE_IOS_RUNTIME: runtime,
+        ...(runtime === "external"
+          ? { MOBILE_USE_WDA_URL: "http://127.0.0.1:1" }
+          : { MOBILE_USE_IOS_RUNNER_BUNDLE_ID: "example.runner.xctrunner" }),
+      },
+      stderr: "pipe",
+    });
+    client = new Client(
+      { name: "mobile-use-ios-package-check", version: "0.1.0" },
+      { versionNegotiation: { mode: "auto" } },
+    );
+    await client.connect(transport);
+    assert.match(client.getInstructions() ?? "", /server is in iOS mode/);
+    const tools = (await client.listTools()).tools;
+    assert.equal(tools.some((tool) => tool.name === "mobile_ios_runtime"), runtime === "managed");
+    assert.ok(tools.some((tool) => tool.name === "mobile_observe"));
   });
 }
 

@@ -13,13 +13,14 @@
     "build:tests": "tsc",
     "test": "npm run build:tests && node --test .test-build\\test\\*.test.js",
     "build:plugin": "node scripts\\build-plugin.mjs",
-    "build:marketplace": "node scripts\\build-plugin.mjs --marketplace",
+    "build:marketplace": "node scripts\\build-plugin.mjs",
+    "check:plugin": "node scripts\\build-plugin.mjs --check",
     "build:gestures": "node scripts\\build-gestures.mjs",
     "build:text": "node scripts\\build-text.mjs",
     "test:plugin": "node --test test\\plugin.test.mjs",
     "test:gestures": "node --test test\\gesture-helper.test.mjs",
     "test:text": "node --test test\\text-helper.test.mjs",
-    "check": "npm run typecheck && npm test && npm run build:plugin && npm run test:plugin"
+    "check": "npm run typecheck && npm test && npm run check:plugin && npm run test:plugin"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
