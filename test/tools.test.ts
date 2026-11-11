@@ -705,19 +705,6 @@ for (const mode of ["legacy", "auto"] as const) {
 
   test(`twelve categorized tools expose typed setup, recording, wake, and input results over ${mode}`, async (t) => {
     const { client } = await fixture(t, mode);
-    const icon = client.getServerVersion()?.icons?.[0];
-    assert.ok(icon);
-    assert.equal(icon.mimeType, "image/png");
-    assert.deepEqual(icon.sizes, ["128x128"]);
-    assert.match(icon.src, /^data:image\/png;base64,/);
-    const encodedIcon = icon.src.slice("data:image/png;base64,".length);
-    assert.match(encodedIcon, /^[A-Za-z0-9+/]+={0,2}$/);
-    assert.equal(encodedIcon.length % 4, 0);
-    const iconPng = Buffer.from(encodedIcon, "base64");
-    assert.equal(iconPng.toString("base64"), encodedIcon);
-    assert.deepEqual(iconPng.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-    assert.equal(iconPng.readUInt32BE(16), 128);
-    assert.equal(iconPng.readUInt32BE(20), 128);
     assert.match(client.getInstructions() ?? "", /On first use in each session, call mobile_doctor/);
     assert.match(client.getInstructions() ?? "", /call mobile_list_devices before offering phone setup/);
     assert.match(client.getInstructions() ?? "", /Never install software, enable debugging, pair devices, or accept trust automatically/);
@@ -728,7 +715,6 @@ for (const mode of ["legacy", "auto"] as const) {
       "mobile_swipe", "mobile_tap", "mobile_wake",
     ]);
     assert.ok(tools.tools.every((tool) => typeof tool.title === "string" && tool.title.length > 0));
-    assert.ok(tools.tools.every((tool) => tool.icons === undefined));
     const selection = tools.tools.find((tool) => tool.name === "mobile_select_device");
     assert.equal(selection?.annotations?.readOnlyHint, true);
     assert.equal(selection?.annotations?.destructiveHint, false);

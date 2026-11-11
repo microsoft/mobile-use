@@ -9,12 +9,11 @@
     "node": ">=22.2.0"
   },
   "scripts": {
-    "build:icon": "node scripts\\build-icon.mjs",
-    "typecheck": "npm run build:icon && tsc --noEmit",
-    "build:tests": "npm run build:icon && tsc",
+    "typecheck": "tsc --noEmit",
+    "build:tests": "tsc",
     "test": "npm run build:tests && node --test .test-build\\test\\*.test.js",
-    "build:plugin": "npm run build:icon && node scripts\\build-plugin.mjs",
-    "build:marketplace": "npm run build:icon && node scripts\\build-plugin.mjs --marketplace",
+    "build:plugin": "node scripts\\build-plugin.mjs",
+    "build:marketplace": "node scripts\\build-plugin.mjs --marketplace",
     "build:gestures": "node scripts\\build-gestures.mjs",
     "build:text": "node scripts\\build-text.mjs",
     "test:plugin": "node --test test\\plugin.test.mjs",

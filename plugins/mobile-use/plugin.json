@@ -9,5 +9,10 @@
   },
   "repository": "https://github.com/microsoft/mobile-use",
   "license": "MIT",
-  "keywords": ["android", "adb", "physical-devices", "mobile-use"]
+  "keywords": ["android", "adb", "physical-devices", "mobile-use"],
+  "extensions": {
+    "com.github.copilot": {
+      "logo": "assets/mobile-use.png"
+    }
+  }
 }

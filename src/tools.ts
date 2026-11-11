@@ -2,7 +2,6 @@ import { McpServer } from "@modelcontextprotocol/server";
 import type { CallToolResult } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import packageInfo from "../package.json" with { type: "json" };
-import { mobileUseIcon } from "./mobile-use-icon.js";
 import type { MobileService } from "./mobile-service.js";
 import { publicError } from "./errors.js";
 import { onboardingInstructions, phoneSetup, setupForDevices, setupForError } from "./setup.js";
@@ -52,11 +51,7 @@ export function createMobileUseServer(service: MobileService): McpServer {
   const managed = controlRuntime !== undefined;
   const execute = (operation: () => Promise<CallToolResult>) => safely(operation, ios, managed);
   const server = new McpServer(
-    { name: "mobile-use", version: packageInfo.version, icons: [{
-      src: mobileUseIcon,
-      mimeType: "image/png",
-      sizes: ["128x128"],
-    }] },
+    { name: "mobile-use", version: packageInfo.version },
     { instructions: ios ? managed ? managedIosInstructions : iosInstructions : onboardingInstructions },
   );
   const readOnly = { readOnlyHint: true, destructiveHint: false, openWorldHint: true };

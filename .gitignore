@@ -4,7 +4,6 @@ dist/
 .test-build/
 .test-artifacts/
 evidence/
-src/mobile-use-icon.generated.ts
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
