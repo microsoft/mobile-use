@@ -40,7 +40,7 @@ required. Do not make the path-filtered release workflow required for every PR.
 | --- | --- |
 | `npm run typecheck` | Typecheck without emitting files. |
 | `npm test` | Compile and run the TypeScript no-phone tests. |
-| `npm run build:plugin` | Regenerate the plugin assets in `plugins\mobile-use`, preserving authored manifests and skills. |
+| `npm run build:plugin` | Regenerate the plugin server and licensing files in `plugins\mobile-use`, preserving authored manifests, assets, and skills. |
 | `npm run build:marketplace` | Alias for `build:plugin`; produces the same tracked package. |
 | `npm run check:plugin` | Compare the package with a fresh in-memory build without changing files. |
 | `npm run test:plugin` | Check package consistency and copied-artifact protocol behavior. |
@@ -50,12 +50,13 @@ required. Do not make the path-filtered release workflow required for every PR.
 | `npm run test:text` | Test the Java Unicode helper, field guards, append/readback and cleanup using Android stubs; requires a JDK. |
 | `npm run build:text` | Rebuild the embedded text DEX, including nested classes; uses the same SDK/JDK prerequisites as the gesture helper. |
 
-The artifact includes `plugin.json`, `mcp.json`, `skills\mobile-use\SKILL.md`,
-`server\index.mjs`, and license notices. Runtime dependencies are bundled; its
-launcher is `node`, not a download-on-launch npm/npx command.
+The artifact includes `plugin.json`, `mcp.json`, `assets\mobile-use.png`,
+`skills\mobile-use\SKILL.md`, `server\index.mjs`, and license notices. Runtime
+dependencies are bundled; its launcher is `node`, not a download-on-launch
+npm/npx command.
 
 `plugins\mobile-use` is the single authored plugin directory: edit `plugin.json`,
-`mcp.json`, and `skills` there. Both build commands replace only `server`,
+`mcp.json`, `assets`, and `skills` there. Both build commands replace only `server`,
 `LICENSE`, and `THIRD_PARTY_NOTICES` in that directory, and remove the legacy
 generated `licenses` folder. Dependency license texts are consolidated in
 `THIRD_PARTY_NOTICES`; source audit records stay under `third_party\npm-licenses`.
@@ -107,8 +108,8 @@ metadata/skills and generated runtime/license assets live together in
    keywords current in the source manifest.
 2. Restore locked dependencies with `npm ci --ignore-scripts --no-audit --no-fund`,
    then run `npm run build:marketplace` and `npm run check`. Packaging preserves
-   authored manifests/skills and replaces only the generated server and licensing
-   assets, removing stale files from generated directories.
+   authored manifests, assets, and skills and replaces only the generated server
+   and licensing files, removing stale files from generated directories.
    The package intentionally contains no Node.js, ADB, npm dependencies to
    install, device evidence, or credentials.
 3. Review and commit the source changes and the complete generated folder.
