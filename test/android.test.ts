@@ -318,7 +318,7 @@ test("display reads preserve transport, configuration, internal, and cancellatio
 
 test("keyguard diagnostics distinguish unsecured, secure, and SIM-locked states", () => {
   assert.deepEqual(parseKeyguardState(keyguardPolicy()), {
-    showing: false, secure: false, inputRestricted: false, screenOn: true, userId: 0,
+    showing: false, secure: false, inputRestricted: false, screenOn: true, screenState: "awake", userId: 0,
   });
   assert.equal(parseKeyguardState(keyguardPolicy({ secure: "true" })).secure, true);
   assert.equal(parseKeyguardState(keyguardPolicy({ mSimSecure: "true" })).secure, true);
@@ -328,7 +328,32 @@ test("keyguard diagnostics distinguish unsecured, secure, and SIM-locked states"
     showing: "true", inputRestricted: "false", currentUser: "-10000",
     mIsShowing: "true", mInputRestricted: "true", mCurrentUserId: "0",
     screenState: "SCREEN_STATE_OFF",
-  })), { showing: true, secure: false, inputRestricted: true, screenOn: false, userId: 0 });
+  })), { showing: true, secure: false, inputRestricted: true, screenOn: false, screenState: "asleep", userId: 0 });
+});
+
+test("read-only device status distinguishes screen transitions, locking and configured security", async () => {
+  for (const [screen, expected] of [
+    ["SCREEN_STATE_ON", "awake"], ["SCREEN_STATE_OFF", "asleep"],
+    ["SCREEN_STATE_TURNING_ON", "waking"], ["SCREEN_STATE_TURNING_OFF", "sleeping"],
+  ] as const) {
+    for (const locked of [false, true]) {
+      const adb = new FakeAdb();
+      Object.assign(adb.keyguard, { screenState: screen, showing: locked, secure: true });
+      assert.deepEqual(await backend(adb).deviceStatus(), {
+        status: "ok", screenState: expected, lockState: locked ? "locked" : "unlocked",
+        secure: true, userId: 0, readyForInteraction: expected === "awake" && !locked, error: null,
+      });
+      assert.equal(adb.inputs.length, 0);
+      assert.deepEqual(adb.calls.map((call) => call.args), [["-t", "7", "shell", "dumpsys", "window", "policy"]]);
+      assert.equal(adb.calls[0]?.options.timeoutMs, 2000);
+    }
+  }
+  const adb = new FakeAdb();
+  Object.assign(adb.keyguard, { inputRestricted: true, simSecure: true });
+  const status = await backend(adb).deviceStatus();
+  assert.equal(status.lockState, "locked");
+  assert.equal(status.secure, true);
+  assert.equal(status.readyForInteraction, false);
 });
 
 test("unknown, oversized, contradictory, and ambiguous keyguard diagnostics fail closed", () => {

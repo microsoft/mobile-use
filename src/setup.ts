@@ -41,6 +41,15 @@ export const onboardingInstructions =
   "and ask which exact endpoint to select. Do not repeat setup steps already verified by current diagnostics. " +
   "No screen observation or control until an explicit target and safe task are authorized. " +
   approvalInstructions +
+  "Before opening an app or starting navigation, check deviceStatus from a fresh observation or call mobile_doctor with the selected targetToken without capturing content. " +
+  "Reuse the fresh deviceStatus returned after each action instead of repeating doctor for every tap; recheck after inactivity or a readiness failure. " +
+  "screenState distinguishes awake/asleep/waking/sleeping; lockState distinguishes locked/unlocked, and unknown is never ready. " +
+  "readyForInteraction requires awake and unlocked; secure describes authentication configuration, not whether the phone is currently locked. " +
+  "If waking or unsecured keyguard dismissal is needed, proactively ask once for explicit mobile_wake authorization unless already granted, then call it; " +
+  "never attempt to navigate a sleeping or locked screen. Secure/SIM locks require the user to authenticate manually. " +
+  "For waking/sleeping transitions, recheck status before deciding to wake. Never infer readiness from app metadata or readable lock-screen text. " +
+  "mobile_observe also returns deviceStatus, withholding screen content while not ready or status is unavailable; " +
+  "app launch and UI input recheck readiness without implicitly waking/unlocking. " +
   "Use mobile_tap for tap/long_press/double_tap, mobile_swipe for swipes, mobile_press_key for BACK/HOME/ENTER, " +
   "mobile_input_text for text, and mobile_app_management for list/foreground/launch/terminate/install/uninstall. " +
   "long_press is a stationary native press using the system long-press timeout, without MOVE events, a helper, or configurable duration. Never substitute it for tap automatically. " +

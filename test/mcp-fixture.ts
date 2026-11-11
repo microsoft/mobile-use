@@ -116,6 +116,12 @@ if (setupScenario === "server-conflict" || setupScenario === "server-start-uncer
 if (process.env.MOBILE_USE_FIXTURE_SCENARIO === "secure-keyguard") {
   Object.assign(adb.keyguard, { showing: true, secure: true, inputRestricted: true });
 }
+if (setupScenario === "asleep-keyguard") {
+  Object.assign(adb.keyguard, { showing: true, inputRestricted: true, screenState: "SCREEN_STATE_OFF" });
+}
+if (setupScenario === "unknown-keyguard") {
+  adb.keyguard.screenState = "OEM_UNKNOWN";
+}
 if (process.env.MOBILE_USE_FIXTURE_SCENARIO === "uncertain-input") {
   adb.handler = (call) => {
     if (call.options.mutating) throw new Error("private fixture-only dispatch details");

@@ -8,7 +8,7 @@ import { doubleTap, prepareGestures } from "./gestures.js";
 import { appendUnicodeText, isAdbText, prepareTextInput, unicodeHierarchy, validateText } from "./text-input.js";
 import { ScreenRecorder } from "./recording.js";
 export { validateText } from "./text-input.js";
-import type { AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, PreparedGestures, PreparedTextInput, RecordingAction, RecordingResult, Rect, ScreenElement, ScreenWindow, WakeResult } from "./types.js";
+import type { AppOperationResult, DeviceEndpoint, DeviceIdentity, DeviceStatus, ForegroundApp, InstalledApps, PreparedGestures, PreparedTextInput, RecordingAction, RecordingResult, Rect, ScreenElement, ScreenWindow, WakeResult } from "./types.js";
 
 export interface Hierarchy {
   rotation: number | null;
@@ -93,6 +93,7 @@ export interface KeyguardState {
   secure: boolean;
   inputRestricted: boolean;
   screenOn: boolean;
+  screenState: "awake" | "asleep" | "waking" | "sleeping";
   userId: number;
 }
 
@@ -137,9 +138,12 @@ function parseKeyguardPolicy(output: string): {
   const secure = flag(delegate, "secure");
   const simSecure = flag(monitor, "mSimSecure");
   if (!flag(delegate, "systemIsReady") || !flag(delegate, "bootCompleted")) keyguardUnavailable();
-  const screen = delegate.get("screenState");
-  if (!["SCREEN_STATE_OFF", "SCREEN_STATE_TURNING_ON", "SCREEN_STATE_ON", "SCREEN_STATE_TURNING_OFF"].includes(screen ?? "")) keyguardUnavailable();
-  return { state: { showing, secure: secure || simSecure, inputRestricted, screenOn: screen === "SCREEN_STATE_ON" }, delegate, monitor };
+  const screenState = new Map<string, KeyguardState["screenState"]>([
+    ["SCREEN_STATE_OFF", "asleep"], ["SCREEN_STATE_TURNING_ON", "waking"],
+    ["SCREEN_STATE_ON", "awake"], ["SCREEN_STATE_TURNING_OFF", "sleeping"],
+  ]).get(delegate.get("screenState") ?? "");
+  if (!screenState) keyguardUnavailable();
+  return { state: { showing, secure: secure || simSecure, inputRestricted, screenOn: screenState === "awake", screenState }, delegate, monitor };
 }
 
 export function parseKeyguardState(output: string): KeyguardState {
@@ -151,6 +155,24 @@ export function parseKeyguardState(output: string): KeyguardState {
     (delegateUser !== "-10000" && delegateUser !== user) ||
     (delegate.has("mCurrentUserId") && delegate.get("mCurrentUserId") !== user)) keyguardUnavailable();
   return { ...state, userId: Number(user) };
+}
+
+export function deviceReadinessError(state: DeviceStatus): MobileUseError | null {
+  if (state.status === "unavailable") {
+    const error = state.error;
+    return new MobileUseError(error.code, error.message, error.remediation, error.retryable);
+  }
+  if (state.readyForInteraction) return null;
+  if (state.lockState === "locked" && state.secure) {
+    return new MobileUseError(
+      "MANUAL_UNLOCK_REQUIRED", "The phone is locked and requires manual authentication.",
+      "Ask the user to unlock the phone themselves. Never request credentials or capture authentication UI.",
+    );
+  }
+  return new MobileUseError(
+    "DEVICE_NOT_READY", `The phone is ${state.screenState} and ${state.lockState}; interaction is blocked.`,
+    "Check mobile_doctor with this targetToken. If waking or unsecured lock-screen dismissal is needed, request explicit permission for mobile_wake unless already authorized. For a transitioning display, recheck readiness first; never wake or unlock implicitly.",
+  );
 }
 
 function invalidImage(): never {
@@ -630,6 +652,31 @@ export class AndroidBackend {
     await this.input("keyevent", [{ HOME: 3, BACK: 4, ENTER: 66 }[key]], signal);
   }
 
+  async deviceStatus(signal?: AbortSignal): Promise<DeviceStatus> {
+    const output = await this.command(["shell", "dumpsys", "window", "policy"], {
+      timeoutMs: 2000, ...(signal ? { signal } : {}),
+    });
+    this.assertCurrent();
+    checkCancelled(signal);
+    checkCancelled(this.targetSignal);
+    const state = parseKeyguardState(output.toString("utf8"));
+    const locked = state.showing || state.inputRestricted;
+    return {
+      status: "ok", screenState: state.screenState, lockState: locked ? "locked" : "unlocked",
+      secure: state.secure, userId: state.userId,
+      readyForInteraction: state.screenOn && !locked, error: null,
+    };
+  }
+
+  async requireInteractive(signal?: AbortSignal, expectedUserId?: number): Promise<void> {
+    const state = await this.deviceStatus(signal);
+    const error = deviceReadinessError(state);
+    if (error) throw error;
+    if (expectedUserId !== undefined && state.userId !== expectedUserId) {
+      throw new MobileUseError("STALE_OBSERVATION", "The Android user changed before interaction.", "Recheck the intended user's readiness and observe approved non-sensitive content again.");
+    }
+  }
+
   async wake(signal?: AbortSignal): Promise<WakeResult> {
     let woken = false;
     try {
@@ -791,6 +838,7 @@ export class AndroidBackend {
     if (!component) {
       throw new MobileUseError("APP_NOT_FOUND", "No unique launcher was found for the requested installed app.", "Check the package name and current Android user; launching never installs an app.");
     }
+    await this.requireInteractive(signal, userId);
     // Validated components cannot contain a single quote; quoting also preserves Java's $ names.
     const output = (await this.command(["shell", "am", "start", "-W", "--user", String(userId), "-n", `'${component}'`], {
       mutating: true, ...options,

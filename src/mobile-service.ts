@@ -1,5 +1,5 @@
 import type {
-  ActionResult, AdbServerResult, AppOperationResult, DeviceEndpoint, ForegroundApp, InstalledApps,
+  ActionResult, AdbServerResult, AppOperationResult, DeviceEndpoint, DeviceStatus, ForegroundApp, InstalledApps,
   ObservedScreen, PreparedGestures, PreparedTextInput, RecordingAction, RecordingResult, SelectedTarget, WakeResult,
 } from "./types.js";
 import type { IosRuntimeAction, IosRuntimeStatus } from "./ios/runtime.js";
@@ -9,6 +9,7 @@ export interface AndroidDoctor {
   platform: "android";
   adbExecutable: string;
   platformToolsVersion: string;
+  deviceStatus?: DeviceStatus;
 }
 
 export type IosDoctor = {
@@ -72,7 +73,7 @@ interface CommonMethods {
 export interface MobileService extends CommonMethods {
   readonly platform: "android" | "ios";
   readonly iosRuntime?: (action: IosRuntimeAction, signal?: AbortSignal) => Promise<IosRuntimeStatus>;
-  doctor(signal?: AbortSignal): Promise<MobileDoctor>;
+  doctor(signal?: AbortSignal, targetToken?: string): Promise<MobileDoctor>;
   selectDevice(endpointId: string, signal?: AbortSignal): Promise<SelectedTarget | IosSelectedTarget>;
   getForegroundApp(targetToken: string, signal?: AbortSignal): Promise<ForegroundApp | IosForegroundApp | null>;
   launchApp(targetToken: string, packageName: string, signal?: AbortSignal): Promise<AppOperationResult | IosAppOperationResult>;

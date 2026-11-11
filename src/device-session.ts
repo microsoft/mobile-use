@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { parseAdbVersion, parseDeviceList, startTransportMonitor } from "./adb.js";
 import type { AdbConnection, MonitorFactory, TransportMonitor } from "./adb.js";
-import { AndroidBackend, isPointerButton, validateText } from "./android.js";
+import { AndroidBackend, deviceReadinessError, isPointerButton, validateText } from "./android.js";
 import type { Hierarchy, Screenshot } from "./android.js";
 import { checkCancelled, MobileUseError, publicError } from "./errors.js";
 import type { AndroidDoctor, MobileService } from "./mobile-service.js";
@@ -9,7 +9,7 @@ import { compareScreens, containsPoint, interactionRegion, intersects } from "./
 import { actionSchema, recordingActionSchema } from "./types.js";
 import { isAdbText } from "./text-input.js";
 import type {
-  ActionResult, AdbServerResult, AppOperationResult, DeviceEndpoint, DeviceIdentity, ForegroundApp, InstalledApps, MobileAction, Observation,
+  ActionResult, AdbServerResult, AppOperationResult, DeviceEndpoint, DeviceIdentity, DeviceStatus, ForegroundApp, InstalledApps, MobileAction, Observation,
   ObservedScreen, PreparedGestures, PreparedTextInput, ReadStatus, RecordingAction, RecordingResult, Rect, ScreenElement, ScreenWindow, SelectedTarget, WakeResult,
 } from "./types.js";
 
@@ -67,7 +67,7 @@ function requirePoint(point: { x: number; y: number }, display: Observation["dis
   }
 }
 
-function readFailure(error: unknown): ReadStatus {
+function readFailure(error: unknown): { status: "unavailable"; error: NonNullable<ReadStatus["error"]> } {
   const failure = publicError(error);
   if (invalidatingCodes.has(failure.code) || ["CANCELLED", "ADB_NOT_FOUND", "ADB_CONFIG_UNSUPPORTED", "INTERNAL_ERROR", "SERVER_STOPPED"].includes(failure.code)) {
     throw failure;
@@ -149,11 +149,17 @@ export class MobileUseService implements MobileService {
     }
   }
 
-  doctor(signal?: AbortSignal): Promise<AndroidDoctor> {
+  doctor(signal?: AbortSignal, targetToken?: string): Promise<AndroidDoctor> {
     return this.serialize(async () => {
       const adbExecutable = this.adb.executable();
       const output = (await this.adb.run(["version"], signal ? { signal } : {})).toString("utf8");
       const { platformToolsVersion } = parseAdbVersion(output);
+      if (targetToken !== undefined) {
+        const state = this.target(targetToken);
+        await this.ensureIdentity(state, signal);
+        const deviceStatus = await this.readDeviceStatus(state, signal);
+        return { status: "ready", platform: this.platform, adbExecutable, platformToolsVersion, deviceStatus };
+      }
       return { status: "ready", platform: this.platform, adbExecutable, platformToolsVersion };
     }, signal);
   }
@@ -244,11 +250,49 @@ export class MobileUseService implements MobileService {
     }, signal);
   }
 
+  private async readDeviceStatus(state: TargetState, signal?: AbortSignal): Promise<DeviceStatus> {
+    try {
+      return await state.backend.deviceStatus(signal);
+    } catch (error) {
+      this.target(state.token);
+      checkCancelled(signal);
+      return {
+        ...readFailure(error), screenState: "unknown", lockState: "unknown",
+        secure: null, userId: null, readyForInteraction: false,
+      };
+    }
+  }
+
   private async capture(state: TargetState, signal?: AbortSignal, includeScreenshot = true): Promise<Snapshot> {
     const startedAt = new Date(this.now()).toISOString();
     const started = performance.now();
     let screenshotDurationMs: number | null = null;
     let hierarchyDurationMs = 0;
+    const blocked = (deviceStatus: DeviceStatus, error: MobileUseError): Snapshot => {
+      const now = this.now();
+      const unavailable: ReadStatus = { status: "unavailable", error: error.toJSON() };
+      return {
+        createdAt: now, foregroundApp: null,
+        screen: {
+          image: null,
+          observation: {
+            observationId: randomUUID(), targetToken: state.token, capturedAt: new Date(now).toISOString(),
+            captureTiming: {
+              startedAt, durationMs: Math.round(performance.now() - started),
+              screenshotDurationMs, hierarchyDurationMs,
+            },
+            nonAtomic: true, deviceStatus, display: null, displayState: unavailable,
+            screenshot: screenshotDurationMs === null ? { status: "skipped", error: null } : unavailable,
+            hierarchy: unavailable,
+            hierarchyScope: "unavailable", windows: [], elements: [],
+            warnings: [`Screen content withheld: ${error.message} ${error.remediation}`],
+          },
+        },
+      };
+    };
+    const initialStatus = await this.readDeviceStatus(state, signal);
+    const initialError = deviceReadinessError(initialStatus);
+    if (initialError) return blocked(initialStatus, initialError);
     const timed = async <T>(operation: () => Promise<T>, finish: (durationMs: number) => void): Promise<T> => {
       const start = performance.now();
       try {
@@ -276,6 +320,12 @@ export class MobileUseService implements MobileService {
       ? { status: "ok", error: null } : readFailure(displayResult.reason);
     const foregroundStatus: ReadStatus = foregroundResult.status === "fulfilled"
       ? { status: "ok", error: null } : readFailure(foregroundResult.reason);
+    const deviceStatus = await this.readDeviceStatus(state, signal);
+    const readinessError = deviceReadinessError(deviceStatus);
+    if (readinessError) return blocked(deviceStatus, readinessError);
+    if (initialStatus.userId !== deviceStatus.userId) {
+      throw new MobileUseError("STALE_OBSERVATION", "The Android user changed during observation.", "Observe the intended user's approved non-sensitive screen again.");
+    }
     const foregroundApp = foregroundResult.status === "fulfilled" ? foregroundResult.value : null;
     const screenshot: Screenshot | null = imageResult.status === "fulfilled" ? imageResult.value : null;
     const hierarchy: Hierarchy | null = hierarchyResult.status === "fulfilled" ? hierarchyResult.value : null;
@@ -324,6 +374,7 @@ export class MobileUseService implements MobileService {
       capturedAt: new Date(now).toISOString(),
       captureTiming: { startedAt, durationMs: Math.round(performance.now() - started), screenshotDurationMs, hierarchyDurationMs },
       nonAtomic: true,
+      deviceStatus,
       display,
       displayState: displayStatus,
       screenshot: screenshotStatus,
@@ -455,6 +506,7 @@ export class MobileUseService implements MobileService {
   }
 
   private async dispatch(state: TargetState, action: MobileAction, previous: Snapshot, live: Snapshot, signal?: AbortSignal): Promise<number | undefined> {
+    await state.backend.requireInteractive(signal, previous.screen.observation.deviceStatus?.userId ?? undefined);
     const old = previous.screen.observation;
     const current = live.screen.observation;
     if (old.displayState.status !== "ok" || current.displayState.status !== "ok" ||

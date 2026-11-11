@@ -582,7 +582,9 @@ newer `mResumedActivity`/`topResumedActivity` fields, scoped to the primary
 display; missing, ambiguous, and unfamiliar OEM formats are errors.
 
 Launch, terminate, and uninstall accept `action.packageName`. Launch verifies the
-foreground package/user. Termination uses Android force-stop (activities and
+phone is awake and unlocked immediately before dispatch, then verifies the
+foreground package/user. It never wakes or dismisses keyguard implicitly.
+Termination uses Android force-stop (activities and
 services), may discard unsaved state, and verifies the package's stopped flag.
 Unrelated user headings in package diagnostics are ignored; duplicate or
 conflicting installed/stopped records still fail verification.
@@ -612,6 +614,46 @@ retain their 15-second limit. Errors after a possible dispatch report
 further mutation; no app operation is retried automatically.
 
 ### Waking a selected phone
+
+Before app launch or navigation, call `mobile_doctor` with the selected
+`targetToken`, or use `deviceStatus` from a fresh observation. Reuse status from
+action results rather than repeating doctor for every tap; recheck after
+inactivity or readiness failure. Without a token doctor remains the host-only prerequisite
+check; with a token it returns `scope: "host-and-device"` and `deviceStatus`
+without screenshots, hierarchy, waking, or lock-screen dismissal:
+
+```json
+{
+  "status": "ok",
+  "screenState": "asleep",
+  "lockState": "locked",
+  "secure": false,
+  "userId": 0,
+  "readyForInteraction": false,
+  "error": null
+}
+```
+
+`screenState` is `awake`, `asleep`, `waking`, or `sleeping`; `lockState` is
+`locked` when keyguard is showing or input is restricted. `secure` means
+authentication is configured (including a SIM lock), not that an otherwise
+unlocked phone is locked. Only awake and unlocked is ready for interaction.
+Missing, unfamiliar, or failed diagnostics return `status: "unavailable"`,
+unknown screen/lock states, null security/user metadata, false readiness, and
+the sanitized read error. Transport loss and cancellation remain errors, not
+unknown-but-successful device checks.
+
+Android observations also include `deviceStatus`. Readiness is checked before
+capture and again afterward. A known sleeping/locked/transitioning phone or
+unknown readiness returns metadata only: no image, windows, or elements.
+Content is withheld if the phone becomes unready during capture; a user change
+rejects the capture. These checks are non-atomic and cannot prevent a lock
+transition between reads. App launch and every UI action recheck readiness
+before dispatch, failing with `DEVICE_NOT_READY`, `MANUAL_UNLOCK_REQUIRED`, or
+the diagnostic error without implicitly waking, unlocking, or retrying.
+Recheck transitioning displays. If wake/unsecured dismissal is needed,
+proactively request explicit `mobile_wake` authorization once unless already
+granted; secure authentication remains manual.
 
 After explicit permission to wake the selected phone, call `mobile_wake` with
 `targetToken`. Like app-management tools, it does not require an observation:

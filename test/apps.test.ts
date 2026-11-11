@@ -197,6 +197,7 @@ test("local APK validation handles spaces and rejects unsupported formats, locat
 test("app reads and mutations pin the exact wireless transport and current Android user", async () => {
   const adb = new FakeAdb();
   adb.userId = 10;
+  adb.keyguard.userId = 10;
   const android = backend(adb, WIFI);
   assert.deepEqual(await android.listApps(), { userId: 10, apps: [{ packageName: "android" }, { packageName: "example.poc" }] });
   assert.equal((await android.getForegroundApp())?.userId, 10);
@@ -319,12 +320,13 @@ test("all app tools work without screen capture and mutations consume earlier ob
   }
 });
 
-test("read-only app tools preserve an existing screen observation", async (t) => {
+test("read-only app tools and readiness checks preserve an existing screen observation", async (t) => {
   const { service } = harness(t);
   const selected = await service.selectDevice(USB);
   const screen = await service.observe(selected.targetToken);
   await service.listApps(selected.targetToken);
   await service.getForegroundApp(selected.targetToken);
+  await service.doctor(undefined, selected.targetToken);
   await service.act(selected.targetToken, screen.observation.observationId, { kind: "key", key: "HOME" });
 });
 
@@ -340,6 +342,33 @@ test("standalone launch verifies the foreground app and reports failed verificat
     return true;
   });
   assert.equal(adb.inputs.length, 2);
+});
+
+test("app launch checks readiness before mutation while read-only app tools remain usable", async (t) => {
+  const { adb, service } = harness(t);
+  const { targetToken } = await service.selectDevice(USB);
+  for (const [screenState, locked, secure, code] of [
+    ["SCREEN_STATE_OFF", false, false, "DEVICE_NOT_READY"],
+    ["SCREEN_STATE_ON", true, false, "DEVICE_NOT_READY"],
+    ["SCREEN_STATE_ON", true, true, "MANUAL_UNLOCK_REQUIRED"],
+    ["OEM_UNKNOWN", false, false, "KEYGUARD_STATE_UNAVAILABLE"],
+  ] as const) {
+    Object.assign(adb.keyguard, { screenState, showing: locked, secure });
+    await assert.rejects(service.launchApp(targetToken, "example.poc"), (error: unknown) => {
+      hasCode(code)(error);
+      assert.ok(error instanceof MobileUseError && !error.actionMayHaveRun);
+      return true;
+    });
+    await service.listApps(targetToken);
+    assert.equal(adb.inputs.length, 0);
+  }
+  Object.assign(adb.keyguard, { screenState: "SCREEN_STATE_ON", showing: false, secure: true });
+  assert.equal((await service.launchApp(targetToken, "example.poc")).status, "launched", "configured credentials do not mean the phone is currently locked");
+  assert.equal(adb.inputs.length, 1);
+  assert.equal(adb.calls.some((call) => call.args.includes("screencap") || call.args.includes("uiautomator")), false);
+  adb.keyguard.userId = 10;
+  await assert.rejects(service.launchApp(targetToken, "example.poc"), hasCode("STALE_OBSERVATION"));
+  assert.equal(adb.inputs.length, 1, "user changes must be rejected before app launch");
 });
 
 test("post-mutation transport loss invalidates selection and reports the possible completed operation", async (t) => {

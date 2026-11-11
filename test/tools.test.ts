@@ -46,6 +46,49 @@ function setupSteps(value: Record<string, unknown>, stage: string): string {
 }
 
 for (const mode of ["legacy", "auto"] as const) {
+  for (const [scenario, screenState, lockState, code] of [
+    ["asleep-keyguard", "asleep", "locked", "DEVICE_NOT_READY"],
+    ["secure-keyguard", "awake", "locked", "MANUAL_UNLOCK_REQUIRED"],
+    ["unknown-keyguard", "unknown", "unknown", "KEYGUARD_STATE_UNAVAILABLE"],
+  ]) {
+    test(`selected-device readiness is available without lock-screen capture over ${mode} (${scenario})`, async (t) => {
+      const { client } = await fixture(t, mode, scenario);
+      const { targetToken } = payload(await client.callTool({ name: "mobile_select_device", arguments: { endpointId: USB } }));
+      const diagnosis = await client.callTool({ name: "mobile_doctor", arguments: { targetToken } });
+      assert.equal(diagnosis.isError, undefined);
+      const value = payload(diagnosis);
+      assert.equal(value.scope, "host-and-device");
+      assert.ok(isRecord(value.deviceStatus));
+      assert.equal(value.deviceStatus.screenState, screenState);
+      assert.equal(value.deviceStatus.lockState, lockState);
+      assert.equal(value.deviceStatus.readyForInteraction, false);
+      assert.ok(diagnosis.content.every((block) => block.type !== "image"));
+      const observed = await client.callTool({ name: "mobile_observe", arguments: { targetToken } });
+      const observation = payload(observed).observation;
+      assert.ok(isRecord(observation));
+      assert.deepEqual(observation.deviceStatus, value.deviceStatus);
+      assert.deepEqual(observation.elements, []);
+      assert.deepEqual(observation.windows, []);
+      assert.ok(observed.content.every((block) => block.type !== "image"));
+      const launch = await client.callTool({
+        name: "mobile_app_management", arguments: { targetToken, action: { kind: "launch", packageName: "example.poc" } },
+      });
+      assert.equal(launch.isError, true);
+      const error = payload(launch).error;
+      assert.ok(isRecord(error));
+      assert.equal(error.code, code);
+      assert.equal(error.actionMayHaveRun, false);
+      if (scenario === "asleep-keyguard") {
+        assert.equal((await client.callTool({ name: "mobile_wake", arguments: { targetToken } })).isError, undefined);
+        const ready = payload(await client.callTool({ name: "mobile_doctor", arguments: { targetToken } })).deviceStatus;
+        assert.ok(isRecord(ready) && ready.readyForInteraction === true);
+        assert.equal((await client.callTool({
+          name: "mobile_app_management", arguments: { targetToken, action: { kind: "launch", packageName: "example.poc" } },
+        })).isError, undefined);
+      }
+    });
+  }
+
   for (const prepared of [false, true]) {
     for (const scenario of ["floating-editors", "inactive-editor"]) {
       test(`text input requires the foreground editor over ${mode} (${scenario}, ${prepared ? "prepared" : "stock"})`, async (t) => {
@@ -775,6 +818,10 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.ok(isRecord(observation));
     assert.equal(observation.targetToken, selected.targetToken);
     assert.equal(observation.nonAtomic, true);
+    assert.deepEqual(observation.deviceStatus, {
+      status: "ok", screenState: "awake", lockState: "unlocked", secure: false,
+      userId: 0, readyForInteraction: true, error: null,
+    });
     assert.deepEqual(observation.displayState, { status: "ok", error: null });
     assert.doesNotMatch(JSON.stringify(payload(observed)), /"type":"Buffer"|"image":/);
     const acted = await client.callTool({

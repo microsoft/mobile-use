@@ -135,6 +135,24 @@ export interface ReadStatus {
   error: ErrorInfo | null;
 }
 
+export type DeviceStatus = {
+  status: "ok";
+  screenState: "awake" | "asleep" | "waking" | "sleeping";
+  lockState: "locked" | "unlocked";
+  secure: boolean;
+  userId: number;
+  readyForInteraction: boolean;
+  error: null;
+} | {
+  status: "unavailable";
+  screenState: "unknown";
+  lockState: "unknown";
+  secure: null;
+  userId: null;
+  readyForInteraction: false;
+  error: ErrorInfo;
+};
+
 export interface CaptureTiming {
   startedAt: string;
   durationMs: number;
@@ -144,6 +162,7 @@ export interface CaptureTiming {
 
 export interface Observation {
   platform?: "android" | "ios";
+  deviceStatus?: DeviceStatus;
   observationId: string;
   targetToken: string;
   capturedAt: string;

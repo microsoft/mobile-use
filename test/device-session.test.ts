@@ -195,6 +195,159 @@ test("wake cancellation before dispatch performs no device commands", async (t) 
   assert.equal(adb.calls.length, count);
 });
 
+test("targeted doctor reports readiness without capture, implicit selection, or waking", async (t) => {
+  const { adb, monitors, service } = harness(t);
+  await assert.rejects(service.doctor(undefined, "unselected"), hasCode("TARGET_NOT_SELECTED"));
+  const selected = await service.selectDevice(USB);
+  Object.assign(adb.keyguard, { screenState: "SCREEN_STATE_OFF", showing: true, inputRestricted: true });
+  const diagnosis = await service.doctor(undefined, selected.targetToken);
+  assert.deepEqual(diagnosis.deviceStatus, {
+    status: "ok", screenState: "asleep", lockState: "locked",
+    secure: false, userId: 0, readyForInteraction: false, error: null,
+  });
+  assert.equal((await service.doctor()).deviceStatus, undefined, "host-only doctor must not implicitly target the selected phone");
+  assert.equal(adb.calls.some((call) => call.args.includes("screencap") || call.args.includes("uiautomator") || call.args.includes("activities")), false);
+  assert.equal(adb.inputs.length, 0);
+  const replacement = await service.selectDevice(USB);
+  await assert.rejects(service.doctor(undefined, selected.targetToken), hasCode("STALE_TARGET"));
+  monitors.disconnect();
+  await assert.rejects(service.doctor(undefined, replacement.targetToken), hasCode("TRANSPORT_LOST"));
+});
+
+test("not-ready observations return status without capturing lock-screen content in either screenshot mode", async (t) => {
+  const { adb, service } = harness(t);
+  const { targetToken } = await service.selectDevice(USB);
+  for (const includeScreenshot of [true, false]) {
+    for (const screenState of ["SCREEN_STATE_OFF", "SCREEN_STATE_TURNING_ON", "SCREEN_STATE_TURNING_OFF", "SCREEN_STATE_ON"]) {
+      Object.assign(adb.keyguard, { screenState, showing: true, inputRestricted: true, secure: screenState === "SCREEN_STATE_ON" });
+      adb.calls = [];
+      const { observation, image } = await service.observe(targetToken, undefined, includeScreenshot);
+      assert.equal(observation.deviceStatus?.readyForInteraction, false);
+      assert.equal(observation.deviceStatus?.lockState, "locked");
+      assert.equal(observation.screenshot.status, "skipped");
+      assert.equal(observation.hierarchy.status, "unavailable");
+      assert.equal(observation.hierarchy.error?.code, adb.keyguard.secure ? "MANUAL_UNLOCK_REQUIRED" : "DEVICE_NOT_READY");
+      assert.equal(observation.display, null);
+      assert.deepEqual(observation.elements, []);
+      assert.deepEqual(observation.windows, []);
+      assert.equal(image, null);
+      assert.equal(adb.calls.some((call) => call.args.includes("screencap") || call.args.includes("uiautomator") || call.args.includes("activities")), false);
+      assert.equal(adb.inputs.length, 0);
+    }
+  }
+  adb.keyguard.secure = false;
+  await service.wake(targetToken);
+  assert.equal((await service.observe(targetToken)).observation.deviceStatus?.readyForInteraction, true);
+});
+
+test("unavailable readiness stays unknown and never captures or silently claims an unlocked phone", async (t) => {
+  const { adb, monitors, service } = harness(t);
+  const { targetToken } = await service.selectDevice(USB);
+  for (const failure of ["malformed", "timeout"] as const) {
+    adb.handler = (call) => {
+      if (!call.args.includes("policy")) return undefined;
+      if (failure === "timeout") throw new MobileUseError("ADB_TIMEOUT", "Read timed out.", "Check the phone manually.");
+      return Buffer.from("private unrecognized OEM diagnostics");
+    };
+    const status = (await service.doctor(undefined, targetToken)).deviceStatus;
+    assert.equal(status?.status, "unavailable");
+    assert.equal(status?.screenState, "unknown");
+    assert.equal(status?.lockState, "unknown");
+    assert.equal(status?.secure, null);
+    assert.equal(status?.readyForInteraction, false);
+    assert.equal(status?.error?.code, failure === "timeout" ? "ADB_TIMEOUT" : "KEYGUARD_STATE_UNAVAILABLE");
+    const screen = await service.observe(targetToken);
+    assert.equal(screen.image, null);
+    assert.deepEqual(screen.observation.deviceStatus, status);
+    assert.doesNotMatch(JSON.stringify(screen), /private unrecognized OEM diagnostics/);
+  }
+  assert.equal(adb.calls.some((call) => call.args.includes("screencap") || call.args.includes("uiautomator")), false);
+  assert.equal(adb.inputs.length, 0);
+  const controller = new AbortController();
+  adb.handler = (call) => {
+    if (call.args.includes("policy")) controller.abort();
+    return undefined;
+  };
+  await assert.rejects(service.doctor(controller.signal, targetToken), hasCode("CANCELLED"));
+  adb.handler = (call) => {
+    if (call.args.includes("policy")) {
+      monitors.disconnect();
+      throw new MobileUseError("ADB_TIMEOUT", "Interrupted status read.", "Recheck.");
+    }
+    return undefined;
+  };
+  await assert.rejects(service.observe(targetToken), hasCode("TRANSPORT_LOST"));
+});
+
+test("screen content is withheld when the phone locks or readiness becomes unknown during capture", async (t) => {
+  const { adb, service } = harness(t);
+  const { targetToken } = await service.selectDevice(USB);
+  for (const change of ["locked", "unknown"]) {
+    Object.assign(adb.keyguard, { showing: false, secure: false, screenState: "SCREEN_STATE_ON" });
+    adb.handler = (call) => {
+      if (call.args.includes("uiautomator")) {
+        if (change === "locked") Object.assign(adb.keyguard, { showing: true, secure: true });
+        else adb.keyguard.screenState = "OEM_UNKNOWN";
+      }
+      return undefined;
+    };
+    const screen = await service.observe(targetToken);
+    assert.equal(screen.observation.deviceStatus?.lockState, change === "locked" ? "locked" : "unknown");
+    assert.equal(screen.observation.hierarchy.error?.code, change === "locked" ? "MANUAL_UNLOCK_REQUIRED" : "KEYGUARD_STATE_UNAVAILABLE");
+    assert.equal(screen.observation.screenshot.status, "unavailable", "a captured but withheld image must not be reported as skipped");
+    assert.equal(screen.image, null);
+    assert.deepEqual(screen.observation.elements, []);
+    assert.deepEqual(screen.observation.windows, []);
+  }
+});
+
+test("user changes during capture or immediately before input reject the interaction", async (t) => {
+  const { adb, service } = harness(t);
+  const { selected, screen } = await ready(service);
+  let checks = 0;
+  adb.handler = (call) => {
+    if (call.args.includes("policy") && ++checks === 3) adb.keyguard.userId = 10;
+    return undefined;
+  };
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "key", key: "HOME" }), hasCode("STALE_OBSERVATION"));
+  assert.equal(adb.inputs.length, 0);
+  adb.keyguard.userId = 0;
+  adb.handler = (call) => {
+    if (call.args.includes("uiautomator")) adb.keyguard.userId = 10;
+    return undefined;
+  };
+  await assert.rejects(service.observe(selected.targetToken), hasCode("STALE_OBSERVATION"));
+});
+
+test("navigation rechecks readiness immediately before dispatch without implicitly waking", async (t) => {
+  const { adb, service } = harness(t);
+  const { selected, screen } = await ready(service);
+  let checks = 0;
+  adb.handler = (call) => {
+    if (call.args.includes("policy") && ++checks === 3) adb.keyguard.screenState = "SCREEN_STATE_OFF";
+    return undefined;
+  };
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "key", key: "HOME" }), hasCode("DEVICE_NOT_READY"));
+  assert.equal(checks, 3);
+  assert.equal(adb.inputs.length, 0);
+  await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "key", key: "HOME" }), hasCode("STALE_OBSERVATION"));
+});
+
+test("readiness changes after input are returned without exposing lock-screen content", async (t) => {
+  const { adb, service } = harness(t);
+  const { selected, screen } = await ready(service);
+  adb.handler = (call) => {
+    if (call.options.mutating) Object.assign(adb.keyguard, { showing: true, secure: true });
+    return undefined;
+  };
+  const result = await service.act(selected.targetToken, screen.observation.observationId, { kind: "key", key: "HOME" });
+  assert.equal(result.dispatchStatus, "dispatched");
+  assert.equal(result.after?.observation.deviceStatus?.lockState, "locked");
+  assert.equal(result.after?.image, null);
+  assert.deepEqual(result.after?.observation.elements, []);
+  assert.equal(adb.inputs.length, 1);
+});
+
 test("a semantic tap is revalidated, returns a new observation, and never claims semantic success", async (t) => {
   const { adb, service } = harness(t);
   const { selected, screen } = await ready(service);

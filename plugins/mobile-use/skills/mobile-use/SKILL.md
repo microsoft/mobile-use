@@ -204,21 +204,21 @@ pause the blocked action when genuine authorization is missing.
    silently select the first entry.
 3. Call `mobile_select_device` with the chosen endpoint ID. Keep its target token
    for this server session. Unknown/legacy wireless endpoints are not eligible.
-4. Only when the user explicitly requests waking or dismissing an unsecured
-   lock screen, call `mobile_wake` with that token. It needs no observation and
-   returns no screenshot or hierarchy. It invalidates earlier observations and
-   verifies the screen is on and the keyguard is gone. `MANUAL_UNLOCK_REQUIRED`
-   means the user must authenticate; `KEYGUARD_STATE_UNAVAILABLE` or `WAKE_FAILED`
-   means the user must wake/unlock manually. Never ask for or enter credentials,
-   attempt a lock-screen swipe as a fallback, change security settings, or
-   automatically replay an uncertain wake. Do not capture authentication UI.
-5. Call `mobile_observe` on approved, non-sensitive content. Inspect its image,
-   hierarchy and `displayState` statuses, warnings, display, and element
-   references. When the user requests no screenshots, set `includeScreenshot: false`.
-   This never captures an image and returns `screenshot.status: skipped`;
-   foreground-app metadata is also read to guard Unicode input against app/user changes.
-   inspect the exposed UI text, labels, resource IDs, and element references.
-   The default is true, retaining image-plus-hierarchy observation.
+4. Before app launch/navigation, use fresh `deviceStatus` or `mobile_doctor` with
+   `targetToken` if supported; older builds need manual awake/unlocked confirmation.
+   Read `deviceStatus`: `screenState` (awake/asleep/waking/sleeping/unknown),
+   `lockState` (locked/unlocked/unknown), `secure`, `userId`, `readyForInteraction`.
+   Unknown is never ready; configured `secure` does not mean currently locked.
+   If needed, ask once for `mobile_wake` permission unless already authorized.
+   Recheck transitions; never wake implicitly. Wake captures no content and
+   invalidates observations. Secure/SIM locks (`MANUAL_UNLOCK_REQUIRED`) require
+   manual unlock; unknown state/failed wake needs manual wake/unlock. Never request
+   credentials, swipe lock screens, change security, retry uncertain wake or capture authentication UI.
+5. Observe approved non-sensitive content and inspect `deviceStatus`, image,
+   hierarchy, `displayState`, warnings and elements. Unready/unknown status
+   withholds content and blocks launch/input. Images default on; to skip them,
+   set `includeScreenshot: false` (`screenshot.status: skipped`); foreground-app
+   metadata still guards input against app/user changes.
    Inspect `hierarchyScope` and `windows`: interactive-window capture includes
    primary-display floating controls even when their window is not focused.
    An active-only OEM response or an unavailable window root is reported explicitly.
