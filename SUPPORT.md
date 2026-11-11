@@ -2,8 +2,8 @@
 
 ## How to file issues and get help  
 
-This is an experimental Windows/Android real-device POC with a source-only,
-fixture-validated iOS/WDA adapter in development and best-effort GitHub issue
+This is an experimental Windows/Android real-device POC with a fixture-validated
+iOS/WDA adapter in development and best-effort GitHub issue
 support, not a production-supported Microsoft product. Search
 [existing issues](https://github.com/microsoft/mobile-use/issues) before opening
 a bug, question, or feature request. Follow the [README](README.md) for supported
@@ -18,13 +18,13 @@ hardware. Use a device alias and sanitized steps. Distinguish failed discovery
 from a successful empty inventory, dispatch from verified UI state, and
 fixture-only results from actual App/USB/wireless results.
 
-For source-only iOS development, include the source revision, iOS/WDA versions,
+For experimental iOS development, include the source revision, iOS/WDA versions,
 external/managed runtime mode, host OS/go-ios version, stable error code, and
 whether the failure concerns USB/tunnel, Runner installation/trust/start/stop,
-user-managed forwarding, session selection, capture or input. The checked-in plugin does not
-include this adapter. Personal-signing/onboarding support and real iOS hardware
-acceptance are pending; see [iOS MVP status](docs/ios-mvp.md). Never post signing
-materials, device identifiers or unreviewed WDA responses/logs.
+user-managed forwarding, session selection, capture or input. The checked-in
+plugin includes this experimental adapter, but personal-signing/onboarding support
+and real iOS hardware acceptance are pending; see [iOS MVP status](docs/ios-mvp.md).
+Never post signing materials, device identifiers or unreviewed WDA responses/logs.
 
 Do not post pairing codes, private ADB keys, credentials, raw serials/IPs,
 account/app data, environment dumps, command traces with input text, or

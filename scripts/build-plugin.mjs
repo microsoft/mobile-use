@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { isBuiltin } from "node:module";
 import path from "node:path";
@@ -7,11 +7,11 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pluginRoot = path.join(root, "plugins", "mobile-use");
-const output = path.join(root, "dist", "mobile-use");
 const args = process.argv.slice(2);
-if (args.length > 1 || args.some((arg) => arg !== "--marketplace")) {
-  throw new Error("Usage: node scripts\\build-plugin.mjs [--marketplace]");
+if (args.length > 1 || args.some((arg) => arg !== "--check" && arg !== "--marketplace")) {
+  throw new Error("Usage: node scripts\\build-plugin.mjs [--check | --marketplace]");
 }
+const check = args.includes("--check");
 const readJson = async (file) => JSON.parse(await readFile(file, "utf8"));
 const packageInfo = await readJson(path.join(root, "package.json"));
 const manifest = await readJson(path.join(pluginRoot, "plugin.json"));
@@ -27,17 +27,22 @@ if (
   throw new Error("Plugin manifest, schema, or package version is inconsistent.");
 }
 
-await rm(output, { recursive: true, force: true });
-await mkdir(path.join(output, "server"), { recursive: true });
-for (const relative of ["plugin.json", "mcp.json", "skills"]) {
-  await cp(path.join(pluginRoot, relative), path.join(output, relative), { recursive: true });
+for (const relative of [
+  "plugin.json",
+  "mcp.json",
+  path.join("skills", "mobile-use", "SKILL.md"),
+  path.join("skills", "mobile-use", "references", "screen-recording.md"),
+]) {
+  if (!existsSync(path.join(pluginRoot, relative))) {
+    throw new Error(`Plugin artifact is incomplete: ${relative}.`);
+  }
 }
-await cp(path.join(root, "LICENSE"), path.join(output, "LICENSE"));
 
 const result = await build({
   absWorkingDir: root,
   entryPoints: [path.join(root, "src", "index.ts")],
-  outfile: path.join(output, "server", "index.mjs"),
+  outfile: path.join(pluginRoot, "server", "index.mjs"),
+  write: false,
   bundle: true,
   platform: "node",
   target: "node22",
@@ -49,6 +54,9 @@ const result = await build({
   },
   logLevel: "warning",
 });
+if (result.outputFiles.length !== 1) {
+  throw new Error("Plugin build did not produce exactly one server bundle.");
+}
 
 for (const bundle of Object.values(result.metafile.outputs)) {
   for (const dependency of bundle.imports) {
@@ -108,30 +116,45 @@ for (const [directory, dependency] of [...dependencies].sort((a, b) =>
     notices += `\n--- ${file} ---\n${await readFile(path.join(directory, file), "utf8")}`;
   }
 }
-await writeFile(path.join(output, "THIRD_PARTY_NOTICES"), notices);
+// The tracked plugin uses LF even when source files are checked out with CRLF.
+const generated = [
+  [path.join("server", "index.mjs"), result.outputFiles[0].text],
+  ["LICENSE", await readFile(path.join(root, "LICENSE"), "utf8")],
+  ["THIRD_PARTY_NOTICES", notices],
+].map(([relative, contents]) => [relative, contents.replace(/\r\n/g, "\n")]);
 
-for (const relative of [
-  "plugin.json",
-  "mcp.json",
-  path.join("server", "index.mjs"),
-  path.join("skills", "mobile-use", "SKILL.md"),
-  path.join("skills", "mobile-use", "references", "screen-recording.md"),
-  "LICENSE",
-  "THIRD_PARTY_NOTICES",
-]) {
-  if (!existsSync(path.join(output, relative))) {
-    throw new Error(`Plugin artifact is incomplete: ${relative}.`);
+if (check) {
+  const expectedEntries = new Set(["plugin.json", "mcp.json", "skills", "server", "LICENSE", "THIRD_PARTY_NOTICES"]);
+  const differences = (await readdir(pluginRoot)).filter((entry) => !expectedEntries.has(entry));
+  try {
+    for (const entry of await readdir(path.join(pluginRoot, "server"))) {
+      if (entry !== "index.mjs") differences.push(path.join("server", entry));
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+    differences.push("server");
   }
-}
-console.log(`Built dist\\mobile-use (${dependencies.size} bundled dependencies).`);
-
-if (args.includes("--marketplace")) {
+  for (const [relative, expected] of generated) {
+    try {
+      const actual = await readFile(path.join(pluginRoot, relative), "utf8");
+      if (actual.replace(/\r\n/g, "\n") !== expected) differences.push(relative);
+    } catch (error) {
+      if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+      differences.push(relative);
+    }
+  }
+  if (differences.length > 0) {
+    throw new Error(
+      `Plugin package is out of date: ${differences.join(", ")}. Run npm run build:plugin and commit the regenerated assets in plugins\\mobile-use.`,
+    );
+  }
+  console.log(`Verified plugins\\mobile-use (${dependencies.size} bundled dependencies).`);
+} else {
+  await rm(path.join(pluginRoot, "server"), { recursive: true, force: true });
   await rm(path.join(pluginRoot, "licenses"), { recursive: true, force: true });
-  for (const relative of ["server", "LICENSE", "THIRD_PARTY_NOTICES"]) {
-    const source = path.join(output, relative);
-    const destination = path.join(pluginRoot, relative);
-    await rm(destination, { recursive: true, force: true });
-    await cp(source, destination, { recursive: true });
+  await mkdir(path.join(pluginRoot, "server"), { recursive: true });
+  for (const [relative, contents] of generated) {
+    await writeFile(path.join(pluginRoot, relative), contents);
   }
-  console.log("Updated generated assets in plugins\\mobile-use. Authored manifests and skills are unchanged.");
+  console.log(`Built plugins\\mobile-use (${dependencies.size} bundled dependencies). Authored manifests and skills are unchanged.`);
 }
