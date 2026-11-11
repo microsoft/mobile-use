@@ -49,6 +49,8 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.match(skill, /Developer options/);
   assert.match(skill, /permission to call \*\*`mobile_start_adb_server`\*\*/);
   assert.match(skill, /Doctor and inventory never invoke startup/);
+  assert.match(skill, /Before app launch\/navigation, use fresh `deviceStatus`/);
+  assert.match(skill, /ask once for `mobile_wake` permission/);
   assert.match(skill, /includeScreenshot: false/);
   assert.match(skill, /Hierarchy-only actions never\s+capture screenshots/);
   assert.match(skill, /kind: "double_tap"/);
@@ -273,6 +275,7 @@ for (const mode of ["legacy", "auto"]) {
     await client.connect(transport);
     assert.equal(client.getServerVersion()?.name, "mobile-use");
     assert.match(client.getInstructions() ?? "", /On first use in each session, call mobile_doctor/);
+    assert.match(client.getInstructions() ?? "", /check deviceStatus from a fresh observation/);
     if (mode === "auto") assert.ok(client.getDiscoverResult(), "modern discover negotiation must actually succeed");
     if (mode === "legacy") await client.ping();
     const tools = await client.listTools();

@@ -655,9 +655,8 @@ Helper-backed double taps and Unicode input check readiness and the observed
 Android user again after helper verification, immediately before input.
 Recheck transitioning displays. If wake/unsecured dismissal is needed,
 proactively request explicit `mobile_wake` authorization once unless already
-granted; secure authentication remains manual. While the marketplace package
-is frozen, the source-built server supplies this workflow in its instructions
-and tool descriptions.
+granted; secure authentication remains manual. The packaged skill and server
+instructions describe this workflow.
 
 After explicit permission to wake the selected phone, call `mobile_wake` with
 `targetToken`. Like app-management tools, it does not require an observation:
