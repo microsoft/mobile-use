@@ -28,6 +28,10 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.equal(manifest.license, "MIT");
   assert.deepEqual(manifest.author, { name: "Microsoft", url: "https://github.com/microsoft" });
   assert.equal(manifest.repository, "https://github.com/microsoft/mobile-use");
+  const logo = manifest.extensions?.["com.github.copilot"]?.logo;
+  assert.equal(logo, "assets/mobile-use.png");
+  const image = await readFile(path.join(artifact, ...logo.split("/")));
+  assert.deepEqual(image.subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
   assert.equal(mcp.$schema, "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json");
   assert.deepEqual(Object.keys(mcp).sort(), ["$schema", "mcpServers"]);
   assert.deepEqual(Object.keys(mcp.mcpServers), ["mobile-use"]);
@@ -158,7 +162,7 @@ test("plugin generation preserves authored files and detects stale assets withou
   const scripts = (await json(path.join(fixture, "package.json"))).scripts;
   assert.equal(scripts["build:plugin"], scripts["build:marketplace"]);
   const authoredPaths = [
-    "plugin.json", "mcp.json",
+    "plugin.json", "mcp.json", path.join("assets", "mobile-use.png"),
     path.join("skills", "mobile-use", "SKILL.md"),
     path.join("skills", "mobile-use", "references", "screen-recording.md"),
   ];
@@ -196,6 +200,13 @@ test("plugin generation preserves authored files and detects stale assets withou
   for (const relative of ["LICENSE", "THIRD_PARTY_NOTICES"]) {
     assert.doesNotMatch(await readFile(path.join(published, relative), "utf8"), /\r\n/);
   }
+  runBuild(["--check"]);
+
+  const logoPath = path.join(published, "assets", "mobile-use.png");
+  const logo = await readFile(logoPath);
+  await rm(logoPath);
+  runBuild(["--check"], /Plugin artifact is incomplete: assets[\\/]mobile-use\.png/);
+  await writeFile(logoPath, logo);
   runBuild(["--check"]);
 
   const bundlePath = path.join(published, "server", "index.mjs");

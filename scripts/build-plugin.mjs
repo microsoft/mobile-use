@@ -30,6 +30,7 @@ if (
 for (const relative of [
   "plugin.json",
   "mcp.json",
+  path.join("assets", "mobile-use.png"),
   path.join("skills", "mobile-use", "SKILL.md"),
   path.join("skills", "mobile-use", "references", "screen-recording.md"),
 ]) {
@@ -124,7 +125,7 @@ const generated = [
 ].map(([relative, contents]) => [relative, contents.replace(/\r\n/g, "\n")]);
 
 if (check) {
-  const expectedEntries = new Set(["plugin.json", "mcp.json", "skills", "server", "LICENSE", "THIRD_PARTY_NOTICES"]);
+  const expectedEntries = new Set(["plugin.json", "mcp.json", "assets", "skills", "server", "LICENSE", "THIRD_PARTY_NOTICES"]);
   const differences = (await readdir(pluginRoot)).filter((entry) => !expectedEntries.has(entry));
   try {
     for (const entry of await readdir(path.join(pluginRoot, "server"))) {
@@ -156,5 +157,5 @@ if (check) {
   for (const [relative, contents] of generated) {
     await writeFile(path.join(pluginRoot, relative), contents);
   }
-  console.log(`Built plugins\\mobile-use (${dependencies.size} bundled dependencies). Authored manifests and skills are unchanged.`);
+  console.log(`Built plugins\\mobile-use (${dependencies.size} bundled dependencies). Authored manifests, assets, and skills are unchanged.`);
 }
