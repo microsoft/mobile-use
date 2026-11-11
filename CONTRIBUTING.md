@@ -651,9 +651,13 @@ rejects the capture. These checks are non-atomic and cannot prevent a lock
 transition between reads. App launch and every UI action recheck readiness
 before dispatch, failing with `DEVICE_NOT_READY`, `MANUAL_UNLOCK_REQUIRED`, or
 the diagnostic error without implicitly waking, unlocking, or retrying.
+Helper-backed double taps and Unicode input check readiness and the observed
+Android user again after helper verification, immediately before input.
 Recheck transitioning displays. If wake/unsecured dismissal is needed,
 proactively request explicit `mobile_wake` authorization once unless already
-granted; secure authentication remains manual.
+granted; secure authentication remains manual. While the marketplace package
+is frozen, the source-built server supplies this workflow in its instructions
+and tool descriptions.
 
 After explicit permission to wake the selected phone, call `mobile_wake` with
 `targetToken`. Like app-management tools, it does not require an observation:

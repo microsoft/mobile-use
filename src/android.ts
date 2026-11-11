@@ -620,8 +620,11 @@ export class AndroidBackend {
     return prepared;
   }
 
-  async doubleTap(x: number, y: number, delayMs: number, signal?: AbortSignal): Promise<number> {
-    return doubleTap((args, options) => this.command(args, options), this.gestureHelperPath, x, y, delayMs, signal);
+  async doubleTap(x: number, y: number, delayMs: number, signal?: AbortSignal, expectedUserId?: number): Promise<number> {
+    return doubleTap(
+      (args, options) => this.command(args, options), this.gestureHelperPath, x, y, delayMs,
+      () => this.requireInteractive(signal, expectedUserId), signal,
+    );
   }
 
   async swipe(from: { x: number; y: number }, to: { x: number; y: number }, durationMs: number, signal?: AbortSignal): Promise<void> {
@@ -635,13 +638,16 @@ export class AndroidBackend {
     return prepared;
   }
 
-  async typeText(text: string, signal?: AbortSignal, field?: ScreenElement, foreground?: ForegroundApp): Promise<void> {
+  async typeText(text: string, signal?: AbortSignal, field?: ScreenElement, foreground?: ForegroundApp, expectedUserId?: number): Promise<void> {
     validateText(text);
     if (!isAdbText(text)) {
       if (!field || !foreground) {
         throw new MobileUseError("ELEMENT_CHANGED", "Unicode input requires a verified native field and foreground app.", "Observe and focus an approved non-password EditText again.");
       }
-      await appendUnicodeText((args, options) => this.command(args, options), this.textHelperPath, text, field, foreground, signal);
+      await appendUnicodeText(
+        (args, options) => this.command(args, options), this.textHelperPath, text, field, foreground,
+        () => this.requireInteractive(signal, expectedUserId ?? foreground.userId), signal,
+      );
       return;
     }
     // The allowlist excludes shell syntax and literal %, so only Android's space encoding is needed.

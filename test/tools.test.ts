@@ -134,6 +134,8 @@ for (const mode of ["legacy", "auto"] as const) {
   test(`onboarding scopes session consent without impersonating host permissions over ${mode}`, async (t) => {
     const { client } = await fixture(t, mode);
     const instructions = client.getInstructions() ?? "";
+    assert.match(instructions, /Before opening an app or starting navigation, check deviceStatus/);
+    assert.match(instructions, /proactively ask once for explicit mobile_wake authorization/);
     assert.match(instructions, /mobile_tap for tap\/long_press\/double_tap/);
     assert.match(instructions, /Never substitute it for tap automatically/);
     assert.match(instructions, /window IDs are capture-local/);

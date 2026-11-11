@@ -64,7 +64,7 @@ function helperFailurePhase(response: string): string | undefined {
 
 export async function appendUnicodeText(
   command: DeviceCommand, remotePath: string | undefined, text: string,
-  field: ScreenElement, foreground: ForegroundApp, signal?: AbortSignal,
+  field: ScreenElement, foreground: ForegroundApp, ensureReady: () => Promise<void>, signal?: AbortSignal,
 ): Promise<void> {
   validateText(text);
   if (!remotePath) {
@@ -97,6 +97,7 @@ export async function appendUnicodeText(
   const payload = Buffer.concat(parts).toString("base64");
   if (payload.length > 32768) throw new MobileUseError("INVALID_INPUT", "The text target exceeds the helper's payload limit.", "Use a shorter, observable native text field.");
   await verifyHelper(command, helper, remotePath, signal);
+  await ensureReady();
   // Only base64 crosses the device shell; text and field metadata are never shell syntax.
   const response = (await command([
     "shell", `CLASSPATH=${remotePath}`, "app_process", "/", helper.mainClass, payload,

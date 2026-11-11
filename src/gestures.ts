@@ -27,7 +27,7 @@ export async function prepareGestures(command: DeviceCommand, signal?: AbortSign
 
 export async function doubleTap(
   command: DeviceCommand, remotePath: string | undefined,
-  x: number, y: number, delayMs: number, signal?: AbortSignal,
+  x: number, y: number, delayMs: number, ensureReady: () => Promise<void>, signal?: AbortSignal,
 ): Promise<number> {
   if (!remotePath) {
     throw new MobileUseError(
@@ -40,6 +40,7 @@ export async function doubleTap(
     throw new MobileUseError("INVALID_INPUT", "Invalid bounded gesture arguments.", "Use in-bounds integer coordinates and delayMs from 0 to 250.");
   }
   await verifyHelper(command, helper, remotePath, signal);
+  await ensureReady();
   const response = await command([
     "shell", `CLASSPATH=${remotePath}`, "app_process", "/", helperClass, String(x), String(y), String(delayMs),
   ], { mutating: true, ...(signal ? { signal } : {}) });

@@ -333,6 +333,55 @@ test("navigation rechecks readiness immediately before dispatch without implicit
   await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "key", key: "HOME" }), hasCode("STALE_OBSERVATION"));
 });
 
+for (const helper of ["gestures", "text"] as const) {
+  test(`${helper} input rechecks readiness and user after helper verification`, async (t) => {
+    const { adb, service } = harness(t);
+    const { targetToken } = await service.selectDevice(USB);
+    if (helper === "gestures") await service.prepareGestures(targetToken);
+    else {
+      adb.xml = hierarchy(editField());
+      await service.prepareTextInput(targetToken);
+    }
+    const changes = [
+      { code: "DEVICE_NOT_READY", apply: () => { adb.keyguard.screenState = "SCREEN_STATE_OFF"; } },
+      { code: "MANUAL_UNLOCK_REQUIRED", apply: () => {
+        Object.assign(adb.keyguard, { showing: true, inputRestricted: true, secure: true });
+      } },
+      { code: "STALE_OBSERVATION", apply: () => { adb.keyguard.userId = 10; } },
+      { code: "KEYGUARD_STATE_UNAVAILABLE", apply: () => { adb.keyguard.screenState = "OEM_UNKNOWN"; } },
+    ] as const;
+    for (const change of changes) {
+      Object.assign(adb.keyguard, {
+        showing: false, secure: false, simSecure: false, inputRestricted: false,
+        screenState: "SCREEN_STATE_ON", userId: 0,
+      });
+      adb.handler = undefined;
+      const screen = await service.observe(targetToken, undefined, false);
+      assert.equal(screen.observation.deviceStatus?.userId, 0);
+      let checksumReads = 0;
+      const expectedReads = helper === "text" ? 2 : 1;
+      adb.handler = (call) => {
+        if (call.args[3] === "sha256sum" && call.args[4]?.endsWith(`/${helper}.dex`)) {
+          if (++checksumReads === expectedReads) change.apply();
+        }
+        return undefined;
+      };
+      const action = helper === "gestures"
+        ? { kind: "double_tap", target: { elementRef: "e1" } }
+        : { kind: "type_text", text: "中文" };
+      await assert.rejects(service.act(targetToken, screen.observation.observationId, action), (error: unknown) => {
+        assert.ok(error instanceof MobileUseError);
+        assert.equal(error.code, change.code);
+        assert.equal(error.actionMayHaveRun, false);
+        return true;
+      });
+      assert.equal(checksumReads, expectedReads);
+      assert.equal(adb.inputs.length, 0);
+      await assert.rejects(service.act(targetToken, screen.observation.observationId, action), hasCode("STALE_OBSERVATION"));
+    }
+  });
+}
+
 test("readiness changes after input are returned without exposing lock-screen content", async (t) => {
   const { adb, service } = harness(t);
   const { selected, screen } = await ready(service);

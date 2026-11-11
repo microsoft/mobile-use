@@ -506,7 +506,15 @@ export class MobileUseService implements MobileService {
   }
 
   private async dispatch(state: TargetState, action: MobileAction, previous: Snapshot, live: Snapshot, signal?: AbortSignal): Promise<number | undefined> {
-    await state.backend.requireInteractive(signal, previous.screen.observation.deviceStatus?.userId ?? undefined);
+    const observedStatus = previous.screen.observation.deviceStatus;
+    if (observedStatus?.status !== "ok") {
+      throw (observedStatus && deviceReadinessError(observedStatus)) ?? new MobileUseError(
+        "DEVICE_NOT_READY", "The original observation did not establish the Android user.",
+        "Inspect a fresh observation with verified device readiness before input.",
+      );
+    }
+    const expectedUserId = observedStatus.userId;
+    await state.backend.requireInteractive(signal, expectedUserId);
     const old = previous.screen.observation;
     const current = live.screen.observation;
     if (old.displayState.status !== "ok" || current.displayState.status !== "ok" ||
@@ -669,7 +677,7 @@ export class MobileUseService implements MobileService {
           point = target;
         }
         requirePoint(point, current.display);
-        if (action.kind === "double_tap") return state.backend.doubleTap(point.x, point.y, action.delayMs, signal);
+        if (action.kind === "double_tap") return state.backend.doubleTap(point.x, point.y, action.delayMs, signal, expectedUserId);
         else if (action.kind === "long_press") await state.backend.longPress(point.x, point.y, signal);
         else await state.backend.tap(point.x, point.y, signal);
         break;
@@ -720,7 +728,7 @@ export class MobileUseService implements MobileService {
             throw new MobileUseError("ELEMENT_CHANGED", "The foreground app or Android user could not be matched before Unicode input.", "Observe the approved text field again.");
           }
         }
-        await state.backend.typeText(action.text, signal, field, foreground);
+        await state.backend.typeText(action.text, signal, field, foreground, expectedUserId);
         break;
       }
       case "key":
