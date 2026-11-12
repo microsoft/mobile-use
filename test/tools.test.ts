@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { isRecord } from "../src/errors.js";
-import { mp4, USB } from "./helpers.js";
+import { mp4, USB, WIFI } from "./helpers.js";
 
 async function fixture(t: TestContext, mode: "legacy" | "auto", scenario = "") {
   const transport = new StdioClientTransport({
@@ -718,6 +718,15 @@ for (const mode of ["legacy", "auto"] as const) {
     const selection = tools.tools.find((tool) => tool.name === "mobile_select_device");
     assert.equal(selection?.annotations?.readOnlyHint, true);
     assert.equal(selection?.annotations?.destructiveHint, false);
+    for (const name of ["mobile_list_devices", "mobile_select_device"]) {
+      const description = tools.tools.find((tool) => tool.name === name)?.description ?? "";
+      assert.match(description, /sole endpoint with selectable: true for initial selection without asking a selection question/);
+      assert.match(description, /With multiple selectable endpoints, ask which exact endpoint/);
+      assert.match(description, /Honor any user-specified device or connection/);
+      assert.match(description, /not automatic reselection after transport loss or server restart/);
+    }
+    assert.match(client.getInstructions() ?? "", /sole endpoint with selectable: true for initial selection without asking a selection question/);
+    assert.doesNotMatch(client.getInstructions() ?? "", /until an explicit target and safe task are authorized/);
     for (const name of ["mobile_tap", "mobile_input_text"]) {
       const tool = tools.tools.find((entry) => entry.name === name);
       assert.deepEqual(tool?.inputSchema.required, ["targetToken", "action"]);
@@ -729,8 +738,13 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.equal(startup?.annotations?.readOnlyHint, false);
     assert.equal(startup?.annotations?.idempotentHint, false);
     assert.deepEqual(startup?.inputSchema.properties, {});
-    assert.match(startup?.description ?? "", /user explicitly approves/);
-    assert.match(client.getInstructions() ?? "", /ask for explicit permission to use mobile_start_adb_server/);
+    assert.match(startup?.description ?? "", /No separate conversational approval is required/);
+    assert.match(startup?.description ?? "", /Copilot's native permissions still apply/);
+    assert.match(client.getInstructions() ?? "", /call mobile_start_adb_server without a separate conversational approval question/);
+    assert.match(client.getInstructions() ?? "", /Doctor and discovery remain read-only; startup uses the dedicated tool/);
+    assert.match(client.getInstructions() ?? "", /Permission for a task on the selected Android phone covers waking and verified unsecured-keyguard dismissal/);
+    assert.match(client.getInstructions() ?? "", /no separate wake-specific request or conversational approval is needed/);
+    assert.doesNotMatch(client.getInstructions() ?? "", /Waking requires exact explicit authorization/);
     for (const name of ["mobile_tap", "mobile_swipe", "mobile_press_key", "mobile_input_text", "mobile_app_management"]) {
       const tool = tools.tools.find((entry) => entry.name === name);
       assert.equal(tool?.annotations?.destructiveHint, true);
@@ -741,6 +755,11 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.equal(wake?.annotations?.destructiveHint, true);
     assert.equal(wake?.annotations?.idempotentHint, false);
     assert.deepEqual(wake?.inputSchema.required, ["targetToken"]);
+    assert.match(wake?.description ?? "", /Task permission covers this preparation; no separate wake-specific request or conversational approval is needed/);
+    assert.match(wake?.description ?? "", /Ask permission only if the task or target has not been authorized/);
+    assert.match(wake?.description ?? "", /Use this tool before asking the user to wake or dismiss an unsecured lock screen manually/);
+    assert.match(wake?.description ?? "", /MANUAL_UNLOCK_REQUIRED requires user authentication/);
+    assert.doesNotMatch(wake?.description ?? "", /Only when explicitly requested|The user must wake and unlock manually/);
     const doctor = payload(await client.callTool({ name: "mobile_doctor", arguments: {} }));
     assert.equal(doctor.platform, "android");
     assert.equal(doctor.status, "ready");
@@ -753,7 +772,11 @@ for (const mode of ["legacy", "auto"] as const) {
     assert.match(phoneGuide, /https:\/\/developer\.android\.com\/studio\/debug\/dev-options/);
     const list = payload(await client.callTool({ name: "mobile_list_devices", arguments: {} }));
     assert.ok(Array.isArray(list.devices) && list.devices.length === 2);
-    assert.match(setupSteps(list, "select-device"), /Ask which exact endpoint/);
+    const selectionSteps = setupSteps(list, "select-device");
+    assert.match(selectionSteps, /Multiple endpoints are selectable/);
+    assert.match(selectionSteps, /Ask which exact endpoint/);
+    assert.match(selectionSteps, /USB and Wi-Fi count separately even on the same phone/);
+    assert.doesNotMatch(selectionSteps, /Only one endpoint is selectable/);
     const unselected = await client.callTool({ name: "mobile_observe", arguments: { targetToken: randomUUID() } });
     assert.equal(unselected.isError, true);
     const unselectedError = payload(unselected).error;
@@ -898,6 +921,45 @@ for (const mode of ["legacy", "auto"] as const) {
     });
   }
 
+  for (const scenario of ["single-usb", "single-wireless", "single-selectable"] as const) {
+    test(`sole selectable endpoint needs no selection question (${scenario}, ${mode})`, async (t) => {
+      const { client } = await fixture(t, mode, scenario);
+      await client.callTool({ name: "mobile_doctor", arguments: {} });
+      const listed = payload(await client.callTool({ name: "mobile_list_devices", arguments: {} }));
+      assert.ok(Array.isArray(listed.devices));
+      assert.equal(listed.devices.length, scenario === "single-selectable" ? 5 : 1);
+      const selectable = listed.devices.filter((device: unknown) => isRecord(device) && device.selectable === true);
+      assert.equal(selectable.length, 1);
+      const endpoint: unknown = selectable[0];
+      assert.ok(isRecord(endpoint));
+      assert.equal(endpoint.endpointId, scenario === "single-wireless" ? WIFI : USB);
+      const steps = setupSteps(listed, "select-device");
+      assert.match(steps, /Only one endpoint is selectable/);
+      assert.match(steps, /call mobile_select_device for it without asking a selection question/);
+      assert.match(steps, /unless a different device or connection was requested/);
+      assert.match(steps, /not automatic reselection after transport loss or server restart/);
+      assert.doesNotMatch(steps, /Ask which exact endpoint/);
+      assert.equal(listed.targetToken, undefined, "discovery must not implicitly select");
+      const unselected = payload(await client.callTool({ name: "mobile_observe", arguments: { targetToken: randomUUID() } }));
+      assert.ok(isRecord(unselected.error));
+      assert.equal(unselected.error.code, "TARGET_NOT_SELECTED");
+      assert.ok(typeof unselected.error.remediation === "string");
+      assert.match(unselected.error.remediation, /sole selectable endpoint for initial selection/);
+      const started = payload(await client.callTool({ name: "mobile_start_adb_server", arguments: {} }));
+      assert.equal(started.targetToken, undefined, "startup must not implicitly select");
+      assert.equal(setupSteps(started, "select-device"), steps);
+      const selected = payload(await client.callTool({
+        name: "mobile_select_device", arguments: { endpointId: endpoint.endpointId },
+      }));
+      assert.equal(typeof selected.targetToken, "string");
+      assert.ok(isRecord(selected.endpoint) && isRecord(selected.identity));
+      assert.equal(selected.endpoint.endpointId, endpoint.endpointId);
+      assert.equal(selected.endpoint.kind, scenario === "single-wireless" ? "paired-wireless" : "usb");
+      assert.ok(typeof selected.identity.apiLevel === "number" && selected.identity.apiLevel >= 30,
+        "automatic choice still uses Android 11+ device qualification");
+    });
+  }
+
   for (const scenario of ["missing-adb", "old-adb", "server-unavailable", "discovery-failed"] as const) {
     test(`first-use ${scenario} preserves an explicit error over ${mode}`, async (t) => {
       const fixtureServer = await fixture(t, mode, scenario);
@@ -922,7 +984,8 @@ for (const mode of ["legacy", "auto"] as const) {
         assert.match(steps, /Fully quit and reopen Copilot/);
       } else if (scenario === "server-unavailable") {
         const steps = setupSteps(failure, "adb-server");
-        assert.match(steps, /Ask for explicit permission/);
+        assert.match(steps, /without a separate conversational approval question/);
+        assert.doesNotMatch(steps, /Ask for explicit permission|Only after approval|If approval is declined/);
         assert.match(steps, /mobile_start_adb_server/);
         assert.match(steps, /does not establish whether a phone is connected/);
         assert.match(steps, /retries read-only discovery/);
@@ -935,12 +998,12 @@ for (const mode of ["legacy", "auto"] as const) {
   }
 
   for (const scenario of ["server-unavailable", "server-reused", "server-start-empty"] as const) {
-    test(`approved startup returns verified inventory without device selection (${scenario}, ${mode})`, async (t) => {
+    test(`local startup returns verified inventory without device selection (${scenario}, ${mode})`, async (t) => {
       const { client } = await fixture(t, mode, scenario);
       if (scenario === "server-unavailable") {
         const before = await client.callTool({ name: "mobile_list_devices", arguments: {} });
         assert.equal(before.isError, true);
-        assert.match(setupSteps(payload(before), "adb-server"), /permission/);
+        assert.match(setupSteps(payload(before), "adb-server"), /without a separate conversational approval question/);
       }
       const result = await client.callTool({ name: "mobile_start_adb_server", arguments: {} });
       assert.equal(result.isError, undefined);

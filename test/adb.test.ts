@@ -262,7 +262,8 @@ test("a missing local ADB server is not misreported as a lost phone transport", 
     }), (error: unknown) => {
       hasCode("ADB_SERVER_UNAVAILABLE")(error);
       assert.ok(error instanceof MobileUseError);
-      assert.match(error.remediation, /approval to use mobile_start_adb_server/);
+      assert.match(error.remediation, /Use mobile_start_adb_server/);
+      assert.doesNotMatch(error.remediation, /\b(?:ask|approval|permission)\b/i);
       assert.equal(error.actionMayHaveRun, false);
       assert.equal(error.retryable, true);
       assert.doesNotMatch(JSON.stringify(error), /10061|didn't ACK/);
@@ -280,7 +281,7 @@ test("a missing local ADB server is not misreported as a lost phone transport", 
   });
 });
 
-test("approved startup pins the executable, sanitizes the daemon environment, and parses raw inventory", async (t) => {
+test("local startup pins the executable, sanitizes the daemon environment, and parses raw inventory", async (t) => {
   const { executable } = await executableFixture(t);
   const server = new LocalAdbServer();
   let startupCalls = 0;

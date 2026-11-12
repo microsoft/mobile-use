@@ -2,7 +2,7 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { MobileUseService } from "../src/device-session.js";
 import { MobileUseError } from "../src/errors.js";
 import { createMobileUseServer } from "../src/tools.js";
-import { chunk, editField, FakeAdb, FakeMonitors, hierarchy, node, pixelPng, recorderHelp, windowXml, windowsXml } from "./helpers.js";
+import { chunk, editField, FakeAdb, FakeMonitors, hierarchy, node, pixelPng, recorderHelp, USB_LINE, WIFI_LINE, windowXml, windowsXml } from "./helpers.js";
 
 const adb = new FakeAdb();
 const monitors = new FakeMonitors(adb);
@@ -25,13 +25,18 @@ if (Object.hasOwn(setupInventories, setupScenario) || ["missing-adb", "old-adb",
     }
     if (setupScenario === "old-adb" && command === "version") return Buffer.from("Version 29.0.6\n");
     if (setupScenario === "server-unavailable" && command === "devices -l" && adb.startServerCalls === 0) {
-      throw new MobileUseError("ADB_SERVER_UNAVAILABLE", "Fixture local server is unavailable.", "Ask for permission to start the local ADB server.", true);
+      throw new MobileUseError("ADB_SERVER_UNAVAILABLE", "Fixture local server is unavailable.", "Use mobile_start_adb_server for the requested Android task.", true);
     }
     if (setupScenario === "discovery-failed" && command === "devices -l") {
       throw new Error("private fixture-only discovery details");
     }
     return undefined;
   };
+}
+if (setupScenario === "single-usb") adb.inventory = `List of devices attached\n${USB_LINE}\n`;
+if (setupScenario === "single-wireless") adb.inventory = `List of devices attached\n${WIFI_LINE}\n`;
+if (setupScenario === "single-selectable") {
+  adb.inventory = `List of devices attached\nOFF offline transport_id:2\nLOCKED unauthorized transport_id:1\nemulator-5554 device transport_id:3\nNO_ID device\n${USB_LINE}\n`;
 }
 if (setupScenario === "server-reused") adb.startupAttempted = false;
 if (setupScenario === "recording-legacy") adb.recordingHelp = recorderHelp(false);

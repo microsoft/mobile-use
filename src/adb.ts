@@ -135,7 +135,7 @@ export const executeCommand: CommandRunner = (executable, args, options) => new 
     } else if (/cannot connect to (?:daemon|(?:adb )?server)|cannot start server|failed to start (?:adb )?(?:daemon|server)|(?:daemon|server) (?:didn't ack|failed to start)/.test(details)) {
       code = "ADB_SERVER_UNAVAILABLE";
       message = "The local ADB server is unavailable.";
-      remediation = "Ask for approval to use mobile_start_adb_server, then retry discovery. Do not kill/restart a shared server or infer the phone's connection state from this failure.";
+      remediation = "Use mobile_start_adb_server for the requested Android task, then retry discovery. Do not kill/restart a shared server or infer the phone's connection state from this failure.";
     } else if (/failure \[install_[a-z0-9_]+/.test(details)) {
       code = "APP_INSTALL_FAILED";
       message = "Android rejected the APK installation.";

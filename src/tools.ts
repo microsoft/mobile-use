@@ -4,7 +4,7 @@ import { z } from "zod";
 import packageInfo from "../package.json" with { type: "json" };
 import type { MobileService } from "./mobile-service.js";
 import { publicError } from "./errors.js";
-import { onboardingInstructions, phoneSetup, setupForDevices, setupForError } from "./setup.js";
+import { deviceSelectionInstructions, onboardingInstructions, phoneSetup, setupForDevices, setupForError } from "./setup.js";
 import { iosInstructions, iosSetup, managedIosInstructions, managedIosSetup, setupForIosDevices, setupForIosError } from "./ios/setup.js";
 import { iosBundleIdSchema } from "./ios/wda.js";
 import { iosRuntimeActionSchema } from "./ios/runtime.js";
@@ -81,7 +81,7 @@ export function createMobileUseServer(service: MobileService): McpServer {
   server.registerTool("mobile_start_adb_server", {
     title: "Start ADB server",
     description: ios ? managed ? "Unsupported in iOS mode. Use the explicit mobile_ios_runtime lifecycle, never ADB."
-      : "Unsupported in iOS mode. The user starts WDA and forwarding outside this plugin; never fall back to ADB." : "Only after the user explicitly approves starting the local ADB server: reuse a compatible server at 127.0.0.1:5037 or start a missing one, verify readiness, and retry read-only device discovery. The shared server may remain running after this plugin exits and may initialize standard local ADB host keys. Never kills, replaces, or restarts a server, changes settings, pairs, approves phone trust, or controls devices. Conflicts fail explicitly. Reuse an already explicit exact authorization rather than asking twice. Never automatically retry uncertain startup.",
+      : "Unsupported in iOS mode. The user starts WDA and forwarding outside this plugin; never fall back to ADB." : "For the user's Android task, reuse a compatible local ADB server at 127.0.0.1:5037 or start a missing one, verify readiness, and retry read-only device discovery. No separate conversational approval is required; Copilot's native permissions still apply. The shared server may remain running after this plugin exits and may initialize standard local ADB host keys. Never kills, replaces, or restarts a server, changes settings, pairs, approves phone trust, or controls devices. Conflicts fail explicitly. Never automatically retry uncertain startup.",
     inputSchema: z.strictObject({}),
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
   }, (_input, ctx) => execute(async () => {
@@ -92,7 +92,7 @@ export function createMobileUseServer(service: MobileService): McpServer {
   server.registerTool("mobile_list_devices", {
     title: "List devices",
     description: ios ? managed ? "Enumerate real Apple USB UDIDs only. No Wi-Fi fallback, startup, installation or selection. Only this runtime's ready endpoint is selectable; explicitly prepare the user's chosen endpoint with mobile_ios_runtime. Foreign WDA sessions are never replaced."
-      : "Read the single configured local WDA endpoint and whether an exclusive session can be selected. Not USB discovery: forwarding is user-managed. Foreign sessions are unavailable, not silently replaced. No capture or session creation." : "After mobile_doctor, list local ADB endpoints with online/unauthorized/offline states and the next setup steps. Empty inventory prompts Developer options/USB debugging guidance; unauthorized/offline entries need user setup. USB and Wi-Fi may be the same phone. Do not silently select a device or confuse endpoint identity with physical identity.",
+      : "Read the single configured local WDA endpoint and whether an exclusive session can be selected. Not USB discovery: forwarding is user-managed. Foreign sessions are unavailable, not silently replaced. No capture or session creation." : "After mobile_doctor, list local ADB endpoints with online/unauthorized/offline states and the next setup steps. Empty inventory prompts Developer options/USB debugging guidance; unauthorized/offline entries need user setup. Discovery itself never selects a device. " + deviceSelectionInstructions,
     inputSchema: z.strictObject({}),
     annotations: readOnly,
   }, (_input, ctx) => execute(async () => {
@@ -102,7 +102,7 @@ export function createMobileUseServer(service: MobileService): McpServer {
 
   server.registerTool("mobile_select_device", {
     title: "Select device",
-    description: ios ? "Explicitly select the endpoint returned by discovery, verify physical iOS 17+ device identity, and create an owned WDA session without launching an App or capturing. Requires a dedicated Runner with no foreign session. Reselection deletes only the identifiable owned session and invalidates prior tokens." : "Select exactly the endpoint the user chose from mobile_list_devices. Verify a real Android 11+ device and modern paired wireless when applicable. Does not pair or connect devices. Every selection invalidates prior target/observation tokens.",
+    description: ios ? "Explicitly select the endpoint returned by discovery, verify physical iOS 17+ device identity, and create an owned WDA session without launching an App or capturing. Requires a dedicated Runner with no foreign session. Reselection deletes only the identifiable owned session and invalidates prior tokens." : deviceSelectionInstructions + "Use the exact endpointId returned by discovery. Verify a real Android 11+ device and modern paired wireless when applicable. Does not pair or connect devices. Every selection invalidates prior target/observation tokens.",
     inputSchema: z.strictObject({ endpointId: z.string().min(1).max(512) }),
     annotations: ios ? mutation : readOnly,
   }, (input, ctx) => execute(async () => result(await service.selectDevice(input.endpointId, ctx.mcpReq.signal))));
@@ -116,7 +116,7 @@ export function createMobileUseServer(service: MobileService): McpServer {
 
   server.registerTool("mobile_wake", {
     title: "Wake device",
-    description: ios ? "Unsupported in iOS mode. The user must wake and unlock manually; never call WDA unlock or capture authentication screens." : "Only when explicitly requested, wake the selected phone and dismiss an unsecured lock screen. Requires a target token but no screen observation; invalidates previous observations. Never enters credentials, bypasses authentication, or captures the lock screen. Secure or unrecognized lock states require manual unlocking. After success, observe approved non-sensitive content before subsequent input. Do not ask again when this exact wake is already explicitly authorized. Never automatically replay an uncertain result.",
+    description: ios ? "Unsupported in iOS mode; this wake and unsecured-keyguard dismissal tool is Android-only. Never call WDA unlock or capture authentication screens." : "Wake the selected Android phone and dismiss only a verified unsecured lock screen when needed for the user's authorized task. Task permission covers this preparation; no separate wake-specific request or conversational approval is needed. Ask permission only if the task or target has not been authorized. Use this tool before asking the user to wake or dismiss an unsecured lock screen manually. Requires a target token but no screen observation; invalidates previous observations. Never enters credentials, bypasses authentication, or captures the lock screen. MANUAL_UNLOCK_REQUIRED requires user authentication; KEYGUARD_STATE_UNAVAILABLE or WAKE_FAILED requires manual assistance after reporting the actual error. After success, observe approved non-sensitive content before subsequent input. Respect Copilot's native permissions. Never automatically replay an uncertain result.",
     inputSchema: z.strictObject({ targetToken }),
     annotations: mutation,
   }, (input, ctx) => execute(async () => result(await service.wake(input.targetToken, ctx.mcpReq.signal))));
