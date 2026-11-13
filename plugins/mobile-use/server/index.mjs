@@ -36424,9 +36424,9 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
       const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
       return `${varKind} ${this.name}${rhs};` + _n;
     }
-    optimizeNames(names, constants2) {
+    optimizeNames(names, constants3) {
       if (!names[this.name.str]) return;
-      if (this.rhs) this.rhs = optimizeExpr(this.rhs, names, constants2);
+      if (this.rhs) this.rhs = optimizeExpr(this.rhs, names, constants3);
       return this;
     }
     get names() {
@@ -36443,9 +36443,9 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
     render({ _n }) {
       return `${this.lhs} = ${this.rhs};` + _n;
     }
-    optimizeNames(names, constants2) {
+    optimizeNames(names, constants3) {
       if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects) return;
-      this.rhs = optimizeExpr(this.rhs, names, constants2);
+      this.rhs = optimizeExpr(this.rhs, names, constants3);
       return this;
     }
     get names() {
@@ -36504,8 +36504,8 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
     optimizeNodes() {
       return `${this.code}` ? this : void 0;
     }
-    optimizeNames(names, constants2) {
-      this.code = optimizeExpr(this.code, names, constants2);
+    optimizeNames(names, constants3) {
+      this.code = optimizeExpr(this.code, names, constants3);
       return this;
     }
     get names() {
@@ -36531,12 +36531,12 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
       }
       return nodes.length > 0 ? this : void 0;
     }
-    optimizeNames(names, constants2) {
+    optimizeNames(names, constants3) {
       const { nodes } = this;
       let i = nodes.length;
       while (i--) {
         const n = nodes[i];
-        if (n.optimizeNames(names, constants2)) continue;
+        if (n.optimizeNames(names, constants3)) continue;
         subtractNames(names, n.names);
         nodes.splice(i, 1);
       }
@@ -36583,11 +36583,11 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
       if (cond === false || !this.nodes.length) return void 0;
       return this;
     }
-    optimizeNames(names, constants2) {
+    optimizeNames(names, constants3) {
       var _a3;
-      this.else = (_a3 = this.else) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants2);
-      if (!(super.optimizeNames(names, constants2) || this.else)) return;
-      this.condition = optimizeExpr(this.condition, names, constants2);
+      this.else = (_a3 = this.else) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants3);
+      if (!(super.optimizeNames(names, constants3) || this.else)) return;
+      this.condition = optimizeExpr(this.condition, names, constants3);
       return this;
     }
     get names() {
@@ -36609,9 +36609,9 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
     render(opts) {
       return `for(${this.iteration})` + super.render(opts);
     }
-    optimizeNames(names, constants2) {
-      if (!super.optimizeNames(names, constants2)) return;
-      this.iteration = optimizeExpr(this.iteration, names, constants2);
+    optimizeNames(names, constants3) {
+      if (!super.optimizeNames(names, constants3)) return;
+      this.iteration = optimizeExpr(this.iteration, names, constants3);
       return this;
     }
     get names() {
@@ -36646,9 +36646,9 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
     render(opts) {
       return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
     }
-    optimizeNames(names, constants2) {
-      if (!super.optimizeNames(names, constants2)) return;
-      this.iterable = optimizeExpr(this.iterable, names, constants2);
+    optimizeNames(names, constants3) {
+      if (!super.optimizeNames(names, constants3)) return;
+      this.iterable = optimizeExpr(this.iterable, names, constants3);
       return this;
     }
     get names() {
@@ -36687,11 +36687,11 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
       (_b = this.finally) === null || _b === void 0 || _b.optimizeNodes();
       return this;
     }
-    optimizeNames(names, constants2) {
+    optimizeNames(names, constants3) {
       var _a3, _b;
-      super.optimizeNames(names, constants2);
-      (_a3 = this.catch) === null || _a3 === void 0 || _a3.optimizeNames(names, constants2);
-      (_b = this.finally) === null || _b === void 0 || _b.optimizeNames(names, constants2);
+      super.optimizeNames(names, constants3);
+      (_a3 = this.catch) === null || _a3 === void 0 || _a3.optimizeNames(names, constants3);
+      (_b = this.finally) === null || _b === void 0 || _b.optimizeNames(names, constants3);
       return this;
     }
     get names() {
@@ -36940,7 +36940,7 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
   function addExprNames(names, from) {
     return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
   }
-  function optimizeExpr(expr, names, constants2) {
+  function optimizeExpr(expr, names, constants3) {
     if (expr instanceof code_1.Name) return replaceName(expr);
     if (!canOptimize(expr)) return expr;
     return new code_1._Code(expr._items.reduce((items, c) => {
@@ -36950,13 +36950,13 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
       return items;
     }, []));
     function replaceName(n) {
-      const c = constants2[n.str];
+      const c = constants3[n.str];
       if (c === void 0 || names[n.str] !== 1) return n;
       delete names[n.str];
       return c;
     }
     function canOptimize(e) {
-      return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants2[c.str] !== void 0);
+      return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants3[c.str] !== void 0);
     }
   }
   function subtractNames(names, from) {
@@ -45198,7 +45198,7 @@ function checkCancelled(signal) {
 
 // src/adb.ts
 import { execFile } from "node:child_process";
-import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createConnection as createConnection2 } from "node:net";
 import path from "node:path";
 
@@ -49581,6 +49581,14 @@ var defaultAdbFileSystem = {
       return false;
     }
   },
+  isExecutable(targetPath) {
+    try {
+      accessSync(targetPath, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
   listDirectories(directoryPath) {
     try {
       return readdirSync(directoryPath, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
@@ -49720,6 +49728,13 @@ function resolveAdbExecutable(env = process.env, platform = process.platform, fs
     if (!fs.isFile(configured)) {
       throw new MobileUseError("ADB_NOT_FOUND", `The configured ${binaryName} is missing.`, "Correct MOBILE_USE_ADB_PATH.");
     }
+    if (platform !== "win32" && !fs.isExecutable(configured)) {
+      throw new MobileUseError(
+        "ADB_CONFIG_UNSUPPORTED",
+        `The configured ${binaryName} is not executable.`,
+        `Grant execute permission on ${binaryName} or set MOBILE_USE_ADB_PATH to an executable Android Platform-Tools ${binaryName}.`
+      );
+    }
     return configured;
   }
   const studioCustomSdk = resolveAndroidStudioCustomSdk(env, platform, pathOps, fs);
@@ -49736,7 +49751,7 @@ function resolveAdbExecutable(env = process.env, platform = process.platform, fs
     const key = platform === "win32" ? executable.toLowerCase() : pathOps.normalize(executable);
     if (visited.has(key)) continue;
     visited.add(key);
-    if (fs.isFile(executable)) return executable;
+    if (fs.isFile(executable) && (platform === "win32" || fs.isExecutable(executable))) return executable;
   }
   throw new MobileUseError(
     "ADB_NOT_FOUND",
@@ -50068,7 +50083,7 @@ import { crc32, inflateSync } from "node:zlib";
 import { setTimeout as setTimeout2 } from "node:timers/promises";
 
 // src/apps.ts
-import { access, constants, lstat, realpath } from "node:fs/promises";
+import { access, constants as constants2, lstat, realpath } from "node:fs/promises";
 import path2 from "node:path";
 
 // src/types.ts
@@ -50224,7 +50239,7 @@ function parsePackageStopped(output2, userId) {
 var defaultApkFs = {
   lstat: (targetPath) => lstat(targetPath),
   realpath: (targetPath) => realpath(targetPath),
-  accessReadable: (targetPath) => access(targetPath, constants.R_OK)
+  accessReadable: (targetPath) => access(targetPath, constants2.R_OK)
 };
 function validApkPath(value, platform) {
   if (/[\u0000-\u001f\u007f]/.test(value)) return false;

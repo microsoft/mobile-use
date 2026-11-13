@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
 import type { Socket } from "node:net";
 import path from "node:path";
@@ -50,6 +50,7 @@ type SupportedHostPlatform = "win32" | "darwin" | "linux";
 export interface AdbFileSystem {
   exists(targetPath: string): boolean;
   isFile(targetPath: string): boolean;
+  isExecutable(targetPath: string): boolean;
   listDirectories(directoryPath: string): string[];
   readTextFile(filePath: string, maxBytes: number): string | undefined;
 }
@@ -66,6 +67,14 @@ const defaultAdbFileSystem: AdbFileSystem = {
   isFile(targetPath: string): boolean {
     try {
       return statSync(targetPath).isFile();
+    } catch {
+      return false;
+    }
+  },
+  isExecutable(targetPath: string): boolean {
+    try {
+      accessSync(targetPath, constants.X_OK);
+      return true;
     } catch {
       return false;
     }
@@ -256,6 +265,13 @@ export function resolveAdbExecutable(
     if (!fs.isFile(configured)) {
       throw new MobileUseError("ADB_NOT_FOUND", `The configured ${binaryName} is missing.`, "Correct MOBILE_USE_ADB_PATH.");
     }
+    if (platform !== "win32" && !fs.isExecutable(configured)) {
+      throw new MobileUseError(
+        "ADB_CONFIG_UNSUPPORTED",
+        `The configured ${binaryName} is not executable.`,
+        `Grant execute permission on ${binaryName} or set MOBILE_USE_ADB_PATH to an executable Android Platform-Tools ${binaryName}.`,
+      );
+    }
     return configured;
   }
 
@@ -275,7 +291,7 @@ export function resolveAdbExecutable(
     const key = platform === "win32" ? executable.toLowerCase() : pathOps.normalize(executable);
     if (visited.has(key)) continue;
     visited.add(key);
-    if (fs.isFile(executable)) return executable;
+    if (fs.isFile(executable) && (platform === "win32" || fs.isExecutable(executable))) return executable;
   }
   throw new MobileUseError(
     "ADB_NOT_FOUND",

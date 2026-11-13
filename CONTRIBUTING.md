@@ -352,7 +352,10 @@ configuration (`options/android.sdk.path.xml` under
 `~/Library/Application Support/Google/AndroidStudio*`, or
 `~/.config/Google/AndroidStudio*`), standard per-OS Android Studio SDK folders
 (`%LOCALAPPDATA%\Android\Sdk`, `~/Library/Android/sdk`, or `~/Android/Sdk`), or
-absolute `PATH` entries. Missing, malformed, stale, or conflicting Android
+absolute `PATH` entries. On macOS and Linux, discovered `adb` candidates must
+have execute permission (`X_OK`); non-executable files are skipped during
+discovery and rejected with `ADB_CONFIG_UNSUPPORTED` when passed via
+`MOBILE_USE_ADB_PATH`. Missing, malformed, stale, or conflicting Android
 Studio SDK configuration entries fall through cleanly without guessing.
 `mcp.json` passes `${PLUGIN_ROOT}/server/index.mjs` so Node resolves the bundled
 entrypoint across Windows, macOS, and Linux. After changing the launch
