@@ -63,8 +63,8 @@ you through the next missing step.
 
 You perform settings changes, debugging authorization, and pairing yourself.
 Enter passwords and pairing codes only on the phone or in the local ADB prompt,
-never in chat. Copilot can start a missing local ADB server for your task
-without a separate approval question.
+never in chat. mobile-use asks for permission for sensitive operations and
+respects Copilot's permission controls to help protect your security and privacy.
 
 ## Use with Copilot
 
