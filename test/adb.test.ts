@@ -179,10 +179,16 @@ test("Windows executable lookup respects explicit, SDK, and quoted PATH entries 
   assert.equal(resolveAdbExecutable({ LOCALAPPDATA: directory, ANDROID_HOME: sdk }, "win32", fs), executable);
   assert.equal(resolveAdbExecutable({ PATH: `"${tools}"` }, "win32", fs), executable);
   assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: ".\\adb.exe" }, "win32", fs), hasCode("ADB_CONFIG_UNSUPPORTED"));
+  assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: "\\platform-tools\\adb.exe" }, "win32", fs), hasCode("ADB_CONFIG_UNSUPPORTED"));
+  assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: "/platform-tools/adb.exe" }, "win32", fs), hasCode("ADB_CONFIG_UNSUPPORTED"));
   assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: `${directory}\\adb.cmd` }, "win32", fs), hasCode("ADB_CONFIG_UNSUPPORTED"));
   assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: `${directory}\\missing.exe` }, "win32", fs), hasCode("ADB_NOT_FOUND"));
   assert.throws(() => resolveAdbExecutable({ PATH: "." }, "win32", fs), hasCode("ADB_NOT_FOUND"));
   assert.throws(() => resolveAdbExecutable({ ANDROID_HOME: ".", ANDROID_SDK_ROOT: "." }, "win32", fs), hasCode("ADB_NOT_FOUND"));
+  const driveRelativeFs = virtualWindowsFs({ files: { "\\sdk\\platform-tools\\adb.exe": "pe" } });
+  assert.throws(() => resolveAdbExecutable({
+    ANDROID_SDK_ROOT: "\\sdk", ANDROID_HOME: "/sdk", LOCALAPPDATA: "\\local", PATH: "\\sdk\\platform-tools",
+  }, "win32", driveRelativeFs), hasCode("ADB_NOT_FOUND"));
   for (const unsupported of ["freebsd", "openbsd", "sunos", "aix"] as const) {
     assert.throws(() => resolveAdbExecutable({}, unsupported, fs), hasCode("UNSUPPORTED_HOST"));
   }
@@ -217,6 +223,8 @@ test("Windows Android Studio custom SDK discovery respects tier priority and han
     [defaultAdb]: "pe",
     [pathSdk.adb]: "pe",
     [homeCustomAdb]: "pe",
+    ["C:\\Users\\outside-sdk\\platform-tools\\adb.exe"]: "pe",
+    ["\\sdk\\platform-tools\\adb.exe"]: "pe",
     [`${profileHome}\\AppData\\Roaming\\Google\\AndroidStudio2025.2\\options\\android.sdk.path.xml`]:
       studioSdkXml("$USER_HOME$/Custom/Sdk"),
   };
@@ -239,18 +247,25 @@ test("Windows Android Studio custom SDK discovery respects tier priority and han
     LOCALAPPDATA: defaultLocalAppData,
     PATH: pathSdk.tools,
   };
-  assert.equal(resolveAdbExecutable(fullEnv, "win32", singleProfileFs), explicitSdk.adb);
+  // Explicit and environment SDK tiers resolve before scanning Android Studio profiles.
+  const noStudioScanFs: AdbFileSystem = {
+    ...singleProfileFs,
+    listDirectories: () => assert.fail("Android Studio config directories must not be scanned when an earlier tier resolves"),
+    readTextFile: () => assert.fail("Android Studio XML must not be read when an earlier tier resolves"),
+  };
+  assert.equal(resolveAdbExecutable(fullEnv, "win32", noStudioScanFs), explicitSdk.adb);
   const { MOBILE_USE_ADB_PATH: _1, ...withoutExplicit } = fullEnv;
-  assert.equal(resolveAdbExecutable(withoutExplicit, "win32", singleProfileFs), sdkRoot.adb);
+  assert.equal(resolveAdbExecutable(withoutExplicit, "win32", noStudioScanFs), sdkRoot.adb);
   const { ANDROID_SDK_ROOT: _2, ...withoutSdkRoot } = withoutExplicit;
-  assert.equal(resolveAdbExecutable(withoutSdkRoot, "win32", singleProfileFs), androidHome.adb);
+  assert.equal(resolveAdbExecutable(withoutSdkRoot, "win32", noStudioScanFs), androidHome.adb);
   const { ANDROID_HOME: _3, ...withoutEnvSdks } = withoutSdkRoot;
   assert.equal(resolveAdbExecutable(withoutEnvSdks, "win32", singleProfileFs), studioCustom.adb);
 
-  // Agreeing profiles (including case/slash differences and unset profiles) remain unambiguous.
+  // Agreeing profiles (including case/slash/trailing-separator differences and unset profiles) remain unambiguous.
   const agreeingFs = fsWithStudio({
-    "AndroidStudio2025.1": studioSdkXml(studioCustom.sdk.replaceAll("\\", "/")),
+    "AndroidStudio2025.1": studioSdkXml(`${studioCustom.sdk.replaceAll("\\", "/")}/`),
     "AndroidStudio2024.3": studioSdkXml(studioCustom.sdk.toUpperCase()),
+    "AndroidStudio2024.2": studioSdkXml(`${studioCustom.sdk}\\`),
     "AndroidStudio2024.1": "<application>\n  <component name=\"AndroidSdkPathStore\" />\n</application>\n",
   }, [`${appData}\\Google\\AndroidStudio2023.3`]);
   assert.equal(resolveAdbExecutable(withoutEnvSdks, "win32", agreeingFs), studioCustom.adb);
@@ -266,19 +281,30 @@ test("Windows Android Studio custom SDK discovery respects tier priority and han
   assert.equal(resolveAdbExecutable(withoutEnvSdks, "win32", conflictingFs), defaultAdb);
   assert.throws(() => resolveAdbExecutable({ APPDATA: appData }, "win32", conflictingFs), hasCode("ADB_NOT_FOUND"));
 
-  // Stale and malformed Android Studio configs fall through cleanly without crashing.
+  // Stale, drive-relative, macro-traversal, and malformed Android Studio configs fall through cleanly without crashing.
   for (const invalidXml of [
     studioSdkXml(`${root}\\removed-sdk`),
     "<application><broken",
     `<!DOCTYPE application [<!ENTITY x "y">]>${studioSdkXml(studioCustom.sdk)}`,
     studioSdkXml("relative\\sdk"),
+    studioSdkXml("\\sdk"),
+    studioSdkXml("/sdk"),
     studioSdkXml("$PROJECT_DIR$/sdk"),
+    studioSdkXml("$USER_HOME$/../outside-sdk"),
+    studioSdkXml("$USER_HOME$\\..\\outside-sdk"),
+    studioSdkXml("$USER_HOME$/./Custom/Sdk"),
     studioSdkXml(`${studioCustom.sdk}\\..\\studio-other`),
   ]) {
     const invalidFs = fsWithStudio({ "AndroidStudio2025.1": invalidXml });
-    assert.equal(resolveAdbExecutable({ APPDATA: appData, LOCALAPPDATA: defaultLocalAppData }, "win32", invalidFs), defaultAdb);
-    assert.equal(resolveAdbExecutable({ APPDATA: appData, PATH: pathSdk.tools }, "win32", invalidFs), pathSdk.adb);
-    assert.throws(() => resolveAdbExecutable({ APPDATA: appData }, "win32", invalidFs), hasCode("ADB_NOT_FOUND"));
+    assert.equal(resolveAdbExecutable({
+      APPDATA: appData, USERPROFILE: "C:\\Users\\alice", LOCALAPPDATA: defaultLocalAppData,
+    }, "win32", invalidFs), defaultAdb);
+    assert.equal(resolveAdbExecutable({
+      APPDATA: appData, USERPROFILE: "C:\\Users\\alice", PATH: pathSdk.tools,
+    }, "win32", invalidFs), pathSdk.adb);
+    assert.throws(() => resolveAdbExecutable({
+      APPDATA: appData, USERPROFILE: "C:\\Users\\alice",
+    }, "win32", invalidFs), hasCode("ADB_NOT_FOUND"));
   }
 });
 
@@ -353,14 +379,60 @@ test("macOS and Linux executable lookup resolves explicit, env SDK, Android Stud
   const linuxPathAdb = "/usr/bin/adb";
 
   const linuxUnambiguousFs = virtualPosixFs({
-    directories: { [linuxGoogle]: ["AndroidStudio2025.1"] },
+    directories: { [linuxGoogle]: ["AndroidStudio2024.3", "AndroidStudio2025.1"] },
     files: {
+      [linuxXmlOne]: studioSdkXml("$USER_HOME$/CustomSdk/"),
       [linuxXmlTwo]: studioSdkXml("$USER_HOME$/CustomSdk"),
       [linuxCustomAdb]: "elf",
       [linuxDefaultAdb]: "elf",
     },
   });
   assert.equal(resolveAdbExecutable({ HOME: linuxHome }, "linux", linuxUnambiguousFs), linuxCustomAdb);
+
+  // Agreeing /opt/android-sdk and /opt/android-sdk/ profiles canonicalize to the same SDK, and root "/" is preserved.
+  const linuxTrailingSlashFs = virtualPosixFs({
+    directories: { [linuxGoogle]: ["AndroidStudio2024.3", "AndroidStudio2025.1"] },
+    files: {
+      [linuxXmlOne]: studioSdkXml("/opt/android-sdk"),
+      [linuxXmlTwo]: studioSdkXml("/opt/android-sdk/"),
+      "/opt/android-sdk/platform-tools/adb": "elf",
+    },
+  });
+  assert.equal(resolveAdbExecutable({ HOME: linuxHome }, "linux", linuxTrailingSlashFs), "/opt/android-sdk/platform-tools/adb");
+
+  const linuxRootSdkFs = virtualPosixFs({
+    directories: { [linuxGoogle]: ["AndroidStudio2025.1"] },
+    files: {
+      [linuxXmlTwo]: studioSdkXml("/"),
+      "/platform-tools/adb": "elf",
+    },
+  });
+  assert.equal(resolveAdbExecutable({ HOME: linuxHome }, "linux", linuxRootSdkFs), "/platform-tools/adb");
+
+  // $USER_HOME$ macro traversal is rejected before path joining, even if the traversed SDK path exists.
+  const linuxMacroTraversalFs = virtualPosixFs({
+    directories: { [linuxGoogle]: ["AndroidStudio2025.1"] },
+    files: {
+      [linuxXmlTwo]: studioSdkXml("$USER_HOME$/../outside-sdk"),
+      "/home/outside-sdk/platform-tools/adb": "elf",
+      [linuxPathAdb]: "elf",
+    },
+  });
+  assert.throws(() => resolveAdbExecutable({ HOME: linuxHome }, "linux", linuxMacroTraversalFs), hasCode("ADB_NOT_FOUND"));
+  assert.equal(resolveAdbExecutable({ HOME: linuxHome, PATH: "/usr/bin" }, "linux", linuxMacroTraversalFs), linuxPathAdb);
+
+  // Environment SDKs short-circuit before scanning Android Studio directories on POSIX too.
+  const linuxNoStudioScanFs: AdbFileSystem = {
+    ...linuxTrailingSlashFs,
+    listDirectories: () => assert.fail("POSIX Studio directories must not be scanned when ANDROID_SDK_ROOT/ANDROID_HOME resolves"),
+    readTextFile: () => assert.fail("POSIX Studio XML must not be read when ANDROID_SDK_ROOT/ANDROID_HOME resolves"),
+  };
+  assert.equal(resolveAdbExecutable({
+    ANDROID_SDK_ROOT: "/opt/android-sdk", HOME: linuxHome,
+  }, "linux", linuxNoStudioScanFs), "/opt/android-sdk/platform-tools/adb");
+  assert.equal(resolveAdbExecutable({
+    ANDROID_HOME: "/opt/android-sdk", HOME: linuxHome,
+  }, "linux", linuxNoStudioScanFs), "/opt/android-sdk/platform-tools/adb");
 
   const linuxNonExecFs = virtualPosixFs({
     files: { [linuxPathAdb]: "elf" },

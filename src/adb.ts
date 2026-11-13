@@ -102,6 +102,47 @@ const defaultAdbFileSystem: AdbFileSystem = {
 const MAX_STUDIO_SDK_XML_BYTES = 64 * 1024;
 const STUDIO_SDK_OPTION_NAMES = new Set(["androidSdkAbsolutePath", "androidSdkPath", "android.sdk.path"]);
 
+function isQualifiedPath(value: string, platform: SupportedHostPlatform): boolean {
+  if (/[\u0000-\u001f\u007f]/.test(value)) return false;
+  if (platform === "win32") {
+    return /^[A-Za-z]:[\\/]/.test(value) ||
+      /^(?:\\\\|\/\/)(?![.?][\\/])[^\\/:*?"<>|]+[\\/][^\\/:*?"<>|]+/.test(value);
+  }
+  return value.startsWith("/") && !value.startsWith("//");
+}
+
+function hasDotTraversalSegment(value: string, platform: SupportedHostPlatform): boolean {
+  const segments = value.split(platform === "win32" ? /[\\/]/ : /\//);
+  return segments.some((segment) => segment === "." || segment === "..");
+}
+
+function canonicalizeDirectoryPath(
+  value: string,
+  platform: SupportedHostPlatform,
+  pathOps: path.PlatformPath,
+): string {
+  const normalized = pathOps.normalize(value);
+  if (platform === "win32" && /^\\\\[^\\]+\\[^\\]+$/.test(normalized)) {
+    return `${normalized}\\`;
+  }
+  const root = pathOps.parse(normalized).root;
+  if (normalized === root) return normalized;
+  return platform === "win32"
+    ? normalized.replace(/\\+$/, "")
+    : normalized.replace(/\/+$/, "");
+}
+
+function qualifiedEnvDirectory(
+  value: string | undefined,
+  platform: SupportedHostPlatform,
+  pathOps: path.PlatformPath,
+): string | undefined {
+  if (typeof value !== "string" || !isQualifiedPath(value, platform) || hasDotTraversalSegment(value, platform)) {
+    return undefined;
+  }
+  return canonicalizeDirectoryPath(value, platform, pathOps);
+}
+
 function xmlElementEntries(values: unknown[]): unknown[] {
   return values.filter((value) => !(isRecord(value) && Object.keys(value).length === 1 &&
     typeof value["#text"] === "string" && /^[ \t\r\n]*$/.test(value["#text"])));
@@ -147,19 +188,32 @@ function parseAndroidStudioSdkXml(
       const optionAttrs = isRecord(child[":@"]) ? child[":@"] : undefined;
       if (typeof optionAttrs?.name !== "string" || !STUDIO_SDK_OPTION_NAMES.has(optionAttrs.name)) continue;
       const rawValue = optionAttrs.value;
-      if (typeof rawValue !== "string" || rawValue.length === 0) return { status: "invalid" };
-      let expanded = rawValue;
-      if (rawValue === "$USER_HOME$" || rawValue.startsWith("$USER_HOME$/") || rawValue.startsWith("$USER_HOME$\\")) {
-        if (!userHome) return { status: "invalid" };
-        const suffix = rawValue.slice("$USER_HOME$".length).replace(/^[\\/]+/, "");
-        expanded = suffix ? pathOps.join(userHome, suffix) : userHome;
-      }
-      const segments = expanded.split(platform === "win32" ? /[\\/]/ : /\//);
-      if (/[\u0000-\u001f\u007f]/.test(expanded) || /\$[^\\/]*\$/.test(expanded) ||
-        segments.includes("..") || !pathOps.isAbsolute(expanded)) {
+      if (typeof rawValue !== "string" || rawValue.length === 0 || /[\u0000-\u001f\u007f]/.test(rawValue)) {
         return { status: "invalid" };
       }
-      const normalized = pathOps.normalize(expanded);
+      let expanded: string;
+      const usesHomeMacro = rawValue === "$USER_HOME$" ||
+        rawValue.startsWith("$USER_HOME$/") ||
+        (platform === "win32" && rawValue.startsWith("$USER_HOME$\\"));
+      if (usesHomeMacro) {
+        if (!userHome || !isQualifiedPath(userHome, platform) || hasDotTraversalSegment(userHome, platform)) {
+          return { status: "invalid" };
+        }
+        const suffix = rawValue.slice("$USER_HOME$".length).replace(platform === "win32" ? /^[\\/]+/ : /^\/+/, "");
+        if (suffix && (/\$[^\\/]*\$/.test(suffix) || hasDotTraversalSegment(suffix, platform))) {
+          return { status: "invalid" };
+        }
+        expanded = suffix ? pathOps.join(userHome, suffix) : userHome;
+      } else {
+        if (/\$[^\\/]*\$/.test(rawValue) || hasDotTraversalSegment(rawValue, platform)) {
+          return { status: "invalid" };
+        }
+        expanded = rawValue;
+      }
+      if (!isQualifiedPath(expanded, platform)) {
+        return { status: "invalid" };
+      }
+      const normalized = canonicalizeDirectoryPath(expanded, platform, pathOps);
       const key = platform === "win32" ? normalized.toLowerCase() : normalized;
       found.set(key, normalized);
     }
@@ -176,14 +230,12 @@ function resolveAndroidStudioCustomSdk(
   pathOps: path.PlatformPath,
   fs: AdbFileSystem,
 ): string | undefined {
-  const absoluteEnv = (value: string | undefined): string | undefined =>
-    typeof value === "string" && pathOps.isAbsolute(value) ? value : undefined;
   const userHome = platform === "win32"
-    ? absoluteEnv(env.USERPROFILE) ?? absoluteEnv(env.HOME)
-    : absoluteEnv(env.HOME);
+    ? qualifiedEnvDirectory(env.USERPROFILE, platform, pathOps) ?? qualifiedEnvDirectory(env.HOME, platform, pathOps)
+    : qualifiedEnvDirectory(env.HOME, platform, pathOps);
   let googleConfigRoot: string | undefined;
   if (platform === "win32") {
-    const appData = absoluteEnv(env.APPDATA) ??
+    const appData = qualifiedEnvDirectory(env.APPDATA, platform, pathOps) ??
       (userHome ? pathOps.join(userHome, "AppData", "Roaming") : undefined);
     googleConfigRoot = appData ? pathOps.join(appData, "Google") : undefined;
   } else if (platform === "darwin") {
@@ -191,7 +243,7 @@ function resolveAndroidStudioCustomSdk(
       ? pathOps.join(userHome, "Library", "Application Support", "Google")
       : undefined;
   } else {
-    const configHome = absoluteEnv(env.XDG_CONFIG_HOME) ??
+    const configHome = qualifiedEnvDirectory(env.XDG_CONFIG_HOME, platform, pathOps) ??
       (userHome ? pathOps.join(userHome, ".config") : undefined);
     googleConfigRoot = configHome ? pathOps.join(configHome, "Google") : undefined;
   }
@@ -225,14 +277,16 @@ function defaultAndroidStudioSdk(
   pathOps: path.PlatformPath,
 ): string | undefined {
   if (platform === "win32") {
-    return env.LOCALAPPDATA
-      ? pathOps.join(env.LOCALAPPDATA, "Android", "Sdk")
-      : env.USERPROFILE ? pathOps.join(env.USERPROFILE, "AppData", "Local", "Android", "Sdk") : undefined;
+    const localAppData = qualifiedEnvDirectory(env.LOCALAPPDATA, platform, pathOps);
+    if (localAppData) return pathOps.join(localAppData, "Android", "Sdk");
+    const userProfile = qualifiedEnvDirectory(env.USERPROFILE, platform, pathOps);
+    return userProfile ? pathOps.join(userProfile, "AppData", "Local", "Android", "Sdk") : undefined;
   }
-  if (!env.HOME || !pathOps.isAbsolute(env.HOME)) return undefined;
+  const home = qualifiedEnvDirectory(env.HOME, platform, pathOps);
+  if (!home) return undefined;
   return platform === "darwin"
-    ? pathOps.join(env.HOME, "Library", "Android", "sdk")
-    : pathOps.join(env.HOME, "Android", "Sdk");
+    ? pathOps.join(home, "Library", "Android", "sdk")
+    : pathOps.join(home, "Android", "Sdk");
 }
 
 export function resolveAdbExecutable(
@@ -255,7 +309,7 @@ export function resolveAdbExecutable(
       ? pathOps.extname(configured).toLowerCase() === ".exe"
       : pathOps.extname(configured) === "";
     if (/[\u0000-\u001f\u007f]/.test(configured) || /[\\/]$/.test(configured) ||
-      !pathOps.isAbsolute(configured) || !pathOps.basename(configured) || !validExtension) {
+      !isQualifiedPath(configured, platform) || !pathOps.basename(configured) || !validExtension) {
       throw new MobileUseError(
         "ADB_CONFIG_UNSUPPORTED",
         `MOBILE_USE_ADB_PATH must be an absolute path to ${binaryName}.`,
@@ -275,23 +329,41 @@ export function resolveAdbExecutable(
     return configured;
   }
 
-  const studioCustomSdk = resolveAndroidStudioCustomSdk(env, platform, pathOps, fs);
-  const userSdk = defaultAndroidStudioSdk(env, platform, pathOps);
-  const toolDirectories = [env.ANDROID_SDK_ROOT, env.ANDROID_HOME, studioCustomSdk, userSdk]
-    .filter((sdk): sdk is string => typeof sdk === "string" && pathOps.isAbsolute(sdk))
-    .map((sdk) => pathOps.join(sdk, "platform-tools"));
-  const rawPath = platform === "win32" ? (env.PATH ?? env.Path ?? "") : (env.PATH ?? "");
-  const searchPath = rawPath.split(pathOps.delimiter).map((entry) => {
-    return entry.startsWith('"') && entry.endsWith('"') ? entry.slice(1, -1) : entry;
-  });
   const visited = new Set<string>();
-  for (const directory of [...toolDirectories, ...searchPath]) {
-    if (!pathOps.isAbsolute(directory)) continue;
+  const probeDirectory = (directory: string | undefined): string | undefined => {
+    if (typeof directory !== "string" || !isQualifiedPath(directory, platform)) return undefined;
     const executable = pathOps.join(directory, binaryName);
-    const key = platform === "win32" ? executable.toLowerCase() : pathOps.normalize(executable);
-    if (visited.has(key)) continue;
+    const key = platform === "win32"
+      ? pathOps.normalize(executable).toLowerCase()
+      : pathOps.normalize(executable);
+    if (visited.has(key)) return undefined;
     visited.add(key);
-    if (fs.isFile(executable) && (platform === "win32" || fs.isExecutable(executable))) return executable;
+    if (fs.isFile(executable) && (platform === "win32" || fs.isExecutable(executable))) {
+      return executable;
+    }
+    return undefined;
+  };
+  const probeSdk = (sdk: string | undefined): string | undefined =>
+    typeof sdk === "string" && isQualifiedPath(sdk, platform)
+      ? probeDirectory(pathOps.join(sdk, "platform-tools"))
+      : undefined;
+
+  for (const envSdk of [env.ANDROID_SDK_ROOT, env.ANDROID_HOME]) {
+    const found = probeSdk(envSdk);
+    if (found) return found;
+  }
+
+  const studioFound = probeSdk(resolveAndroidStudioCustomSdk(env, platform, pathOps, fs));
+  if (studioFound) return studioFound;
+
+  const defaultFound = probeSdk(defaultAndroidStudioSdk(env, platform, pathOps));
+  if (defaultFound) return defaultFound;
+
+  const rawPath = platform === "win32" ? (env.PATH ?? env.Path ?? "") : (env.PATH ?? "");
+  for (const rawEntry of rawPath.split(pathOps.delimiter)) {
+    const entry = rawEntry.startsWith('"') && rawEntry.endsWith('"') ? rawEntry.slice(1, -1) : rawEntry;
+    const found = probeDirectory(entry);
+    if (found) return found;
   }
   throw new MobileUseError(
     "ADB_NOT_FOUND",
