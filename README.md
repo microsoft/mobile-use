@@ -1,7 +1,7 @@
 # mobile-use
 
 Use GitHub Copilot to observe and interact with a **real Android 11+ phone or
-tablet** from Windows, over USB or modern paired wireless ADB.
+tablet** from Windows, macOS, or Linux, over USB or modern paired wireless ADB.
 
 Read screens or UI text, tap and swipe, enter text, manage apps, and record
 silent screen videos on a selected device.
@@ -17,27 +17,35 @@ been tested on one Android 11 phone. Paired-wireless acceptance remains
 
 ## Requirements
 
-- Windows and GitHub Copilot App with plugin support.
+- Windows, macOS, or Linux, and GitHub Copilot with plugin support.
 - A maintained Node.js release, minimum **22.2.0**; Node 24 LTS is recommended.
-- Current official [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools).
+- Current official [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools)
+  (from Android Studio's SDK Manager or the standalone download).
 - A real Android 11+ device exposing Wireless debugging, plus either a
   data-capable USB cable or a trusted, reachable local network for wireless.
 
 Node and Platform-Tools are not bundled. Android Studio and Java are not
 required to use the plugin. Windows may need the phone manufacturer's
-[USB driver](https://developer.android.com/studio/run/oem-usb).
+[USB driver](https://developer.android.com/studio/run/oem-usb); Linux may need
+device `udev` permissions.
 
 ## Install the plugin
 
 The Awesome Copilot marketplace listing is not available yet. A prebuilt plugin
-is checked into this repository; from a checkout, run this in PowerShell:
+is checked into this repository; from a checkout, run:
 
 ```powershell
+# PowerShell
 copilot plugin install (Resolve-Path .\plugins\mobile-use).Path
 ```
 
+```sh
+# macOS / Linux
+copilot plugin install "$(cd ./plugins/mobile-use && pwd)"
+```
+
 No npm install or build is needed to use that package. Install the
-`plugins\mobile-use` folder, not the repository root. Confirm the plugin and its
+`plugins/mobile-use` folder, not the repository root. Confirm the plugin and its
 tools appear in Copilot before using a phone.
 For local development builds and updating the installed copy, see the
 [build instructions](CONTRIBUTING.md#build-and-check-the-plugin).
@@ -47,10 +55,14 @@ For local development builds and updating the installed copy, see the
 Ask Copilot: **"Help me set up mobile-use."** It checks requirements and guides
 you through the next missing step.
 
-1. Extract Platform-Tools so ADB is at
-   `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe`, or add its folder to PATH.
-   For a custom location, you can also set `MOBILE_USE_ADB_PATH` to the full
-   `adb.exe` path. Reopen Copilot after environment changes.
+1. If you use Android Studio, open **Android Studio > Tools > SDK Manager > SDK
+   Tools** and install **Android SDK Platform-Tools**; mobile-use automatically
+   discovers Android Studio's SDK. Otherwise, extract the standalone download to
+   `%LOCALAPPDATA%\Android\Sdk\platform-tools` (Windows),
+   `~/Library/Android/sdk/platform-tools` (macOS), or
+   `~/Android/Sdk/platform-tools` (Linux), add `platform-tools` to `PATH`, or
+   set `MOBILE_USE_ADB_PATH` to the full `adb` / `adb.exe` path. Reopen Copilot
+   after environment changes.
 2. For USB, enable [Developer options and USB debugging](https://developer.android.com/studio/debug/dev-options),
    connect a data-capable cable, unlock the phone, and authorize your trusted
    computer on the phone.
@@ -87,7 +99,7 @@ Text entry appends without submitting.
 ### Screen recording
 
 Start a recording, check its status, and stop/save a silent MP4 to a new local
-Windows path you approve. Other phone tools remain usable while recording.
+path you approve. Other phone tools remain usable while recording.
 
 Choose a duration, or omit the time limit to request unlimited recording where
 supported. Copilot checks the phone's limits first; Android 11-13 typically

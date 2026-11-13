@@ -979,8 +979,12 @@ for (const mode of ["legacy", "auto"] as const) {
       assert.equal(failure.error.actionMayHaveRun, false);
       if (isHostCheck) {
         const steps = setupSteps(failure, "platform-tools");
+        assert.match(steps, /Android Studio > Tools > SDK Manager > SDK Tools/);
+        assert.match(steps, /Android SDK Platform-Tools/);
         assert.match(steps, /https:\/\/developer\.android\.com\/tools\/releases\/platform-tools/);
         assert.match(steps, /%LOCALAPPDATA%\\Android\\Sdk\\platform-tools\\adb\.exe/);
+        assert.match(steps, /~\/Library\/Android\/sdk\/platform-tools\/adb/);
+        assert.match(steps, /~\/Android\/Sdk\/platform-tools\/adb/);
         assert.match(steps, /Fully quit and reopen Copilot/);
       } else if (scenario === "server-unavailable") {
         const steps = setupSteps(failure, "adb-server");

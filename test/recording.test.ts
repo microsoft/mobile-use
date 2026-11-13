@@ -451,6 +451,75 @@ test("recording rejects locked screens, invalid paths, existing files and malfor
   assert.equal(await readFile(filePath, "utf8"), "existing");
 });
 
+test("POSIX recording destination validation supports macOS/Linux paths and preserves non-overwrite, symlink, special-file, and traversal guards", async () => {
+  for (const platform of ["darwin", "linux"] as const) {
+    const existingEntries = new Set([
+      "/private/var/folders/ab/tmp/existing.mp4",
+      "/private/var/folders/ab/tmp/dangling-symlink.mp4",
+      "/private/var/folders/ab/tmp/fifo.mp4",
+    ]);
+    const parentDirs = new Map<string, { real: string; writable: boolean }>([
+      ["/var/folders/ab/tmp", { real: "/private/var/folders/ab/tmp", writable: true }],
+      ["/private/var/folders/ab/tmp", { real: "/private/var/folders/ab/tmp", writable: true }],
+      ["/home/alice/Videos", { real: "/home/alice/Videos", writable: true }],
+      ["/home/alice/readonly", { real: "/home/alice/readonly", writable: false }],
+      ["/home/alice/devlink", { real: "/dev/shm", writable: true }],
+    ]);
+    const probed: string[] = [];
+    const fs = {
+      async realpath(targetPath: string) {
+        const dir = parentDirs.get(targetPath);
+        if (!dir) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        return dir.real;
+      },
+      async lstat(targetPath: string) {
+        if (existingEntries.has(targetPath)) return { existing: true };
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      },
+      async probeWrite(probePath: string, signal?: AbortSignal) {
+        if (signal?.aborted) throw new Error("aborted");
+        const dir = parentDirs.get(probePath.slice(0, probePath.lastIndexOf("/")));
+        if (!dir?.writable) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+        probed.push(probePath);
+      },
+    };
+
+    assert.equal(
+      await recordingDestination("/var/folders/ab/tmp/approved video.mp4", undefined, { platform, fs }),
+      "/private/var/folders/ab/tmp/approved video.mp4",
+    );
+    assert.equal(
+      await recordingDestination("/home/alice/Videos/clip.mp4", undefined, { platform, fs }),
+      "/home/alice/Videos/clip.mp4",
+    );
+    assert.equal(probed.length, 2);
+
+    for (const invalid of [
+      "relative.mp4",
+      "./clip.mp4",
+      "C:\\Videos\\clip.mp4",
+      "//server/share/clip.mp4",
+      "/home/alice//clip.mp4",
+      "/home/alice/../bob/clip.mp4",
+      "/home/alice/./clip.mp4",
+      "/dev/clip.mp4",
+      "/proc/1/clip.mp4",
+      "/sys/clip.mp4",
+      "/home/alice/devlink/clip.mp4",
+      "/home/alice/readonly/clip.mp4",
+      "/home/alice/missing/clip.mp4",
+      "/home/alice/Videos/clip.mov",
+      "/home/alice/Videos/.mp4",
+      "/home/alice/Videos/clip.mp4\n",
+      "/var/folders/ab/tmp/existing.mp4",
+      "/var/folders/ab/tmp/dangling-symlink.mp4",
+      "/var/folders/ab/tmp/fifo.mp4",
+    ]) {
+      await assert.rejects(recordingDestination(invalid, undefined, { platform, fs }), hasCode("INVALID_RECORDING_FILE"));
+    }
+  }
+});
+
 test("destination validation checks real Windows file creation, not W_OK alone", { skip: process.platform !== "win32" }, async (t) => {
   const { directory, adb, start } = await fixture(t);
   execFileSync("icacls", [directory, "/deny", "*S-1-1-0:(WD)", "/q"]);

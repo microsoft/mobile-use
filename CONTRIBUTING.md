@@ -344,12 +344,22 @@ pairing/connection. The plugin can start a missing local ADB server for the
 requested Android task. It never installs Platform-Tools/drivers, enables
 debugging, pairs/connects a device, changes a keyboard, or installs DeviceKit.
 
-The server resolves `adb.exe` from `MOBILE_USE_ADB_PATH` (optional absolute
-`.exe` path), `ANDROID_HOME`/`ANDROID_SDK_ROOT`, the standard per-user Android
-SDK directory, or absolute PATH entries. After changing the launch environment,
-restart the plugin. Only the local ADB server at `127.0.0.1:5037` is supported;
-remote/non-default server overrides fail explicitly. The plugin does not
-kill/restart the shared ADB server or alter global ADB/network settings.
+The server resolves `adb.exe` (Windows) or `adb` (macOS/Linux) in deterministic
+order: `MOBILE_USE_ADB_PATH` (optional absolute executable path),
+`ANDROID_SDK_ROOT` and `ANDROID_HOME`, an unambiguous Android Studio custom SDK
+configuration (`options/android.sdk.path.xml` under
+`%APPDATA%\Google\AndroidStudio*`,
+`~/Library/Application Support/Google/AndroidStudio*`, or
+`~/.config/Google/AndroidStudio*`), standard per-OS Android Studio SDK folders
+(`%LOCALAPPDATA%\Android\Sdk`, `~/Library/Android/sdk`, or `~/Android/Sdk`), or
+absolute `PATH` entries. Missing, malformed, stale, or conflicting Android
+Studio SDK configuration entries fall through cleanly without guessing.
+`mcp.json` passes `${PLUGIN_ROOT}/server/index.mjs` so Node resolves the bundled
+entrypoint across Windows, macOS, and Linux. After changing the launch
+environment, restart the plugin. Only the local ADB server at `127.0.0.1:5037`
+is supported; remote/non-default server overrides fail explicitly. The plugin
+does not kill/restart the shared ADB server or alter global ADB/network
+settings.
 
 If discovery reports `ADB_SERVER_UNAVAILABLE`, call `mobile_start_adb_server`
 for the user's Android task without a separate conversational approval question.
@@ -437,7 +447,7 @@ connection to the same phone.
 | Action | Contract |
 | --- | --- |
 | `{ kind: "capabilities" }` | Read the selected device's native help without capture or observation invalidation. Return `{ status: "available", source: "device-help", unlimitedSupported, maxTimeLimitSeconds, nativeDefaultTimeLimitSeconds }`. No recording consent or unlocked screen is needed for this read-only metadata check. |
-| `{ kind: "start", filePath, timeLimitSeconds? }` | Require an already awake/unlocked phone and explicit consent for the device, non-sensitive screen content, duration or unlimited capture, and destination. `filePath` is a new absolute local Windows `.mp4` path in an existing writable directory. Optional `timeLimitSeconds` is a positive integer up to 4294967295 (native unsigned 32-bit argument range), restricted further by live capabilities. Omit it for unlimited recording until stopped where supported; the plugin never substitutes a finite default. Dispatch once and return `status: starting` with `recordingId`, without waiting for startup. |
+| `{ kind: "start", filePath, timeLimitSeconds? }` | Require an already awake/unlocked phone and explicit consent for the device, non-sensitive screen content, duration or unlimited capture, and destination. `filePath` is a new absolute local `.mp4` path (Windows drive path or POSIX path on macOS/Linux) in an existing writable directory. Optional `timeLimitSeconds` is a positive integer up to 4294967295 (native unsigned 32-bit argument range), restricted further by live capabilities. Omit it for unlimited recording until stopped where supported; the plugin never substitutes a finite default. Dispatch once and return `status: starting` with `recordingId`, without waiting for startup. |
 | `{ kind: "status" }` | Return `status: idle` when no recording exists, otherwise metadata with `starting`, `recording`, `completed` or `saved`. For `starting`, perform one startup check per caller request. `timeLimitSeconds: null` means unlimited. Native recorder and query failures remain explicit errors. No screen capture or export. |
 | `{ kind: "stop", recordingId }` | Stop only this selection's matching recording, await native finalization, and export to the original destination. Also exports a recording that already reached its deadline. Return `status: saved`, `filePath` and `sizeBytes` only after a successful exclusive copy. Remove only this recording's generated device temporary files. |
 
@@ -495,17 +505,18 @@ There is no fixed video-size cap and the video is not buffered in server memory.
 Unlimited capture can exhaust device
 storage; export requires enough local space for both the temporary download
 and final copy.
-Destination validation rejects UNC/device paths, alternate streams, reserved
-names and existing files. It verifies Windows write permission by creating and
-removing a unique temporary file, not just `fs.access(W_OK)`, without reserving
-the requested evidence path. An exclusive copy also prevents races from
-overwriting another writer. Failed exports retain the device capture; local
-temporary files are cleaned. Cleanup errors after saving are explicit;
+Destination validation rejects network/UNC/device paths, `/dev`/`/proc`/`/sys`
+locations on POSIX, symlinks, special files, traversal segments, alternate
+streams, reserved Windows names and existing files. It verifies write permission
+by creating and removing a unique temporary file, not just `fs.access(W_OK)`,
+without reserving the requested evidence path. An exclusive copy also prevents
+races from overwriting another writer. Failed exports retain the device capture;
+local temporary files are cleaned. Cleanup errors after saving are explicit;
 status still exposes the saved path, and another explicit stop retries only
 cleanup, not capture or export.
 Cleanup treats an already-absent owned directory as success, including after
 a lost response, but still reports other removal failures.
-The staging directory is beside the approved destination and inherits Windows
+The staging directory is beside the approved destination and inherits local
 folder permissions, as does the final file. The caller must choose an
 appropriately restricted destination; a random name does not provide isolation.
 Failed or unsaved recordings retain their device files and
@@ -605,11 +616,13 @@ Uninstallation requires explicit one-action approval naming the package/device
 and data-deletion consequence. Do not ask again for an already explicit exact
 authorization.
 
-Installation accepts `action.filePath`, an absolute local Windows drive path such as
-`C:\Packages\demo.apk`. The existing, readable regular file must be 1 byte to
-512 MiB. Spaces and shell punctuation in the local path are passed as a
-literal process argument, never through a shell. URLs, UNC/device paths,
-`.ipa`, `.app`, `.zip`, and split APK bundles are unsupported. The tool neither
+Installation accepts `action.filePath`, an absolute local path such as
+`C:\Packages\demo.apk` on Windows or `/Users/example/Downloads/demo.apk` on
+macOS/Linux. The existing, readable regular file must be 1 byte to 512 MiB.
+Spaces and shell punctuation in the local path are passed as a literal process
+argument, never through a shell. URLs, network/UNC/device paths, symlinks,
+special files, traversal segments, `.ipa`, `.app`, `.zip`, and split APK
+bundles are unsupported. The tool neither
 downloads files nor automatically adds replacement, downgrade, test-package,
 permission-grant, or verification-bypass flags. Android still validates the
 APK and enforces its signature/version/installation policies. Approve the
