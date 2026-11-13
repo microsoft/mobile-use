@@ -1,17 +1,17 @@
 ---
 name: mobile-use
-description: Set up and use mobile-use with a real Android 11+ phone or tablet on Windows. Guide Android Platform-Tools and debugging setup; then observe and interact with a selected USB or modern paired wireless device, list apps, read the foreground app, launch or terminate apps, and install local APKs or uninstall apps only with explicit user approval.
+description: Set up and use mobile-use with a real Android 11+ phone or tablet on Windows, macOS, or Linux. Guide Android Platform-Tools and debugging setup; then observe and interact with a selected USB or modern paired wireless device, list apps, read the foreground app, launch or terminate apps, and install local APKs or uninstall apps only with explicit user approval.
 ---
 
 # Real Android mobile-use
 
-Use the mobile-use MCP tools, not ad-hoc ADB/shell commands. Windows, Node 22.2+
-(Node 24 LTS recommended), Android Platform-Tools, and a real Android 11+ device
-with Wireless debugging are prerequisites. Guide users through missing setup
-steps; do not assume they have installed the tools or enabled Developer options.
-This plugin does not install host prerequisites or pair devices, change
-debugging settings, or provide a remote device service. Separately approved
-Android APK installation and app management are available after device selection.
+Use the mobile-use MCP tools, not ad-hoc ADB/shell commands. Windows, macOS, or Linux,
+Node 22.2+ (Node 24 LTS recommended), Android Platform-Tools, and a real Android 11+
+device with Wireless debugging are prerequisites. Guide users through missing setup
+steps; do not assume they installed tools or enabled Developer options. This plugin
+never installs host prerequisites, pairs devices, changes debugging settings, or
+provides a remote device service. Separately approved Android APK installation and
+app management are available after device selection.
 
 ## Tool categories
 
@@ -49,19 +49,21 @@ No phone observation/control is needed to complete this setup flow.
 
 ### Host tools
 
-- If the MCP server cannot start, have the user check `node --version` in their
-  terminal: Windows and Node 22.2+ are required (Node 24 LTS recommended).
-  Do not mistake a server launch failure for a missing phone.
-- For `ADB_NOT_FOUND` or `ADB_VERSION_UNSUPPORTED`, direct the user to Google's
-  [Platform-Tools download](https://developer.android.com/tools/releases/platform-tools)
-  for Windows. Only **Android SDK Platform-Tools** is required, not Android
-  Studio, Java, an emulator, or the entire SDK. The user reviews download terms
-  and installs/extracts the official package.
-- Recommend extracting so the executable is
-  `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe`, which the plugin discovers
-  without a PATH change. For another location, add its folder to PATH or set
-  `MOBILE_USE_ADB_PATH` to the absolute `adb.exe` path. Correct a stale explicit
-  override rather than repeatedly downloading tools.
+- If the MCP server cannot start, have the user check `node --version`: Windows, macOS,
+  or Linux and Node 22.2+ are required (Node 24 LTS recommended). Do not mistake a
+  server launch failure for a missing phone.
+- For `ADB_NOT_FOUND` or `ADB_VERSION_UNSUPPORTED`, if Android Studio is installed, have
+  the user open **Android Studio > Tools > SDK Manager > SDK Tools**, select **Android
+  SDK Platform-Tools**, and apply the install/update themselves; otherwise direct them to
+  Google's [Platform-Tools download](https://developer.android.com/tools/releases/platform-tools).
+  Only **Android SDK Platform-Tools** is required, not Android Studio, Java, an emulator,
+  or the entire SDK. The user reviews download terms and installs it.
+- The plugin discovers `MOBILE_USE_ADB_PATH`, `ANDROID_SDK_ROOT` / `ANDROID_HOME`,
+  unambiguous Android Studio custom SDK settings, standard SDK folders
+  (`%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe` on Windows,
+  `~/Library/Android/sdk/platform-tools/adb` on macOS, or `~/Android/Sdk/platform-tools/adb`
+  on Linux), and `PATH`. Recommend extracting a standalone archive to that standard folder,
+  or adding `platform-tools` to `PATH` / setting `MOBILE_USE_ADB_PATH`. Correct stale overrides.
 - After environment changes, ask the user to fully quit/reopen Copilot, then
   rerun `mobile_doctor`. Use its actual `adbExecutable` for terminal commands.
 - For `ADB_SERVER_UNAVAILABLE`, explain that the local host server is not
@@ -107,12 +109,12 @@ their choice is already explicit. Guide the relevant path:
    [Android's pairing instructions](https://developer.android.com/tools/adb#connect-to-a-device-over-wi-fi).
    Pairing and connection ports differ; pairing codes stay in the local adb
    prompt, never in Copilot. Do not use legacy `adb tcpip`.
-4. Rerun `mobile_list_devices`. For an empty USB inventory, check the cable/port
-   and [OEM Windows USB-driver guidance](https://developer.android.com/studio/run/oem-usb).
-   Do not install a driver automatically or bypass managed-device restrictions.
-   `unauthorized` means the user must approve the intended host on the unlocked
-   phone; `offline` means restore the chosen connection, then recheck. Neither
-   state is ready. Preserve every endpoint's state/reason, and never turn a
+4. Rerun `mobile_list_devices`. For an empty USB inventory, check the cable/port,
+   [OEM Windows USB-driver guidance](https://developer.android.com/studio/run/oem-usb) on
+   Windows, or udev rules on Linux. Do not install a driver automatically or bypass
+   managed-device restrictions. `unauthorized` means the user must approve the intended
+   host on the unlocked phone; `offline` means restore the chosen connection, then recheck.
+   Neither state is ready. Preserve every endpoint's state/reason, and never turn a
    discovery error into an empty list.
 
 Once an endpoint is selectable, use the selection rules below. Selection still
@@ -432,21 +434,20 @@ user's authorized task.
 | `install` | `action.filePath`; install one existing local `.apk` for the current Android user and require Android's success acknowledgement. |
 | `uninstall` | `action.packageName`; delete the current user's app and app data, then verify the package is absent for that user. |
 
-Obtain specific authorization or matching scoped session consent before
-termination; force-stop may discard unsaved app state. Installation requires
-explicit one-action approval naming the APK and device. Uninstallation requires
-explicit one-action approval naming the package, device, and deletion of the
-current user's app data. Ask only if that exact authorization is missing.
-Installation/debugging
-trust and broad task consent are not approval for installation or deletion.
-Do not bypass protected-app, signature, device-policy, or installation warnings.
+Obtain specific authorization or matching scoped session consent before termination;
+force-stop may discard unsaved app state. Installation requires explicit one-action
+approval naming the APK and device. Uninstallation requires explicit one-action approval
+naming the package, device, and deletion of the current user's app data. Ask only if that
+exact authorization is missing. Installation/debugging trust and broad task consent are
+not approval for installation or deletion. Do not bypass protected-app, signature,
+device-policy, or installation warnings.
 
-Installation requires an absolute local Windows drive path to a readable
-regular `.apk`, 1 byte to 512 MiB. No URLs, UNC/device paths, `.ipa`, `.app`,
-`.zip`, or split bundles are supported. Do not download an app as a fallback,
-add permission-grant/downgrade flags, or automatically launch it. A successful
-installation reports `packageName: null`; do not invent package identity from
-the file name. Use app inventory if the task requires discovering its package.
+Installation requires an absolute local path to a readable regular `.apk`, 1 byte to
+512 MiB. No URLs, network/UNC/device paths, symlinks, special files, `.ipa`, `.app`,
+`.zip`, or split bundles are supported. Do not download an app as a fallback, add
+permission-grant/downgrade flags, or automatically launch it. A successful installation
+reports `packageName: null`; do not invent package identity from the file name. Use app
+inventory if the task requires discovering its package.
 
 The four mutating app operations invalidate old observations, even on a failed
 attempt. Observe approved content again before subsequent UI input.
@@ -462,14 +463,13 @@ verify state and report uncertainty first.
 
 ## Failure and recovery
 
-After transport loss, reconnect, selection change, or server restart, rediscover
-and explicitly reselect. Never retry through another endpoint, even for the same
-phone. Do not restart/kill the shared ADB server or change network/firewall
-settings as recovery.
+After transport loss, reconnect, selection change, or server restart, rediscover and
+explicitly reselect. Never retry through another endpoint, even for the same phone. Do not
+restart/kill the shared ADB server or change network/firewall settings as recovery.
 
-If an action may have run but timed out, do not replay it. Observe the state and
-report uncertainty first. Stale references require another observation. If an
-element changed or became ambiguous, stop and re-observe.
+If an action may have run but timed out, do not replay it. Observe the state and report
+uncertainty first. Stale references require another observation. If an element changed or
+became ambiguous, stop and re-observe.
 
 For `STALE_OBSERVATION`, report the actual failed check (protected-region
 pixels/metadata, hierarchy coverage, app context, geometry, or observation age).
@@ -491,9 +491,8 @@ Never bypass capture protection or fabricate UI content.
 
 ## Physical-device proof
 
-For a USB/wireless demonstration, run the same agreed safe journey on the same
-actual device over USB and paired Wi-Fi. Physically unplug USB, verify its
-endpoint is absent, explicitly select wireless, and repeat the journey with
-new observations. An enumerated wireless endpoint or an emulator is not proof.
-Record only approved sanitized evidence, and distinguish fixture-only,
-App-integration, and real-hardware results.
+For a USB/wireless demonstration, run the same agreed safe journey on the same actual
+device over USB and paired Wi-Fi. Physically unplug USB, verify its endpoint is absent,
+explicitly select wireless, and repeat the journey with new observations. An enumerated
+wireless endpoint or an emulator is not proof. Record only approved sanitized evidence,
+and distinguish fixture-only, App-integration, and real-hardware results.

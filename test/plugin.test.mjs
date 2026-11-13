@@ -10,6 +10,7 @@ import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotoc
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const artifact = path.join(root, "plugins", "mobile-use");
+const missingAdbName = process.platform === "win32" ? "deliberately-missing-adb.exe" : "deliberately-missing-adb";
 const json = async (file) => JSON.parse(await readFile(file, "utf8"));
 
 test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launcher", async () => {
@@ -38,7 +39,7 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.deepEqual(mcp.mcpServers["mobile-use"], {
     type: "stdio",
     command: "node",
-    args: ["${PLUGIN_ROOT}\\server\\index.mjs"],
+    args: ["${PLUGIN_ROOT}/server/index.mjs"],
     cwd: "${PLUGIN_ROOT}",
   });
   const skill = await readFile(path.join(artifact, "skills", "mobile-use", "SKILL.md"), "utf8");
@@ -49,6 +50,7 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   );
   assert.match(skill, /^---\r?\nname: mobile-use\r?\ndescription: /);
   assert.match(skill, /## First-use setup \(required\)/);
+  assert.match(skill, /Android Studio > Tools > SDK Manager > SDK\s+Tools/);
   assert.match(skill, /Only \*\*Android SDK Platform-Tools\*\* is required/);
   assert.match(skill, /Developer options/);
   assert.match(skill, /call \*\*`mobile_start_adb_server`\*\* without a separate conversational\s+approval question/);
@@ -274,13 +276,15 @@ for (const mode of ["legacy", "auto"]) {
     assert.ok(relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative), "copy must not resolve dependencies from this checkout");
     await cp(artifact, copied, { recursive: true });
     await assert.rejects(stat(path.join(copied, "node_modules")), { code: "ENOENT" });
+    const mcp = await json(path.join(copied, "mcp.json"));
+    const launcherArgs = mcp.mcpServers["mobile-use"].args.map((arg) => arg.replaceAll("${PLUGIN_ROOT}", copied));
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(copied, "server", "index.mjs")],
-      cwd: copied,
+      args: launcherArgs,
+      cwd: mcp.mcpServers["mobile-use"].cwd.replaceAll("${PLUGIN_ROOT}", copied),
       env: {
         ...getDefaultEnvironment(),
-        MOBILE_USE_ADB_PATH: path.join(copied, "deliberately-missing-adb.exe"),
+        MOBILE_USE_ADB_PATH: path.join(copied, missingAdbName),
       },
       stderr: "pipe",
     });
@@ -377,6 +381,7 @@ for (const mode of ["legacy", "auto"]) {
     const failure = JSON.parse(doctorText);
     assert.equal(failure.error.code, "ADB_NOT_FOUND");
     assert.equal(failure.setup.stage, "platform-tools");
+    assert.match(failure.setup.steps.join("\n"), /Android Studio > Tools > SDK Manager > SDK Tools/);
     assert.match(failure.setup.steps.join("\n"), /https:\/\/developer\.android\.com\/tools\/releases\/platform-tools/);
     const startup = await client.callTool({ name: "mobile_start_adb_server", arguments: {} });
     assert.equal(startup.isError, true);
@@ -428,7 +433,7 @@ for (const runtime of ["external", "managed"]) {
 test("the packaged server exits cleanly on EOF without invoking ADB", { timeout: 5000 }, async (t) => {
   const child = spawn(process.execPath, [path.join(artifact, "server", "index.mjs")], {
     cwd: artifact,
-    env: { ...getDefaultEnvironment(), MOBILE_USE_ADB_PATH: path.join(artifact, "never-start-this-missing-adb.exe") },
+    env: { ...getDefaultEnvironment(), MOBILE_USE_ADB_PATH: path.join(artifact, missingAdbName) },
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });

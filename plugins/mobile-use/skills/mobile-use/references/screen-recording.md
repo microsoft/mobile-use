@@ -8,7 +8,7 @@ All operations require `targetToken`, not `observationId`:
 | `action.kind` | Input and behavior |
 | --- | --- |
 | `capabilities` | No other action fields. Returns `status: available`, `source: device-help`, `unlimitedSupported`, `maxTimeLimitSeconds` and `nativeDefaultTimeLimitSeconds`. Read-only metadata; neither creates nor stops a recording. |
-| `start` | `action.filePath`: new absolute local Windows `.mp4` path with an existing writable parent. Optional `action.timeLimitSeconds`: positive integer seconds, up to 4294967295 and further restricted by live device capabilities. Omit it for unlimited recording until stopped where supported; never substitute a finite default. Dispatches once and returns `recordingId`, `status: starting`, destination and metadata without waiting for startup. |
+| `start` | `action.filePath`: new absolute local `.mp4` path with an existing writable parent. Optional `action.timeLimitSeconds`: positive integer seconds, up to 4294967295 and further restricted by live device capabilities. Omit it for unlimited recording until stopped where supported; never substitute a finite default. Dispatches once and returns `recordingId`, `status: starting`, destination and metadata without waiting for startup. |
 | `status` | No other action fields. Returns `idle`, or recording metadata with `starting`, `recording`, `completed` or `saved`; `timeLimitSeconds: null` means unlimited. While `starting`, checks startup once per caller request. Failures remain errors. Does not export or capture a screenshot. |
 | `stop` | `action.recordingId`: the ID from this selection's start/status. Finalizes capture, saves the silent MP4 to the original approved path without overwriting, and removes only its generated device temporary files. Returns `saved`, `filePath` and `sizeBytes`. Also saves a recording that already completed at its deadline. |
 
@@ -23,7 +23,7 @@ dispatching capture. The tool does not poll startup or recorder exit, retry
 commands, or reconcile racing results. The AI caller decides when to request
 status and how to sequence or recover operations. Stop-and-save waits up to ten
 seconds for native completion before exporting; it does not retry the signal.
-Choose a destination with appropriate Windows folder permissions: staging and
+Choose a destination with appropriate local folder permissions: staging and
 final files inherit them, without additional per-user isolation. No audio,
 streaming, helper installation or generic file transfer is provided.
 Responses contain metadata and the local path, never video bytes.

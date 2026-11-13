@@ -36424,9 +36424,9 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
       const rhs = this.rhs === void 0 ? "" : ` = ${this.rhs}`;
       return `${varKind} ${this.name}${rhs};` + _n;
     }
-    optimizeNames(names, constants2) {
+    optimizeNames(names, constants3) {
       if (!names[this.name.str]) return;
-      if (this.rhs) this.rhs = optimizeExpr(this.rhs, names, constants2);
+      if (this.rhs) this.rhs = optimizeExpr(this.rhs, names, constants3);
       return this;
     }
     get names() {
@@ -36443,9 +36443,9 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
     render({ _n }) {
       return `${this.lhs} = ${this.rhs};` + _n;
     }
-    optimizeNames(names, constants2) {
+    optimizeNames(names, constants3) {
       if (this.lhs instanceof code_1.Name && !names[this.lhs.str] && !this.sideEffects) return;
-      this.rhs = optimizeExpr(this.rhs, names, constants2);
+      this.rhs = optimizeExpr(this.rhs, names, constants3);
       return this;
     }
     get names() {
@@ -36504,8 +36504,8 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
     optimizeNodes() {
       return `${this.code}` ? this : void 0;
     }
-    optimizeNames(names, constants2) {
-      this.code = optimizeExpr(this.code, names, constants2);
+    optimizeNames(names, constants3) {
+      this.code = optimizeExpr(this.code, names, constants3);
       return this;
     }
     get names() {
@@ -36531,12 +36531,12 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
       }
       return nodes.length > 0 ? this : void 0;
     }
-    optimizeNames(names, constants2) {
+    optimizeNames(names, constants3) {
       const { nodes } = this;
       let i = nodes.length;
       while (i--) {
         const n = nodes[i];
-        if (n.optimizeNames(names, constants2)) continue;
+        if (n.optimizeNames(names, constants3)) continue;
         subtractNames(names, n.names);
         nodes.splice(i, 1);
       }
@@ -36583,11 +36583,11 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
       if (cond === false || !this.nodes.length) return void 0;
       return this;
     }
-    optimizeNames(names, constants2) {
+    optimizeNames(names, constants3) {
       var _a3;
-      this.else = (_a3 = this.else) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants2);
-      if (!(super.optimizeNames(names, constants2) || this.else)) return;
-      this.condition = optimizeExpr(this.condition, names, constants2);
+      this.else = (_a3 = this.else) === null || _a3 === void 0 ? void 0 : _a3.optimizeNames(names, constants3);
+      if (!(super.optimizeNames(names, constants3) || this.else)) return;
+      this.condition = optimizeExpr(this.condition, names, constants3);
       return this;
     }
     get names() {
@@ -36609,9 +36609,9 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
     render(opts) {
       return `for(${this.iteration})` + super.render(opts);
     }
-    optimizeNames(names, constants2) {
-      if (!super.optimizeNames(names, constants2)) return;
-      this.iteration = optimizeExpr(this.iteration, names, constants2);
+    optimizeNames(names, constants3) {
+      if (!super.optimizeNames(names, constants3)) return;
+      this.iteration = optimizeExpr(this.iteration, names, constants3);
       return this;
     }
     get names() {
@@ -36646,9 +36646,9 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
     render(opts) {
       return `for(${this.varKind} ${this.name} ${this.loop} ${this.iterable})` + super.render(opts);
     }
-    optimizeNames(names, constants2) {
-      if (!super.optimizeNames(names, constants2)) return;
-      this.iterable = optimizeExpr(this.iterable, names, constants2);
+    optimizeNames(names, constants3) {
+      if (!super.optimizeNames(names, constants3)) return;
+      this.iterable = optimizeExpr(this.iterable, names, constants3);
       return this;
     }
     get names() {
@@ -36687,11 +36687,11 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
       (_b = this.finally) === null || _b === void 0 || _b.optimizeNodes();
       return this;
     }
-    optimizeNames(names, constants2) {
+    optimizeNames(names, constants3) {
       var _a3, _b;
-      super.optimizeNames(names, constants2);
-      (_a3 = this.catch) === null || _a3 === void 0 || _a3.optimizeNames(names, constants2);
-      (_b = this.finally) === null || _b === void 0 || _b.optimizeNames(names, constants2);
+      super.optimizeNames(names, constants3);
+      (_a3 = this.catch) === null || _a3 === void 0 || _a3.optimizeNames(names, constants3);
+      (_b = this.finally) === null || _b === void 0 || _b.optimizeNames(names, constants3);
       return this;
     }
     get names() {
@@ -36940,7 +36940,7 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
   function addExprNames(names, from) {
     return from instanceof code_1._CodeOrName ? addNames(names, from.names) : names;
   }
-  function optimizeExpr(expr, names, constants2) {
+  function optimizeExpr(expr, names, constants3) {
     if (expr instanceof code_1.Name) return replaceName(expr);
     if (!canOptimize(expr)) return expr;
     return new code_1._Code(expr._items.reduce((items, c) => {
@@ -36950,13 +36950,13 @@ var require_codegen = /* @__PURE__ */ __commonJSMin(((exports2) => {
       return items;
     }, []));
     function replaceName(n) {
-      const c = constants2[n.str];
+      const c = constants3[n.str];
       if (c === void 0 || names[n.str] !== 1) return n;
       delete names[n.str];
       return c;
     }
     function canOptimize(e) {
-      return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants2[c.str] !== void 0);
+      return e instanceof code_1._Code && e._items.some((c) => c instanceof code_1.Name && names[c.str] === 1 && constants3[c.str] !== void 0);
     }
   }
   function subtractNames(names, from) {
@@ -45198,525 +45198,9 @@ function checkCancelled(signal) {
 
 // src/adb.ts
 import { execFile } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { accessSync, constants, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createConnection as createConnection2 } from "node:net";
 import path from "node:path";
-
-// src/adb-server.ts
-import { spawn } from "node:child_process";
-import { createConnection } from "node:net";
-import { setTimeout as delay } from "node:timers/promises";
-var localAdbAddress = "127.0.0.1:5037";
-function conflict() {
-  return new MobileUseError(
-    "ADB_SERVER_CONFLICT",
-    "The local ADB port is occupied by an incompatible or unverified server.",
-    "Leave the existing process running. Resolve the local server/version conflict yourself; mobile-use will not kill, replace, or restart it."
-  );
-}
-function serverStartupError(error62, startupAttempted) {
-  const failure2 = publicError(error62);
-  if (!startupAttempted) return failure2;
-  return new MobileUseError(
-    failure2.code,
-    failure2.message,
-    `${failure2.remediation} Server startup may have completed. Check the local server before retrying; do not automatically replay startup.`,
-    false,
-    true
-  );
-}
-var LocalAdbServer = class {
-  constructor(connect = () => createConnection({ host: "127.0.0.1", port: 5037 }), spawnProcess = spawn) {
-    this.connect = connect;
-    this.spawnProcess = spawnProcess;
-  }
-  connect;
-  spawnProcess;
-  query(request, signal, timeoutMs = 1e3) {
-    return new Promise((resolve, reject) => {
-      checkCancelled(signal);
-      const socket = this.connect();
-      let connected = false;
-      let settled = false;
-      let pending = Buffer.alloc(0);
-      const maxLength = request === "host:version" ? 4 : 65535;
-      const finish = (error62, value = null) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(deadline);
-        signal?.removeEventListener("abort", cancelled);
-        socket.destroy();
-        if (error62) reject(error62);
-        else resolve(value);
-      };
-      const cancelled = () => finish(new MobileUseError(
-        "CANCELLED",
-        "The local ADB server check was cancelled.",
-        "Check the local server before continuing."
-      ));
-      const deadline = setTimeout(() => finish(conflict()), timeoutMs);
-      signal?.addEventListener("abort", cancelled, { once: true });
-      socket.once("connect", () => {
-        connected = true;
-        socket.write(`${request.length.toString(16).padStart(4, "0")}${request}`);
-      });
-      socket.on("data", (chunk) => {
-        if (settled) return;
-        if (pending.length + chunk.length > maxLength + 8) return finish(conflict());
-        pending = Buffer.concat([pending, chunk]);
-        if (pending.length < 4) return;
-        if (pending.subarray(0, 4).toString("latin1") !== "OKAY") return finish(conflict());
-        if (pending.length < 8) return;
-        const prefix = pending.subarray(4, 8).toString("latin1");
-        if (!/^[0-9a-f]{4}$/i.test(prefix)) return finish(conflict());
-        const size = Number.parseInt(prefix, 16);
-        if (size > maxLength || pending.length > size + 8) return finish(conflict());
-        if (pending.length === size + 8) finish(null, pending.subarray(8));
-      });
-      socket.once("error", (error62) => {
-        finish(!connected && error62.code === "ECONNREFUSED" ? null : conflict());
-      });
-      socket.once("close", () => finish(conflict()));
-      if (signal?.aborted) cancelled();
-    });
-  }
-  async ready(version2, signal, timeoutMs) {
-    const reply = await this.query("host:version", signal, timeoutMs);
-    if (reply === null) return false;
-    const text = reply.toString("latin1");
-    if (!/^[0-9a-f]{4}$/i.test(text) || Number.parseInt(text, 16) !== version2) throw conflict();
-    return true;
-  }
-  launch(executable, env) {
-    return new Promise((resolve, reject) => {
-      const failed = (error62) => reject(new MobileUseError(
-        isRecord(error62) && error62.code === "ENOENT" ? "ADB_NOT_FOUND" : "ADB_SERVER_START_FAILED",
-        "The local ADB server process could not be started.",
-        "Check the installed Platform-Tools and local execution policy. Do not change firewall settings or automatically retry."
-      ));
-      let child;
-      try {
-        child = this.spawnProcess(executable, ["-L", "tcp:localhost:5037", "server", "nodaemon"], {
-          env,
-          detached: true,
-          windowsHide: true,
-          stdio: "ignore"
-        });
-      } catch (error62) {
-        failed(error62);
-        return;
-      }
-      child.once("error", failed);
-      child.once("spawn", () => {
-        child.unref();
-        resolve(child);
-      });
-    });
-  }
-  async inventory(signal) {
-    const inventory = await this.query("host:devices-l", signal, 5e3);
-    if (inventory === null) {
-      throw new MobileUseError(
-        "ADB_SERVER_UNAVAILABLE",
-        "The local ADB server is unavailable for discovery.",
-        "Use mobile_start_adb_server for the requested Android task. Do not automatically replay startup or restart a shared server."
-      );
-    }
-    return inventory;
-  }
-  async ensureRunning(executable, env, version2, signal) {
-    let startupAttempted = false;
-    try {
-      if (!await this.ready(version2, signal)) {
-        checkCancelled(signal);
-        const child = await this.launch(executable, env);
-        startupAttempted = true;
-        const deadline = performance.now() + 5e3;
-        for (; ; ) {
-          checkCancelled(signal);
-          const remaining = Math.ceil(deadline - performance.now());
-          if (remaining <= 0) {
-            throw new MobileUseError(
-              "ADB_SERVER_START_FAILED",
-              "The local ADB server did not become ready within five seconds.",
-              "Check local ADB startup errors and policy. Do not automatically retry or restart another server."
-            );
-          }
-          if (await this.ready(version2, signal, remaining)) break;
-          if (child.exitCode !== null || child.signalCode !== null) {
-            throw new MobileUseError(
-              "ADB_SERVER_START_FAILED",
-              "The ADB server process exited before readiness was verified.",
-              "Check local ADB startup errors and policy. No restart or replacement was attempted."
-            );
-          }
-          await delay(Math.min(100, remaining), void 0, signal ? { signal } : {}).catch((error62) => {
-            checkCancelled(signal);
-            throw error62;
-          });
-        }
-      }
-      checkCancelled(signal);
-      const inventory = await this.inventory(signal);
-      return { startupAttempted, inventory };
-    } catch (error62) {
-      throw serverStartupError(error62, startupAttempted);
-    }
-  }
-};
-
-// src/adb.ts
-function parseAdbVersion(output2) {
-  const tools = /^Version (\d+)\.(\d+)\.(\d+)(?:-\S+)?\s*$/m.exec(output2);
-  const protocol = /^Android Debug Bridge version 1\.0\.(\d+)\s*$/m.exec(output2);
-  const serverVersion = Number(protocol?.[1]);
-  if (!tools?.[1] || !tools[2] || !tools[3] || Number(tools[1]) < 30 || !Number.isSafeInteger(serverVersion) || serverVersion < 1 || serverVersion > 65535) {
-    throw new MobileUseError(
-      "ADB_VERSION_UNSUPPORTED",
-      "Modern Android Platform-Tools and its server protocol version could not be confirmed.",
-      "Use current official Platform-Tools supporting paired Wireless debugging and transport IDs."
-    );
-  }
-  return { platformToolsVersion: `${tools[1]}.${tools[2]}.${tools[3]}`, serverVersion };
-}
-function resolveAdbExecutable(env = process.env, platform = process.platform) {
-  if (platform !== "win32") {
-    throw new MobileUseError("UNSUPPORTED_HOST", "The POC supports Windows hosts only.", "Use a Windows host.");
-  }
-  const configured = env.MOBILE_USE_ADB_PATH;
-  if (configured) {
-    if (!path.isAbsolute(configured) || path.extname(configured).toLowerCase() !== ".exe") {
-      throw new MobileUseError(
-        "ADB_CONFIG_UNSUPPORTED",
-        "MOBILE_USE_ADB_PATH must be an absolute path to adb.exe.",
-        "Set the optional local override to the installed Android Platform-Tools adb.exe."
-      );
-    }
-    if (!existsSync(configured) || !statSync(configured).isFile()) {
-      throw new MobileUseError("ADB_NOT_FOUND", "The configured adb.exe is missing.", "Correct MOBILE_USE_ADB_PATH.");
-    }
-    return configured;
-  }
-  const userSdk = env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, "Android", "Sdk") : env.USERPROFILE ? path.join(env.USERPROFILE, "AppData", "Local", "Android", "Sdk") : void 0;
-  const toolDirectories = [env.ANDROID_HOME, env.ANDROID_SDK_ROOT, userSdk].filter((sdk) => typeof sdk === "string" && path.isAbsolute(sdk)).map((sdk) => path.join(sdk, "platform-tools"));
-  const searchPath = (env.PATH ?? env.Path ?? "").split(path.delimiter).map((entry) => {
-    return entry.startsWith('"') && entry.endsWith('"') ? entry.slice(1, -1) : entry;
-  });
-  const visited = /* @__PURE__ */ new Set();
-  for (const directory of [...toolDirectories, ...searchPath]) {
-    if (!path.isAbsolute(directory)) continue;
-    const executable = path.join(directory, "adb.exe");
-    const key = executable.toLowerCase();
-    if (visited.has(key)) continue;
-    visited.add(key);
-    if (existsSync(executable) && statSync(executable).isFile()) return executable;
-  }
-  throw new MobileUseError(
-    "ADB_NOT_FOUND",
-    "Android Platform-Tools adb.exe was not found.",
-    "Install Platform-Tools yourself and add its directory to PATH, or set MOBILE_USE_ADB_PATH. Restart the plugin after changing its environment."
-  );
-}
-function adbEnvironment(env) {
-  const result2 = {};
-  for (const name of ["PATH", "Path", "SystemRoot", "SYSTEMROOT", "WINDIR", "USERPROFILE", "HOME", "TEMP", "TMP", "LOCALAPPDATA", "APPDATA"]) {
-    if (env[name] !== void 0) result2[name] = env[name];
-  }
-  return result2;
-}
-var executeCommand = (executable, args, options) => new Promise((resolve, reject) => {
-  checkCancelled(options.signal);
-  let spawned = false;
-  const child = execFile(executable, [...args], {
-    encoding: "buffer",
-    windowsHide: true,
-    timeout: options.timeoutMs ?? 15e3,
-    maxBuffer: 16 * 1024 * 1024,
-    env: options.env,
-    ...options.signal ? { signal: options.signal } : {}
-  }, (error62, stdout, stderr) => {
-    if (!error62) {
-      resolve(stdout);
-      return;
-    }
-    const mayHaveRun = options.mutating === true && spawned;
-    const details = `${stderr.toString("utf8")}
-${stdout.toString("utf8")}`.toLowerCase();
-    let code = "ADB_FAILED";
-    let message = "ADB could not complete the requested operation.";
-    let remediation = "Check the selected device and local ADB setup. Do not replay uncertain input.";
-    if (error62.code === "ENOENT") {
-      code = "ADB_NOT_FOUND";
-      message = "adb.exe could not be started.";
-      remediation = "Check the installed Platform-Tools path.";
-    } else if (options.signal?.aborted) {
-      code = "CANCELLED";
-      message = "The ADB operation was cancelled.";
-    } else if (error62.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
-      code = "ADB_OUTPUT_LIMIT";
-      message = "ADB output exceeded the POC's bounded buffer.";
-    } else if (error62.killed) {
-      code = "ADB_TIMEOUT";
-      message = "The ADB operation exceeded its command deadline.";
-    } else if (/cannot connect to (?:daemon|(?:adb )?server)|cannot start server|failed to start (?:adb )?(?:daemon|server)|(?:daemon|server) (?:didn't ack|failed to start)/.test(details)) {
-      code = "ADB_SERVER_UNAVAILABLE";
-      message = "The local ADB server is unavailable.";
-      remediation = "Use mobile_start_adb_server for the requested Android task, then retry discovery. Do not kill/restart a shared server or infer the phone's connection state from this failure.";
-    } else if (/failure \[install_[a-z0-9_]+/.test(details)) {
-      code = "APP_INSTALL_FAILED";
-      message = "Android rejected the APK installation.";
-      remediation = "Check the APK, signatures, existing app version, and device policy. Do not automatically retry or grant permissions.";
-    } else if (/failure \[delete_[a-z0-9_]+/.test(details)) {
-      code = "APP_UNINSTALL_FAILED";
-      message = "Android rejected the app uninstallation.";
-      remediation = "Check the package and device policy. Do not bypass protected-app restrictions or automatically retry.";
-    } else if (details.includes("unauthorized")) {
-      code = "DEVICE_UNAUTHORIZED";
-      message = "The selected device has not authorized this host.";
-      remediation = "The user must accept the intended debugging key on the unlocked phone.";
-    } else if (details.includes("offline")) {
-      code = "DEVICE_OFFLINE";
-      message = "The selected device is offline.";
-      remediation = "Restore the connection, rediscover, and explicitly reselect.";
-    } else if (/not found|no devices|closed|cannot connect|connection reset/.test(details)) {
-      code = "TRANSPORT_LOST";
-      message = "The selected ADB transport is unavailable.";
-      remediation = "Restore the connection, rediscover, and explicitly reselect. No fallback was attempted.";
-    }
-    if (code === "ADB_FAILED" && args.includes("dev.mobileuse.text.TextMain")) {
-      const exit = typeof error62.code === "number" ? error62.code : "unknown";
-      const marker = /^MOBILE_USE_TEXT_V1_(OK|READY|FAILED|UNSUPPORTED|ERROR_(?:REQUEST|CONNECT|CONFIGURE|ROOT|WINDOW|HIERARCHY|TARGET|WRITE|VERIFY|DISCONNECT))\r?$/m.exec(stdout.toString("utf8"))?.[1] ?? "missing";
-      const exception = /\bjava\.lang\.(IllegalStateException|IllegalArgumentException|SecurityException|NullPointerException|NoSuchMethodError|NoClassDefFoundError|RuntimeException)\b/.exec(stderr.toString("utf8"))?.[1] ?? "unavailable";
-      message = `The text helper process failed (exit ${exit}; result ${marker}; exception ${exception}).`;
-    }
-    reject(new MobileUseError(code, message, remediation, !mayHaveRun, mayHaveRun));
-  });
-  child.once("spawn", () => {
-    spawned = true;
-  });
-});
-var AdbClient = class {
-  constructor(env = process.env, runner = executeCommand, platform = process.platform, server = new LocalAdbServer()) {
-    this.env = env;
-    this.runner = runner;
-    this.platform = platform;
-    this.server = server;
-  }
-  env;
-  runner;
-  platform;
-  server;
-  shutdown = new AbortController();
-  executable() {
-    return resolveAdbExecutable(this.env, this.platform);
-  }
-  async startServer(signal) {
-    const version2 = parseAdbVersion((await this.run(["version"], signal ? { signal } : {})).toString("utf8"));
-    const combined = signal ? AbortSignal.any([this.shutdown.signal, signal]) : this.shutdown.signal;
-    const started = await this.server.ensureRunning(this.executable(), adbEnvironment(this.env), version2.serverVersion, combined);
-    try {
-      return {
-        status: "ready",
-        serverAddress: localAdbAddress,
-        startupAttempted: started.startupAttempted,
-        devices: parseDeviceList(started.inventory.toString("utf8"), false)
-      };
-    } catch (error62) {
-      throw serverStartupError(error62, started.startupAttempted);
-    }
-  }
-  async run(args, options = {}) {
-    if (this.shutdown.signal.aborted) {
-      throw new MobileUseError("SERVER_STOPPED", "The mobile-use server is stopped.", "Start a new plugin session.");
-    }
-    const socket = this.env.ADB_SERVER_SOCKET;
-    const address = this.env.ANDROID_ADB_SERVER_ADDRESS;
-    const port = this.env.ANDROID_ADB_SERVER_PORT;
-    if (socket && socket !== "tcp:127.0.0.1:5037" && socket !== "tcp:localhost:5037" || address && address !== "127.0.0.1" && address !== "localhost" || port && port !== "5037") {
-      throw new MobileUseError(
-        "ADB_CONFIG_UNSUPPORTED",
-        "The POC requires the local ADB server on port 5037.",
-        "Use the default local server. Remote or non-default server overrides are not supported."
-      );
-    }
-    const signal = options.signal ? AbortSignal.any([this.shutdown.signal, options.signal]) : this.shutdown.signal;
-    checkCancelled(signal);
-    const executable = this.executable();
-    if (args.length === 2 && args[0] === "devices" && args[1] === "-l") {
-      return Buffer.concat([Buffer.from("List of devices attached\n"), await this.server.inventory(signal)]);
-    }
-    return this.runner(executable, ["-H", "127.0.0.1", "-P", "5037", ...args], {
-      ...options,
-      signal,
-      env: adbEnvironment(this.env)
-    });
-  }
-  stop() {
-    this.shutdown.abort();
-  }
-};
-function transportKind(serial, fields) {
-  if (serial.startsWith("emulator-")) return "emulator";
-  if (serial.endsWith("._adb-tls-connect._tcp")) return "paired-wireless";
-  if (/:\d+$/.test(serial)) return "network";
-  if (fields.some((field) => field.startsWith("usb:"))) return "usb";
-  if (/^[A-Za-z0-9_-]+$/.test(serial)) return "usb";
-  return "unknown";
-}
-function parseDeviceList(output2, requireHeader = true) {
-  if (Buffer.byteLength(output2) > 512 * 1024) {
-    throw new MobileUseError("INVALID_DEVICE_LIST", "The ADB inventory exceeds the POC's size limit.", "Use a bounded local device inventory.");
-  }
-  const lines = output2.trim().split("\n").map((line) => line.trim()).filter(Boolean);
-  if (requireHeader && lines.shift() !== "List of devices attached") {
-    throw new MobileUseError("INVALID_DEVICE_LIST", "ADB did not return a device inventory.", "Check local Platform-Tools.");
-  }
-  const devices = [];
-  const seen = /* @__PURE__ */ new Set();
-  const transports = /* @__PURE__ */ new Set();
-  for (const line of lines) {
-    const columns = line.split(/\s+/);
-    const endpointId = columns[0] === "(no" && columns[1] === "serial" && columns[2] === "number)" ? columns.splice(0, 3).join(" ") : columns.shift();
-    const state = columns[0] === "no" && columns[1] === "permissions" ? columns.splice(0, 2).join(" ") : columns.shift();
-    if (!endpointId || !state || seen.has(endpointId)) {
-      throw new MobileUseError("INVALID_DEVICE_LIST", "The ADB inventory is malformed or ambiguous.", "Refresh the device inventory.");
-    }
-    if (endpointId.length > 512 || state.length > 32 || devices.length >= 256) {
-      throw new MobileUseError("INVALID_DEVICE_LIST", "The ADB inventory exceeds the POC's endpoint limits.", "Use a bounded local device inventory.");
-    }
-    const finalField = columns.at(-1);
-    const transportId = finalField?.startsWith("transport_id:") ? finalField.slice("transport_id:".length) : null;
-    if (transportId !== null && (!/^[1-9]\d{0,19}$/.test(transportId) || BigInt(transportId) > 0xffffffffffffffffn)) {
-      throw new MobileUseError("INVALID_DEVICE_LIST", "ADB reported an invalid transport ID.", "Refresh the inventory; zero and non-canonical IDs cannot be routed safely.");
-    }
-    if (transportId && transports.has(transportId)) {
-      throw new MobileUseError("INVALID_DEVICE_LIST", "ADB reported duplicate transport IDs.", "Refresh the device inventory.");
-    }
-    seen.add(endpointId);
-    if (transportId) transports.add(transportId);
-    const kind = transportKind(endpointId, columns);
-    const selectable = state === "device" && transportId !== null && kind !== "emulator" && kind !== "unknown";
-    let reason = null;
-    if (state !== "device") reason = `ADB state: ${state}. User setup or recovery is required.`;
-    else if (!transportId) reason = "No exact transport ID; update Platform-Tools before selection.";
-    else if (kind === "emulator") reason = "Emulators are outside this physical-device POC.";
-    else if (kind === "unknown") reason = "Transport kind is unknown and cannot be selected safely.";
-    else if (kind === "network" || kind === "paired-wireless") reason = "Modern Wireless debugging will be verified on selection.";
-    devices.push({
-      endpointId,
-      transportId,
-      kind,
-      state,
-      model: columns.find((field) => field.startsWith("model:"))?.slice("model:".length).replaceAll("_", " ") || null,
-      selectable,
-      reason
-    });
-  }
-  return devices;
-}
-var AdbTrackParser = class {
-  pending = Buffer.alloc(0);
-  accepted = false;
-  push(chunk) {
-    this.pending = Buffer.concat([this.pending, chunk]);
-    if (this.pending.length > 1024 * 1024) {
-      throw new MobileUseError("INVALID_DEVICE_LIST", "ADB tracking exceeded its buffer limit.", "Rediscover and reselect.");
-    }
-    if (!this.accepted) {
-      if (this.pending.length < 4) return [];
-      if (this.pending.subarray(0, 4).toString("ascii") !== "OKAY") {
-        throw new MobileUseError("ADB_SERVER_UNAVAILABLE", "The local ADB server rejected transport monitoring.", "Use compatible Platform-Tools.");
-      }
-      this.accepted = true;
-      this.pending = this.pending.subarray(4);
-    }
-    const frames = [];
-    while (this.pending.length >= 4) {
-      const prefix = this.pending.subarray(0, 4).toString("ascii");
-      if (!/^[0-9a-f]{4}$/i.test(prefix)) {
-        throw new MobileUseError("INVALID_DEVICE_LIST", "ADB tracking returned an invalid frame.", "Rediscover and reselect.");
-      }
-      const size = Number.parseInt(prefix, 16);
-      if (this.pending.length < size + 4) break;
-      frames.push(parseDeviceList(this.pending.subarray(4, size + 4).toString("utf8"), false));
-      this.pending = this.pending.subarray(size + 4);
-    }
-    return frames;
-  }
-};
-function createTransportMonitor(connect) {
-  return (onInventory, onLost, signal) => new Promise((resolve, reject) => {
-    checkCancelled(signal);
-    const socket = connect();
-    const parser = new AdbTrackParser();
-    let intentional = false;
-    let ready = false;
-    let failed = false;
-    const close = () => {
-      intentional = true;
-      clearTimeout(deadline);
-      signal.removeEventListener("abort", cancelled);
-      socket.destroy();
-    };
-    const fail = (error62) => {
-      if (failed || intentional) return;
-      failed = true;
-      close();
-      if (!ready) reject(error62);
-      else onLost();
-    };
-    const cancelled = () => fail(new MobileUseError("CANCELLED", "Transport monitoring was cancelled.", "Select a new target."));
-    const deadline = setTimeout(() => fail(new MobileUseError(
-      "ADB_SERVER_UNAVAILABLE",
-      "Local ADB transport monitoring did not become ready.",
-      "Check Platform-Tools and reselect."
-    )), 5e3);
-    signal.addEventListener("abort", cancelled, { once: true });
-    socket.on("connect", () => {
-      socket.setKeepAlive(true);
-      const request = "host:track-devices-l";
-      socket.write(`${Buffer.byteLength(request).toString(16).padStart(4, "0")}${request}`);
-    });
-    socket.on("data", (chunk) => {
-      try {
-        for (const inventory of parser.push(chunk)) {
-          if (!ready) {
-            ready = true;
-            clearTimeout(deadline);
-            resolve({ initial: inventory, close });
-          }
-          onInventory(inventory);
-        }
-      } catch (error62) {
-        fail(error62 instanceof MobileUseError ? error62 : new MobileUseError(
-          "INVALID_DEVICE_LIST",
-          "ADB tracking could not be parsed.",
-          "Rediscover and reselect."
-        ));
-      }
-    });
-    socket.on("error", () => fail(new MobileUseError(
-      "ADB_SERVER_UNAVAILABLE",
-      "The local ADB monitoring connection failed.",
-      "Check local ADB setup and reselect."
-    )));
-    socket.on("close", () => fail(new MobileUseError(
-      "TRANSPORT_LOST",
-      "The ADB server connection closed.",
-      "Rediscover and explicitly reselect."
-    )));
-  });
-}
-var startTransportMonitor = createTransportMonitor(
-  () => createConnection2({ host: "127.0.0.1", port: 5037 })
-);
-
-// src/device-session.ts
-import { randomUUID as randomUUID3 } from "node:crypto";
-
-// src/android.ts
-import { crc32, inflateSync } from "node:zlib";
-import { setTimeout as setTimeout2 } from "node:timers/promises";
 
 // node_modules/fast-xml-parser/src/util.js
 var nameStartChar = ":A-Za-z_\\u00C0-\\u00D6\\u00D8-\\u00F6\\u00F8-\\u02FF\\u0370-\\u037D\\u037F-\\u1FFF\\u200C-\\u200D\\u2070-\\u218F\\u2C00-\\u2FEF\\u3001-\\uD7FF\\uF900-\\uFDCF\\uFDF0-\\uFFFD";
@@ -49904,8 +49388,754 @@ var XMLValidator = {
   validate: validate2
 };
 
+// src/adb-server.ts
+import { spawn } from "node:child_process";
+import { createConnection } from "node:net";
+import { setTimeout as delay } from "node:timers/promises";
+var localAdbAddress = "127.0.0.1:5037";
+function conflict() {
+  return new MobileUseError(
+    "ADB_SERVER_CONFLICT",
+    "The local ADB port is occupied by an incompatible or unverified server.",
+    "Leave the existing process running. Resolve the local server/version conflict yourself; mobile-use will not kill, replace, or restart it."
+  );
+}
+function serverStartupError(error62, startupAttempted) {
+  const failure2 = publicError(error62);
+  if (!startupAttempted) return failure2;
+  return new MobileUseError(
+    failure2.code,
+    failure2.message,
+    `${failure2.remediation} Server startup may have completed. Check the local server before retrying; do not automatically replay startup.`,
+    false,
+    true
+  );
+}
+var LocalAdbServer = class {
+  constructor(connect = () => createConnection({ host: "127.0.0.1", port: 5037 }), spawnProcess = spawn) {
+    this.connect = connect;
+    this.spawnProcess = spawnProcess;
+  }
+  connect;
+  spawnProcess;
+  query(request, signal, timeoutMs = 1e3) {
+    return new Promise((resolve, reject) => {
+      checkCancelled(signal);
+      const socket = this.connect();
+      let connected = false;
+      let settled = false;
+      let pending = Buffer.alloc(0);
+      const maxLength = request === "host:version" ? 4 : 65535;
+      const finish = (error62, value = null) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        signal?.removeEventListener("abort", cancelled);
+        socket.destroy();
+        if (error62) reject(error62);
+        else resolve(value);
+      };
+      const cancelled = () => finish(new MobileUseError(
+        "CANCELLED",
+        "The local ADB server check was cancelled.",
+        "Check the local server before continuing."
+      ));
+      const deadline = setTimeout(() => finish(conflict()), timeoutMs);
+      signal?.addEventListener("abort", cancelled, { once: true });
+      socket.once("connect", () => {
+        connected = true;
+        socket.write(`${request.length.toString(16).padStart(4, "0")}${request}`);
+      });
+      socket.on("data", (chunk) => {
+        if (settled) return;
+        if (pending.length + chunk.length > maxLength + 8) return finish(conflict());
+        pending = Buffer.concat([pending, chunk]);
+        if (pending.length < 4) return;
+        if (pending.subarray(0, 4).toString("latin1") !== "OKAY") return finish(conflict());
+        if (pending.length < 8) return;
+        const prefix = pending.subarray(4, 8).toString("latin1");
+        if (!/^[0-9a-f]{4}$/i.test(prefix)) return finish(conflict());
+        const size = Number.parseInt(prefix, 16);
+        if (size > maxLength || pending.length > size + 8) return finish(conflict());
+        if (pending.length === size + 8) finish(null, pending.subarray(8));
+      });
+      socket.once("error", (error62) => {
+        finish(!connected && error62.code === "ECONNREFUSED" ? null : conflict());
+      });
+      socket.once("close", () => finish(conflict()));
+      if (signal?.aborted) cancelled();
+    });
+  }
+  async ready(version2, signal, timeoutMs) {
+    const reply = await this.query("host:version", signal, timeoutMs);
+    if (reply === null) return false;
+    const text = reply.toString("latin1");
+    if (!/^[0-9a-f]{4}$/i.test(text) || Number.parseInt(text, 16) !== version2) throw conflict();
+    return true;
+  }
+  launch(executable, env) {
+    return new Promise((resolve, reject) => {
+      const failed = (error62) => reject(new MobileUseError(
+        isRecord(error62) && error62.code === "ENOENT" ? "ADB_NOT_FOUND" : "ADB_SERVER_START_FAILED",
+        "The local ADB server process could not be started.",
+        "Check the installed Platform-Tools and local execution policy. Do not change firewall settings or automatically retry."
+      ));
+      let child;
+      try {
+        child = this.spawnProcess(executable, ["-L", "tcp:localhost:5037", "server", "nodaemon"], {
+          env,
+          detached: true,
+          windowsHide: true,
+          stdio: "ignore"
+        });
+      } catch (error62) {
+        failed(error62);
+        return;
+      }
+      child.once("error", failed);
+      child.once("spawn", () => {
+        child.unref();
+        resolve(child);
+      });
+    });
+  }
+  async inventory(signal) {
+    const inventory = await this.query("host:devices-l", signal, 5e3);
+    if (inventory === null) {
+      throw new MobileUseError(
+        "ADB_SERVER_UNAVAILABLE",
+        "The local ADB server is unavailable for discovery.",
+        "Use mobile_start_adb_server for the requested Android task. Do not automatically replay startup or restart a shared server."
+      );
+    }
+    return inventory;
+  }
+  async ensureRunning(executable, env, version2, signal) {
+    let startupAttempted = false;
+    try {
+      if (!await this.ready(version2, signal)) {
+        checkCancelled(signal);
+        const child = await this.launch(executable, env);
+        startupAttempted = true;
+        const deadline = performance.now() + 5e3;
+        for (; ; ) {
+          checkCancelled(signal);
+          const remaining = Math.ceil(deadline - performance.now());
+          if (remaining <= 0) {
+            throw new MobileUseError(
+              "ADB_SERVER_START_FAILED",
+              "The local ADB server did not become ready within five seconds.",
+              "Check local ADB startup errors and policy. Do not automatically retry or restart another server."
+            );
+          }
+          if (await this.ready(version2, signal, remaining)) break;
+          if (child.exitCode !== null || child.signalCode !== null) {
+            throw new MobileUseError(
+              "ADB_SERVER_START_FAILED",
+              "The ADB server process exited before readiness was verified.",
+              "Check local ADB startup errors and policy. No restart or replacement was attempted."
+            );
+          }
+          await delay(Math.min(100, remaining), void 0, signal ? { signal } : {}).catch((error62) => {
+            checkCancelled(signal);
+            throw error62;
+          });
+        }
+      }
+      checkCancelled(signal);
+      const inventory = await this.inventory(signal);
+      return { startupAttempted, inventory };
+    } catch (error62) {
+      throw serverStartupError(error62, startupAttempted);
+    }
+  }
+};
+
+// src/adb.ts
+function parseAdbVersion(output2) {
+  const tools = /^Version (\d+)\.(\d+)\.(\d+)(?:-\S+)?\s*$/m.exec(output2);
+  const protocol = /^Android Debug Bridge version 1\.0\.(\d+)\s*$/m.exec(output2);
+  const serverVersion = Number(protocol?.[1]);
+  if (!tools?.[1] || !tools[2] || !tools[3] || Number(tools[1]) < 30 || !Number.isSafeInteger(serverVersion) || serverVersion < 1 || serverVersion > 65535) {
+    throw new MobileUseError(
+      "ADB_VERSION_UNSUPPORTED",
+      "Modern Android Platform-Tools and its server protocol version could not be confirmed.",
+      "Use current official Platform-Tools supporting paired Wireless debugging and transport IDs."
+    );
+  }
+  return { platformToolsVersion: `${tools[1]}.${tools[2]}.${tools[3]}`, serverVersion };
+}
+var defaultAdbFileSystem = {
+  exists(targetPath) {
+    try {
+      lstatSync(targetPath);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  isFile(targetPath) {
+    try {
+      return statSync(targetPath).isFile();
+    } catch {
+      return false;
+    }
+  },
+  isExecutable(targetPath) {
+    try {
+      accessSync(targetPath, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  listDirectories(directoryPath) {
+    try {
+      return readdirSync(directoryPath, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    } catch {
+      return [];
+    }
+  },
+  readTextFile(filePath, maxBytes) {
+    try {
+      const info = statSync(filePath);
+      if (!info.isFile() || info.size < 1 || info.size > maxBytes) return void 0;
+      return readFileSync(filePath, "utf8");
+    } catch {
+      return void 0;
+    }
+  }
+};
+var MAX_STUDIO_SDK_XML_BYTES = 64 * 1024;
+var STUDIO_SDK_OPTION_NAMES = /* @__PURE__ */ new Set(["androidSdkAbsolutePath", "androidSdkPath", "android.sdk.path"]);
+function isQualifiedPath(value, platform) {
+  if (/[\u0000-\u001f\u007f]/.test(value)) return false;
+  if (platform === "win32") {
+    return /^[A-Za-z]:[\\/]/.test(value) || /^(?:\\\\|\/\/)(?![.?][\\/])[^\\/:*?"<>|]+[\\/][^\\/:*?"<>|]+/.test(value);
+  }
+  return value.startsWith("/") && !value.startsWith("//");
+}
+function hasDotTraversalSegment(value, platform) {
+  const segments = value.split(platform === "win32" ? /[\\/]/ : /\//);
+  return segments.some((segment) => segment === "." || segment === "..");
+}
+function canonicalizeDirectoryPath(value, platform, pathOps) {
+  const normalized = pathOps.normalize(value);
+  if (platform === "win32" && /^\\\\[^\\]+\\[^\\]+$/.test(normalized)) {
+    return `${normalized}\\`;
+  }
+  const root = pathOps.parse(normalized).root;
+  if (normalized === root) return normalized;
+  return platform === "win32" ? normalized.replace(/\\+$/, "") : normalized.replace(/\/+$/, "");
+}
+function qualifiedEnvDirectory(value, platform, pathOps) {
+  if (typeof value !== "string" || !isQualifiedPath(value, platform) || hasDotTraversalSegment(value, platform)) {
+    return void 0;
+  }
+  return canonicalizeDirectoryPath(value, platform, pathOps);
+}
+function xmlElementEntries(values) {
+  return values.filter((value) => !(isRecord(value) && Object.keys(value).length === 1 && typeof value["#text"] === "string" && /^[ \t\r\n]*$/.test(value["#text"])));
+}
+function parseAndroidStudioSdkXml(xml, userHome, platform, pathOps) {
+  if (!xml || Buffer.byteLength(xml) > MAX_STUDIO_SDK_XML_BYTES || /<!DOCTYPE|<!ENTITY/i.test(xml) || XMLValidator.validate(xml) !== true) {
+    return { status: "invalid" };
+  }
+  let tree;
+  try {
+    tree = new XMLParser({
+      preserveOrder: true,
+      ignoreDeclaration: true,
+      ignoreAttributes: false,
+      attributeNamePrefix: "",
+      parseAttributeValue: false,
+      parseTagValue: false,
+      trimValues: false,
+      htmlEntities: true
+    }).parse(xml);
+  } catch {
+    return { status: "invalid" };
+  }
+  if (!Array.isArray(tree)) return { status: "invalid" };
+  const roots = xmlElementEntries(tree);
+  if (roots.length !== 1 || !isRecord(roots[0]) || !Array.isArray(roots[0].application)) {
+    return { status: "invalid" };
+  }
+  const found = /* @__PURE__ */ new Map();
+  for (const entry of xmlElementEntries(roots[0].application)) {
+    if (!isRecord(entry) || !Array.isArray(entry.component)) return { status: "invalid" };
+    const componentAttrs = isRecord(entry[":@"]) ? entry[":@"] : void 0;
+    if (componentAttrs?.name !== "AndroidSdkPathStore") continue;
+    for (const child of xmlElementEntries(entry.component)) {
+      if (!isRecord(child) || !Array.isArray(child.option)) return { status: "invalid" };
+      const optionAttrs = isRecord(child[":@"]) ? child[":@"] : void 0;
+      if (typeof optionAttrs?.name !== "string" || !STUDIO_SDK_OPTION_NAMES.has(optionAttrs.name)) continue;
+      const rawValue = optionAttrs.value;
+      if (typeof rawValue !== "string" || rawValue.length === 0 || /[\u0000-\u001f\u007f]/.test(rawValue)) {
+        return { status: "invalid" };
+      }
+      let expanded;
+      const usesHomeMacro = rawValue === "$USER_HOME$" || rawValue.startsWith("$USER_HOME$/") || platform === "win32" && rawValue.startsWith("$USER_HOME$\\");
+      if (usesHomeMacro) {
+        if (!userHome || !isQualifiedPath(userHome, platform) || hasDotTraversalSegment(userHome, platform)) {
+          return { status: "invalid" };
+        }
+        const suffix = rawValue.slice("$USER_HOME$".length).replace(platform === "win32" ? /^[\\/]+/ : /^\/+/, "");
+        if (suffix && (/\$[^\\/]*\$/.test(suffix) || hasDotTraversalSegment(suffix, platform))) {
+          return { status: "invalid" };
+        }
+        expanded = suffix ? pathOps.join(userHome, suffix) : userHome;
+      } else {
+        if (/\$[^\\/]*\$/.test(rawValue) || hasDotTraversalSegment(rawValue, platform)) {
+          return { status: "invalid" };
+        }
+        expanded = rawValue;
+      }
+      if (!isQualifiedPath(expanded, platform)) {
+        return { status: "invalid" };
+      }
+      const normalized = canonicalizeDirectoryPath(expanded, platform, pathOps);
+      const key = platform === "win32" ? normalized.toLowerCase() : normalized;
+      found.set(key, normalized);
+    }
+  }
+  if (found.size === 0) return { status: "unset" };
+  if (found.size > 1) return { status: "invalid" };
+  const sdkPath = found.values().next().value;
+  return sdkPath ? { status: "ok", sdkPath } : { status: "unset" };
+}
+function resolveAndroidStudioCustomSdk(env, platform, pathOps, fs) {
+  const userHome = platform === "win32" ? qualifiedEnvDirectory(env.USERPROFILE, platform, pathOps) ?? qualifiedEnvDirectory(env.HOME, platform, pathOps) : qualifiedEnvDirectory(env.HOME, platform, pathOps);
+  let googleConfigRoot;
+  if (platform === "win32") {
+    const appData = qualifiedEnvDirectory(env.APPDATA, platform, pathOps) ?? (userHome ? pathOps.join(userHome, "AppData", "Roaming") : void 0);
+    googleConfigRoot = appData ? pathOps.join(appData, "Google") : void 0;
+  } else if (platform === "darwin") {
+    googleConfigRoot = userHome ? pathOps.join(userHome, "Library", "Application Support", "Google") : void 0;
+  } else {
+    const configHome = qualifiedEnvDirectory(env.XDG_CONFIG_HOME, platform, pathOps) ?? (userHome ? pathOps.join(userHome, ".config") : void 0);
+    googleConfigRoot = configHome ? pathOps.join(configHome, "Google") : void 0;
+  }
+  if (!googleConfigRoot) return void 0;
+  const studioDirs = fs.listDirectories(googleConfigRoot).filter((name) => name.startsWith("AndroidStudio")).sort();
+  if (studioDirs.length === 0) return void 0;
+  const candidates = /* @__PURE__ */ new Map();
+  for (const studioDir of studioDirs) {
+    const xmlPath = pathOps.join(googleConfigRoot, studioDir, "options", "android.sdk.path.xml");
+    if (!fs.exists(xmlPath)) continue;
+    const contents = fs.readTextFile(xmlPath, MAX_STUDIO_SDK_XML_BYTES);
+    if (contents === void 0) return void 0;
+    const parsed = parseAndroidStudioSdkXml(contents, userHome, platform, pathOps);
+    if (parsed.status === "invalid") return void 0;
+    if (parsed.status === "ok") {
+      const key = platform === "win32" ? parsed.sdkPath.toLowerCase() : parsed.sdkPath;
+      candidates.set(key, parsed.sdkPath);
+    }
+  }
+  if (candidates.size !== 1) return void 0;
+  return candidates.values().next().value;
+}
+function defaultAndroidStudioSdk(env, platform, pathOps) {
+  if (platform === "win32") {
+    const localAppData = qualifiedEnvDirectory(env.LOCALAPPDATA, platform, pathOps);
+    if (localAppData) return pathOps.join(localAppData, "Android", "Sdk");
+    const userProfile = qualifiedEnvDirectory(env.USERPROFILE, platform, pathOps);
+    return userProfile ? pathOps.join(userProfile, "AppData", "Local", "Android", "Sdk") : void 0;
+  }
+  const home = qualifiedEnvDirectory(env.HOME, platform, pathOps);
+  if (!home) return void 0;
+  return platform === "darwin" ? pathOps.join(home, "Library", "Android", "sdk") : pathOps.join(home, "Android", "Sdk");
+}
+function resolveAdbExecutable(env = process.env, platform = process.platform, fs = defaultAdbFileSystem) {
+  if (platform !== "win32" && platform !== "darwin" && platform !== "linux") {
+    throw new MobileUseError(
+      "UNSUPPORTED_HOST",
+      "The POC supports Windows, macOS, and Linux hosts only.",
+      "Use a Windows, macOS, or Linux host."
+    );
+  }
+  const pathOps = platform === "win32" ? path.win32 : path.posix;
+  const binaryName = platform === "win32" ? "adb.exe" : "adb";
+  const configured = env.MOBILE_USE_ADB_PATH;
+  if (configured) {
+    const validExtension = platform === "win32" ? pathOps.extname(configured).toLowerCase() === ".exe" : pathOps.extname(configured) === "";
+    if (/[\u0000-\u001f\u007f]/.test(configured) || /[\\/]$/.test(configured) || !isQualifiedPath(configured, platform) || !pathOps.basename(configured) || !validExtension) {
+      throw new MobileUseError(
+        "ADB_CONFIG_UNSUPPORTED",
+        `MOBILE_USE_ADB_PATH must be an absolute path to ${binaryName}.`,
+        `Set the optional local override to the installed Android Platform-Tools ${binaryName}.`
+      );
+    }
+    if (!fs.isFile(configured)) {
+      throw new MobileUseError("ADB_NOT_FOUND", `The configured ${binaryName} is missing.`, "Correct MOBILE_USE_ADB_PATH.");
+    }
+    if (platform !== "win32" && !fs.isExecutable(configured)) {
+      throw new MobileUseError(
+        "ADB_CONFIG_UNSUPPORTED",
+        `The configured ${binaryName} is not executable.`,
+        `Grant execute permission on ${binaryName} or set MOBILE_USE_ADB_PATH to an executable Android Platform-Tools ${binaryName}.`
+      );
+    }
+    return configured;
+  }
+  const visited = /* @__PURE__ */ new Set();
+  const probeDirectory = (directory) => {
+    if (typeof directory !== "string" || !isQualifiedPath(directory, platform)) return void 0;
+    const executable = pathOps.join(directory, binaryName);
+    const key = platform === "win32" ? pathOps.normalize(executable).toLowerCase() : pathOps.normalize(executable);
+    if (visited.has(key)) return void 0;
+    visited.add(key);
+    if (fs.isFile(executable) && (platform === "win32" || fs.isExecutable(executable))) {
+      return executable;
+    }
+    return void 0;
+  };
+  const probeSdk = (sdk) => typeof sdk === "string" && isQualifiedPath(sdk, platform) ? probeDirectory(pathOps.join(sdk, "platform-tools")) : void 0;
+  for (const envSdk of [env.ANDROID_SDK_ROOT, env.ANDROID_HOME]) {
+    const found = probeSdk(envSdk);
+    if (found) return found;
+  }
+  const studioFound = probeSdk(resolveAndroidStudioCustomSdk(env, platform, pathOps, fs));
+  if (studioFound) return studioFound;
+  const defaultFound = probeSdk(defaultAndroidStudioSdk(env, platform, pathOps));
+  if (defaultFound) return defaultFound;
+  const rawPath = platform === "win32" ? env.PATH ?? env.Path ?? "" : env.PATH ?? "";
+  for (const rawEntry of rawPath.split(pathOps.delimiter)) {
+    const entry = rawEntry.startsWith('"') && rawEntry.endsWith('"') ? rawEntry.slice(1, -1) : rawEntry;
+    const found = probeDirectory(entry);
+    if (found) return found;
+  }
+  throw new MobileUseError(
+    "ADB_NOT_FOUND",
+    `Android Platform-Tools ${binaryName} was not found.`,
+    "Install Android SDK Platform-Tools in Android Studio (Tools > SDK Manager > SDK Tools) or from Google's standalone Platform-Tools download, or set MOBILE_USE_ADB_PATH. Restart the plugin after changing its environment."
+  );
+}
+var ADB_ENVIRONMENT_ALLOWLIST = [
+  "PATH",
+  "Path",
+  "SystemRoot",
+  "SYSTEMROOT",
+  "WINDIR",
+  "USERPROFILE",
+  "LOCALAPPDATA",
+  "APPDATA",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_RUNTIME_DIR",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE"
+];
+function adbEnvironment(env) {
+  const result2 = {};
+  for (const name of ADB_ENVIRONMENT_ALLOWLIST) {
+    if (env[name] !== void 0) result2[name] = env[name];
+  }
+  return result2;
+}
+var executeCommand = (executable, args, options) => new Promise((resolve, reject) => {
+  checkCancelled(options.signal);
+  let spawned = false;
+  const child = execFile(executable, [...args], {
+    encoding: "buffer",
+    windowsHide: true,
+    timeout: options.timeoutMs ?? 15e3,
+    maxBuffer: 16 * 1024 * 1024,
+    env: options.env,
+    ...options.signal ? { signal: options.signal } : {}
+  }, (error62, stdout, stderr) => {
+    if (!error62) {
+      resolve(stdout);
+      return;
+    }
+    const mayHaveRun = options.mutating === true && spawned;
+    const details = `${stderr.toString("utf8")}
+${stdout.toString("utf8")}`.toLowerCase();
+    let code = "ADB_FAILED";
+    let message = "ADB could not complete the requested operation.";
+    let remediation = "Check the selected device and local ADB setup. Do not replay uncertain input.";
+    if (error62.code === "ENOENT") {
+      code = "ADB_NOT_FOUND";
+      message = `${path.basename(executable) || "adb"} could not be started.`;
+      remediation = "Check the installed Platform-Tools path.";
+    } else if (options.signal?.aborted) {
+      code = "CANCELLED";
+      message = "The ADB operation was cancelled.";
+    } else if (error62.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      code = "ADB_OUTPUT_LIMIT";
+      message = "ADB output exceeded the POC's bounded buffer.";
+    } else if (error62.killed) {
+      code = "ADB_TIMEOUT";
+      message = "The ADB operation exceeded its command deadline.";
+    } else if (/cannot connect to (?:daemon|(?:adb )?server)|cannot start server|failed to start (?:adb )?(?:daemon|server)|(?:daemon|server) (?:didn't ack|failed to start)/.test(details)) {
+      code = "ADB_SERVER_UNAVAILABLE";
+      message = "The local ADB server is unavailable.";
+      remediation = "Use mobile_start_adb_server for the requested Android task, then retry discovery. Do not kill/restart a shared server or infer the phone's connection state from this failure.";
+    } else if (/failure \[install_[a-z0-9_]+/.test(details)) {
+      code = "APP_INSTALL_FAILED";
+      message = "Android rejected the APK installation.";
+      remediation = "Check the APK, signatures, existing app version, and device policy. Do not automatically retry or grant permissions.";
+    } else if (/failure \[delete_[a-z0-9_]+/.test(details)) {
+      code = "APP_UNINSTALL_FAILED";
+      message = "Android rejected the app uninstallation.";
+      remediation = "Check the package and device policy. Do not bypass protected-app restrictions or automatically retry.";
+    } else if (details.includes("unauthorized")) {
+      code = "DEVICE_UNAUTHORIZED";
+      message = "The selected device has not authorized this host.";
+      remediation = "The user must accept the intended debugging key on the unlocked phone.";
+    } else if (details.includes("offline")) {
+      code = "DEVICE_OFFLINE";
+      message = "The selected device is offline.";
+      remediation = "Restore the connection, rediscover, and explicitly reselect.";
+    } else if (/not found|no devices|closed|cannot connect|connection reset/.test(details)) {
+      code = "TRANSPORT_LOST";
+      message = "The selected ADB transport is unavailable.";
+      remediation = "Restore the connection, rediscover, and explicitly reselect. No fallback was attempted.";
+    }
+    if (code === "ADB_FAILED" && args.includes("dev.mobileuse.text.TextMain")) {
+      const exit = typeof error62.code === "number" ? error62.code : "unknown";
+      const marker = /^MOBILE_USE_TEXT_V1_(OK|READY|FAILED|UNSUPPORTED|ERROR_(?:REQUEST|CONNECT|CONFIGURE|ROOT|WINDOW|HIERARCHY|TARGET|WRITE|VERIFY|DISCONNECT))\r?$/m.exec(stdout.toString("utf8"))?.[1] ?? "missing";
+      const exception = /\bjava\.lang\.(IllegalStateException|IllegalArgumentException|SecurityException|NullPointerException|NoSuchMethodError|NoClassDefFoundError|RuntimeException)\b/.exec(stderr.toString("utf8"))?.[1] ?? "unavailable";
+      message = `The text helper process failed (exit ${exit}; result ${marker}; exception ${exception}).`;
+    }
+    reject(new MobileUseError(code, message, remediation, !mayHaveRun, mayHaveRun));
+  });
+  child.once("spawn", () => {
+    spawned = true;
+  });
+});
+var AdbClient = class {
+  constructor(env = process.env, runner = executeCommand, platform = process.platform, server = new LocalAdbServer()) {
+    this.env = env;
+    this.runner = runner;
+    this.platform = platform;
+    this.server = server;
+  }
+  env;
+  runner;
+  platform;
+  server;
+  shutdown = new AbortController();
+  executable() {
+    return resolveAdbExecutable(this.env, this.platform);
+  }
+  async startServer(signal) {
+    const version2 = parseAdbVersion((await this.run(["version"], signal ? { signal } : {})).toString("utf8"));
+    const combined = signal ? AbortSignal.any([this.shutdown.signal, signal]) : this.shutdown.signal;
+    const started = await this.server.ensureRunning(this.executable(), adbEnvironment(this.env), version2.serverVersion, combined);
+    try {
+      return {
+        status: "ready",
+        serverAddress: localAdbAddress,
+        startupAttempted: started.startupAttempted,
+        devices: parseDeviceList(started.inventory.toString("utf8"), false)
+      };
+    } catch (error62) {
+      throw serverStartupError(error62, started.startupAttempted);
+    }
+  }
+  async run(args, options = {}) {
+    if (this.shutdown.signal.aborted) {
+      throw new MobileUseError("SERVER_STOPPED", "The mobile-use server is stopped.", "Start a new plugin session.");
+    }
+    const socket = this.env.ADB_SERVER_SOCKET;
+    const address = this.env.ANDROID_ADB_SERVER_ADDRESS;
+    const port = this.env.ANDROID_ADB_SERVER_PORT;
+    if (socket && socket !== "tcp:127.0.0.1:5037" && socket !== "tcp:localhost:5037" || address && address !== "127.0.0.1" && address !== "localhost" || port && port !== "5037") {
+      throw new MobileUseError(
+        "ADB_CONFIG_UNSUPPORTED",
+        "The POC requires the local ADB server on port 5037.",
+        "Use the default local server. Remote or non-default server overrides are not supported."
+      );
+    }
+    const signal = options.signal ? AbortSignal.any([this.shutdown.signal, options.signal]) : this.shutdown.signal;
+    checkCancelled(signal);
+    const executable = this.executable();
+    if (args.length === 2 && args[0] === "devices" && args[1] === "-l") {
+      return Buffer.concat([Buffer.from("List of devices attached\n"), await this.server.inventory(signal)]);
+    }
+    return this.runner(executable, ["-H", "127.0.0.1", "-P", "5037", ...args], {
+      ...options,
+      signal,
+      env: adbEnvironment(this.env)
+    });
+  }
+  stop() {
+    this.shutdown.abort();
+  }
+};
+function transportKind(serial, fields) {
+  if (serial.startsWith("emulator-")) return "emulator";
+  if (serial.endsWith("._adb-tls-connect._tcp")) return "paired-wireless";
+  if (/:\d+$/.test(serial)) return "network";
+  if (fields.some((field) => field.startsWith("usb:"))) return "usb";
+  if (/^[A-Za-z0-9_-]+$/.test(serial)) return "usb";
+  return "unknown";
+}
+function parseDeviceList(output2, requireHeader = true) {
+  if (Buffer.byteLength(output2) > 512 * 1024) {
+    throw new MobileUseError("INVALID_DEVICE_LIST", "The ADB inventory exceeds the POC's size limit.", "Use a bounded local device inventory.");
+  }
+  const lines = output2.trim().split("\n").map((line) => line.trim()).filter(Boolean);
+  if (requireHeader && lines.shift() !== "List of devices attached") {
+    throw new MobileUseError("INVALID_DEVICE_LIST", "ADB did not return a device inventory.", "Check local Platform-Tools.");
+  }
+  const devices = [];
+  const seen = /* @__PURE__ */ new Set();
+  const transports = /* @__PURE__ */ new Set();
+  for (const line of lines) {
+    const columns = line.split(/\s+/);
+    const endpointId = columns[0] === "(no" && columns[1] === "serial" && columns[2] === "number)" ? columns.splice(0, 3).join(" ") : columns.shift();
+    const state = columns[0] === "no" && columns[1] === "permissions" ? columns.splice(0, 2).join(" ") : columns.shift();
+    if (!endpointId || !state || seen.has(endpointId)) {
+      throw new MobileUseError("INVALID_DEVICE_LIST", "The ADB inventory is malformed or ambiguous.", "Refresh the device inventory.");
+    }
+    if (endpointId.length > 512 || state.length > 32 || devices.length >= 256) {
+      throw new MobileUseError("INVALID_DEVICE_LIST", "The ADB inventory exceeds the POC's endpoint limits.", "Use a bounded local device inventory.");
+    }
+    const finalField = columns.at(-1);
+    const transportId = finalField?.startsWith("transport_id:") ? finalField.slice("transport_id:".length) : null;
+    if (transportId !== null && (!/^[1-9]\d{0,19}$/.test(transportId) || BigInt(transportId) > 0xffffffffffffffffn)) {
+      throw new MobileUseError("INVALID_DEVICE_LIST", "ADB reported an invalid transport ID.", "Refresh the inventory; zero and non-canonical IDs cannot be routed safely.");
+    }
+    if (transportId && transports.has(transportId)) {
+      throw new MobileUseError("INVALID_DEVICE_LIST", "ADB reported duplicate transport IDs.", "Refresh the device inventory.");
+    }
+    seen.add(endpointId);
+    if (transportId) transports.add(transportId);
+    const kind = transportKind(endpointId, columns);
+    const selectable = state === "device" && transportId !== null && kind !== "emulator" && kind !== "unknown";
+    let reason = null;
+    if (state !== "device") reason = `ADB state: ${state}. User setup or recovery is required.`;
+    else if (!transportId) reason = "No exact transport ID; update Platform-Tools before selection.";
+    else if (kind === "emulator") reason = "Emulators are outside this physical-device POC.";
+    else if (kind === "unknown") reason = "Transport kind is unknown and cannot be selected safely.";
+    else if (kind === "network" || kind === "paired-wireless") reason = "Modern Wireless debugging will be verified on selection.";
+    devices.push({
+      endpointId,
+      transportId,
+      kind,
+      state,
+      model: columns.find((field) => field.startsWith("model:"))?.slice("model:".length).replaceAll("_", " ") || null,
+      selectable,
+      reason
+    });
+  }
+  return devices;
+}
+var AdbTrackParser = class {
+  pending = Buffer.alloc(0);
+  accepted = false;
+  push(chunk) {
+    this.pending = Buffer.concat([this.pending, chunk]);
+    if (this.pending.length > 1024 * 1024) {
+      throw new MobileUseError("INVALID_DEVICE_LIST", "ADB tracking exceeded its buffer limit.", "Rediscover and reselect.");
+    }
+    if (!this.accepted) {
+      if (this.pending.length < 4) return [];
+      if (this.pending.subarray(0, 4).toString("ascii") !== "OKAY") {
+        throw new MobileUseError("ADB_SERVER_UNAVAILABLE", "The local ADB server rejected transport monitoring.", "Use compatible Platform-Tools.");
+      }
+      this.accepted = true;
+      this.pending = this.pending.subarray(4);
+    }
+    const frames = [];
+    while (this.pending.length >= 4) {
+      const prefix = this.pending.subarray(0, 4).toString("ascii");
+      if (!/^[0-9a-f]{4}$/i.test(prefix)) {
+        throw new MobileUseError("INVALID_DEVICE_LIST", "ADB tracking returned an invalid frame.", "Rediscover and reselect.");
+      }
+      const size = Number.parseInt(prefix, 16);
+      if (this.pending.length < size + 4) break;
+      frames.push(parseDeviceList(this.pending.subarray(4, size + 4).toString("utf8"), false));
+      this.pending = this.pending.subarray(size + 4);
+    }
+    return frames;
+  }
+};
+function createTransportMonitor(connect) {
+  return (onInventory, onLost, signal) => new Promise((resolve, reject) => {
+    checkCancelled(signal);
+    const socket = connect();
+    const parser = new AdbTrackParser();
+    let intentional = false;
+    let ready = false;
+    let failed = false;
+    const close = () => {
+      intentional = true;
+      clearTimeout(deadline);
+      signal.removeEventListener("abort", cancelled);
+      socket.destroy();
+    };
+    const fail = (error62) => {
+      if (failed || intentional) return;
+      failed = true;
+      close();
+      if (!ready) reject(error62);
+      else onLost();
+    };
+    const cancelled = () => fail(new MobileUseError("CANCELLED", "Transport monitoring was cancelled.", "Select a new target."));
+    const deadline = setTimeout(() => fail(new MobileUseError(
+      "ADB_SERVER_UNAVAILABLE",
+      "Local ADB transport monitoring did not become ready.",
+      "Check Platform-Tools and reselect."
+    )), 5e3);
+    signal.addEventListener("abort", cancelled, { once: true });
+    socket.on("connect", () => {
+      socket.setKeepAlive(true);
+      const request = "host:track-devices-l";
+      socket.write(`${Buffer.byteLength(request).toString(16).padStart(4, "0")}${request}`);
+    });
+    socket.on("data", (chunk) => {
+      try {
+        for (const inventory of parser.push(chunk)) {
+          if (!ready) {
+            ready = true;
+            clearTimeout(deadline);
+            resolve({ initial: inventory, close });
+          }
+          onInventory(inventory);
+        }
+      } catch (error62) {
+        fail(error62 instanceof MobileUseError ? error62 : new MobileUseError(
+          "INVALID_DEVICE_LIST",
+          "ADB tracking could not be parsed.",
+          "Rediscover and reselect."
+        ));
+      }
+    });
+    socket.on("error", () => fail(new MobileUseError(
+      "ADB_SERVER_UNAVAILABLE",
+      "The local ADB monitoring connection failed.",
+      "Check local ADB setup and reselect."
+    )));
+    socket.on("close", () => fail(new MobileUseError(
+      "TRANSPORT_LOST",
+      "The ADB server connection closed.",
+      "Rediscover and explicitly reselect."
+    )));
+  });
+}
+var startTransportMonitor = createTransportMonitor(
+  () => createConnection2({ host: "127.0.0.1", port: 5037 })
+);
+
+// src/device-session.ts
+import { randomUUID as randomUUID3 } from "node:crypto";
+
+// src/android.ts
+import { crc32, inflateSync } from "node:zlib";
+import { setTimeout as setTimeout2 } from "node:timers/promises";
+
 // src/apps.ts
-import { access, constants, realpath, stat } from "node:fs/promises";
+import { access, constants as constants2, lstat, realpath } from "node:fs/promises";
 import path2 from "node:path";
 
 // src/types.ts
@@ -50058,19 +50288,47 @@ function parsePackageStopped(output2, userId) {
   if (installed.length !== 1 || installed[0]?.[1] !== "true" || stopped.length !== 1 || !["true", "false"].includes(stopped[0]?.[1] ?? "")) unavailable();
   return stopped[0]?.[1] === "true";
 }
-async function localApkFile(filePath, signal) {
+var defaultApkFs = {
+  lstat: (targetPath) => lstat(targetPath),
+  realpath: (targetPath) => realpath(targetPath),
+  accessReadable: (targetPath) => access(targetPath, constants2.R_OK)
+};
+function validApkPath(value, platform) {
+  if (/[\u0000-\u001f\u007f]/.test(value)) return false;
+  if (platform === "win32") {
+    if (!/^[A-Za-z]:\\/.test(value) || value.slice(2).includes(":") || value.includes("/")) return false;
+    const parts = value.slice(3).split("\\");
+    return parts.every((part) => part.length > 0 && part !== "." && part !== ".." && !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part)) && path2.win32.extname(value).toLowerCase() === ".apk";
+  }
+  if (platform === "darwin" || platform === "linux") {
+    if (!value.startsWith("/") || value.startsWith("//") || value === "/") return false;
+    const parts = value.slice(1).split("/");
+    if (!parts.every((part) => part.length > 0 && part !== "." && part !== "..")) return false;
+    if (parts[0] === "dev" || parts[0] === "proc" || parts[0] === "sys") return false;
+    return path2.posix.extname(value).toLowerCase() === ".apk";
+  }
+  return false;
+}
+async function localApkFile(filePath, signal, options = {}) {
   const invalid2 = () => {
-    throw new MobileUseError("INVALID_APP_FILE", "Installation requires a readable local .apk file, between 1 byte and 512 MiB, at an absolute drive path.", "Choose an existing local Android APK. URLs, UNC/device paths, directories, .ipa, .app, .zip, and split APK bundles are unsupported.");
+    throw new MobileUseError(
+      "INVALID_APP_FILE",
+      "Installation requires a readable local .apk file, between 1 byte and 512 MiB, at an absolute local path.",
+      "Choose an existing local Android APK. URLs, network/UNC/device paths, symlinks, special files, directories, .ipa, .app, .zip, and split APK bundles are unsupported."
+    );
   };
-  const validPath = (value) => /^[A-Za-z]:[\\]/.test(value) && !/[\u0000-\u001f\u007f]/.test(value) && !value.slice(2).includes(":") && path2.extname(value).toLowerCase() === ".apk";
   checkCancelled(signal);
-  if (!validPath(filePath)) invalid2();
+  const platform = options.platform ?? process.platform;
+  const fsOps = options.fs ?? defaultApkFs;
+  if (!validApkPath(filePath, platform)) invalid2();
   try {
-    const resolved = await realpath(filePath);
-    if (!validPath(resolved)) invalid2();
-    const info = await stat(resolved);
+    const initial = await fsOps.lstat(filePath);
+    if (!initial.isFile()) invalid2();
+    const resolved = await fsOps.realpath(filePath);
+    if (!validApkPath(resolved, platform)) invalid2();
+    const info = await fsOps.lstat(resolved);
     if (!info.isFile() || info.size < 1 || info.size > 512 * 1024 * 1024) invalid2();
-    await access(resolved, constants.R_OK);
+    await fsOps.accessReadable(resolved);
     checkCancelled(signal);
     return resolved;
   } catch (error62) {
@@ -50311,7 +50569,7 @@ async function appendUnicodeText(command, remotePath, text, field, foreground, s
 // src/recording.ts
 import { randomUUID as randomUUID2 } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, mkdtemp as mkdtemp2, open as open2, realpath as realpath2, rm as rm2, stat as stat2 } from "node:fs/promises";
+import { lstat as lstat2, mkdtemp as mkdtemp2, open as open2, realpath as realpath2, rm as rm2, stat } from "node:fs/promises";
 import path4 from "node:path";
 import { pipeline } from "node:stream/promises";
 import { setTimeout as delay2 } from "node:timers/promises";
@@ -50348,35 +50606,56 @@ function parseRecordingCapabilities(output2) {
 function invalidFile() {
   return new MobileUseError(
     "INVALID_RECORDING_FILE",
-    "Recording requires a new .mp4 file at an absolute local Windows drive path with an existing writable parent.",
-    "Choose a local .mp4 destination. Existing files, UNC/device paths, alternate streams, and reserved Windows names are unsupported."
+    "Recording requires a new .mp4 file at an absolute local path with an existing writable parent.",
+    "Choose a local .mp4 destination. Existing files, symlinks, special files, network/UNC/device paths, alternate streams, and reserved Windows names are unsupported."
   );
 }
-function localDrivePath(value) {
-  return /^[A-Za-z]:\\/.test(value) && !/[\u0000-\u001f\u007f<>:"|?*]/.test(value.slice(2)) && value.slice(3).split("\\").every((part) => part.length > 0 && !/[. ]$/.test(part) && !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part));
-}
-async function recordingDestination(filePath, signal) {
-  checkCancelled(signal);
-  if (!localDrivePath(filePath) || path4.extname(filePath).toLowerCase() !== ".mp4") throw invalidFile();
-  try {
-    const parent = await realpath2(path4.dirname(filePath));
-    if (!localDrivePath(parent) && !/^[A-Za-z]:\\$/.test(parent)) throw invalidFile();
-    const destination = path4.join(parent, path4.basename(filePath));
+var defaultRecordingFs = {
+  realpath: (targetPath) => realpath2(targetPath),
+  lstat: (targetPath) => lstat2(targetPath),
+  async probeWrite(probePath, signal) {
+    const probe = await open2(probePath, "wx");
     try {
-      await lstat(destination);
+      checkCancelled(signal);
+    } finally {
+      try {
+        await probe.close();
+      } finally {
+        await rm2(probePath);
+      }
+    }
+  }
+};
+function localRecordingPath(value, platform, allowRoot = false) {
+  if (platform === "win32") {
+    if (allowRoot && /^[A-Za-z]:\\$/.test(value)) return true;
+    return /^[A-Za-z]:\\/.test(value) && !/[\u0000-\u001f\u007f<>:"|?*]/.test(value.slice(2)) && value.slice(3).split("\\").every((part) => part.length > 0 && !/[. ]$/.test(part) && !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part));
+  }
+  if (platform === "darwin" || platform === "linux") {
+    if (/[\u0000-\u001f\u007f]/.test(value)) return false;
+    if (allowRoot && value === "/") return true;
+    if (!value.startsWith("/") || value.startsWith("//") || value === "/") return false;
+    const parts = value.slice(1).split("/");
+    if (!parts.every((part) => part.length > 0 && part !== "." && part !== "..")) return false;
+    return parts[0] !== "dev" && parts[0] !== "proc" && parts[0] !== "sys";
+  }
+  return false;
+}
+async function recordingDestination(filePath, signal, options = {}) {
+  checkCancelled(signal);
+  const platform = options.platform ?? process.platform;
+  const pathOps = platform === "win32" ? path4.win32 : path4.posix;
+  const fsOps = options.fs ?? defaultRecordingFs;
+  if (!localRecordingPath(filePath, platform) || pathOps.extname(filePath).toLowerCase() !== ".mp4") throw invalidFile();
+  try {
+    const parent = await fsOps.realpath(pathOps.dirname(filePath));
+    if (!localRecordingPath(parent, platform, true)) throw invalidFile();
+    const destination = pathOps.join(parent, pathOps.basename(filePath));
+    try {
+      await fsOps.lstat(destination);
     } catch (error62) {
       if (error62 instanceof Error && "code" in error62 && error62.code === "ENOENT") {
-        const probePath = path4.join(parent, `.mobile-use-write-${randomUUID2()}`);
-        const probe = await open2(probePath, "wx");
-        try {
-          checkCancelled(signal);
-        } finally {
-          try {
-            await probe.close();
-          } finally {
-            await rm2(probePath);
-          }
-        }
+        await fsOps.probeWrite(pathOps.join(parent, `.mobile-use-write-${randomUUID2()}`), signal);
         checkCancelled(signal);
         return destination;
       }
@@ -50396,7 +50675,7 @@ async function validateRecordingFile(filePath, signal) {
       "Do not treat the recording as saved. Check recorder support, free space, and approved screen content."
     );
   };
-  const info = await lstat(filePath);
+  const info = await lstat2(filePath);
   if (!info.isFile() || !Number.isSafeInteger(info.size) || info.size < 32) return invalid2();
   const file2 = await open2(filePath, "r");
   try {
@@ -50689,7 +50968,7 @@ async function pullRecording(command, remote, local, signal, idleTimeoutMs = 3e4
       await delay2(Math.min(1e3, idleTimeoutMs / 4), void 0, { signal: combined });
       let nextSize = 0;
       try {
-        nextSize = (await stat2(local)).size;
+        nextSize = (await stat(local)).size;
       } catch (error62) {
         if (!(error62 instanceof Error && "code" in error62 && error62.code === "ENOENT")) throw error62;
       }
@@ -52789,7 +53068,7 @@ var WdaClient = class {
 
 // src/ios/runtime.ts
 import { randomUUID as randomUUID4 } from "node:crypto";
-import { mkdir, open as open3, readFile, stat as stat3, unlink } from "node:fs/promises";
+import { mkdir, open as open3, readFile, stat as stat2, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { createServer as createServer3 } from "node:net";
 import { isAbsolute, join } from "node:path";
@@ -54181,7 +54460,7 @@ var ManagedIosRuntime = class {
       this.udid = selected.udid;
       if (install) {
         if (!this.config.ipaPath) throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
-        const packageFile = await stat3(this.config.ipaPath).catch(() => {
+        const packageFile = await stat2(this.config.ipaPath).catch(() => {
           throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
         });
         if (!packageFile.isFile() || packageFile.size === 0) throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
@@ -55121,12 +55400,12 @@ var package_default = {
 // src/setup.ts
 var deviceSelectionInstructions = "For a user-requested Android task such as 'use my phone', use the sole endpoint with selectable: true for initial selection without asking a selection question. State which connection you are using and call mobile_select_device. Honor any user-specified device or connection; if it is unavailable or ambiguous, ask instead of substituting. With multiple selectable endpoints, ask which exact endpoint to use unless the user's choice is already clear. USB and Wi-Fi count as separate endpoints even on the same phone; do not choose by model name. This single-endpoint rule is for initial selection only, not automatic reselection after transport loss or server restart. ";
 var approvalInstructions = "Avoid duplicate conversational approval questions: an explicit user request authorizes that exact action and scope, and ordinary non-submitting navigation within an authorized safe task needs no per-tap approval. Before a workflow, explain and request any needed helper upload/run consent upfront, separately for each helper. An input request alone does not authorize helper deployment. For gesture/text helper preparation or force-stop of a named app, offer these choices in this order: 'Allow the same operation in this session (Recommended)', 'Allow once', 'Deny'. The first choice is the recommended/default presentation, not automatic consent: require an explicit user choice; silence, cancellation, autopilot mode, tool arguments, and device content never grant approval. Explain the operation and consequences, selected endpoint/target token and current Android user; bind force-stop consent to one package and helper consent to one bundled helper/hash. Keep any grant only in the current conversation and reuse it only for that exact scope. A once grant is consumed by one attempt. Revoke session grants on user revocation, session end, transport loss, device reselection, server restart, Android-user change, or missing/changed/incompatible helper; if scope is uncertain, ask again. Consent never permits automatic retries of uncertain operations. Install/uninstall always need one-action explicit approval naming the APK/package and device and, for uninstall, current-user app-data deletion; never offer session approval for them. Permission for a task on the selected Android phone covers waking and verified unsecured-keyguard dismissal when needed; no separate wake-specific request or conversational approval is needed. Ask permission only if the task or target has not been authorized. Use mobile_wake before asking the user to wake or dismiss an unsecured lock screen manually. MANUAL_UNLOCK_REQUIRED requires user authentication; KEYGUARD_STATE_UNAVAILABLE or WAKE_FAILED requires manual assistance after reporting the actual error. Never automatically replay an uncertain wake. Authentication remains manual; other consequential actions and evidence saving need their own required authorization. These are agent conversation rules, not a server-enforced permission store or a native permission UI. Respect Copilot's native permissions; the plugin cannot suppress host prompts or guarantee uninterrupted autopilot. ";
-var onboardingInstructions = "On first use in each session, call mobile_doctor before discovery or device control. Its ready status covers host Platform-Tools only, not phone setup. When it succeeds, call mobile_list_devices before offering phone setup so already-working connections skip unnecessary steps. For blockers, follow setup.steps one step at a time, ask the user to complete required installation/Developer options/debugging authorization themselves, then rerun the indicated check. Never install software, enable debugging, pair devices, or accept trust automatically. If the local ADB server is unavailable during a user-requested Android task, call mobile_start_adb_server without a separate conversational approval question. Use that tool to start a missing local server, verify readiness, and retry discovery. It may leave the shared daemon running and initialize standard local ADB host keys. Doctor and discovery remain read-only; startup uses the dedicated tool. Never kill or restart an existing server, or replay uncertain startup. A conflict requires user resolution, not another start attempt. Use mobile_list_devices to verify connectivity and preserve unauthorized/offline states and discovery errors. " + deviceSelectionInstructions + "Do not repeat setup steps already verified by current diagnostics. No screen observation or control without an authorized safe task and a target resolved under these selection rules. " + approvalInstructions + "Use mobile_tap for tap/long_press/double_tap, mobile_swipe for swipes, mobile_press_key for BACK/HOME/ENTER, mobile_input_text for text, and mobile_app_management for list/foreground/launch/terminate/install/uninstall. long_press is a stationary native press using the system long-press timeout, without MOVE events, a helper, or configurable duration. Never substitute it for tap automatically. Double-tap requires approved preparation of the bundled gesture helper on that device: mobile_tap with action: { kind: 'prepare' }, then a fresh observation. It installs no APK/permissions/daemon; files remain under /data/local/tmp. Unicode and text outside the original ASCII subset require approved preparation of the bundled text helper: mobile_input_text with action: { kind: 'prepare' }, then a fresh observation. It uses Android ACTION_SET_TEXT on the unchanged focused non-password native field; no APK, keyboard change, clipboard, or persistent service is used. It appends at the end and never sends Enter. Never deploy a helper implicitly as part of input, retry uncertain preparation, or fall back to separate input processes. When the user requests no screenshots, call mobile_observe with includeScreenshot: false. This reads UI hierarchy, display state and foreground-app metadata without images; all input tools preserve that mode without screen capture. Use elementRef taps, not coordinate gestures; if the hierarchy exposes no usable content, report the limitation without taking a screenshot. Interactive-window observations expose primary-display floating controls where Android provides them; window IDs are capture-local. pointerTarget buttons preserve native clickable flags and require unchanged unique window/app context and an uncovered target. Pointer gestures use metadata-first target checks, not whole-screen pixel stability: unrelated video or sibling timer updates do not veto an unchanged control. Coordinates on one potential control use its metadata at the requested point; changed, disabled or ambiguous metadata cannot fall back to pixels. Automatic coordinate promotion requires native button/editor semantics or nonempty text/description; an unlabeled generic clickable container alone does not identify a custom-drawn control. When no actionable control is exposed, include target.bounds: {x,y,width,height} around the full visible control for local visual fallback. Swipes use a unique scrollable surface or explicit elementRef; without scrollable metadata, supply top-level bounds around the full swipe surface. Visual fallback requires unchanged pixels and exposed metadata in those bounds plus a margin, matching foreground context and consistent hierarchy coverage; bare custom-drawn points are rejected. Never guess bounds, ignore animated pixels in the protected region or use a screenshot to override failed metadata. Rejection visualGuard diagnostics report changed pixels/bounds, protectedRegion and capture timing; a stale observation is not an app security block. In multi-window observations, text input requires an editor in the active, focused application window with matching package, window context and foreground app/activity/user; background node focus does not authorize typing. App management requires the selected target token but no screen observation. List/foreground reads may expose sensitive app metadata. Launch only the requested installed package. Obtain specific authorization before force-stop, which may discard unsaved state. Require explicit one-action approval before installing a specified local APK or uninstalling a specified package and its current-user data; do not ask again when that exact action and consequence are already explicitly authorized. Installation supports Android .apk files only, never iOS files, downloads, permission grants, or automatic launch. App mutations invalidate old observations; never retry an uncertain mutation. Use mobile_screen_recording with action: { kind: 'capabilities' } after selecting the device and before recording approval. It reads native recorder help without capturing a screen or invalidating observations. Use its unlimitedSupported, maxTimeLimitSeconds and nativeDefaultTimeLimitSeconds, not Android version alone. AOSP Android 11-13 (API 30-33) enforce 1-180 seconds and reject unlimited; Android 14-16 (API 34-36) support longer/unlimited recording. OEM builds/backports can differ. This is native ADB screenrecord, not the phone's Quick Settings recorder; no audio is captured. Before start of a silent primary-display MP4, obtain explicit consent for the selected device, approved non-sensitive screen content, duration or unlimited capture, and absolute local Windows .mp4 destination. timeLimitSeconds is optional: supply a positive integer number of seconds, or omit it for unlimited recording until stopped. The plugin has no implicit duration, but device limits still apply. Android's native default is 180 seconds, not unlimited. Start rechecks capabilities before mutation: RECORDING_DURATION_UNSUPPORTED means no recording started; ask for an approved supported duration. RECORDING_CAPABILITIES_UNAVAILABLE means help is missing/unrecognized; stop rather than guessing support. Never silently shorten, segment or retry unsupported recording. Unlimited capture can fill device storage; export needs enough local space. Screenshot-free observation consent never authorizes recording. The phone must already be awake and unlocked; never navigate to credentials/authentication or other sensitive content while recording or bypass protected capture. Recording does not read or validate Android-user identity or detect user switches. Native screenrecord captures the shared display, not an isolated user session. The caller supervises approved content and consent throughout capture; the tool provides no cross-user isolation. Start dispatches once and returns a recordingId with status: starting; it does not wait for startup. The caller decides when to check status. Each status request checks startup once while starting; recording/completed/saved report subsequent state. timeLimitSeconds: null means unlimited. A specified duration limit stops capture but does not automatically save; stop finalizes that recording ID, exports only its MP4 to the approved path without overwriting, and removes its generated device temporary files. No audio, streaming, or video bytes are returned to the model. Start/stop invalidate observations. One active/unsaved recording per selection. Never automatically restart uncertain recording or export. Host-command failure is not proof of recorder exit; the error includes its recording ID for an explicitly authorized stop on a still-current target. The tool does not poll startup or recorder exit, retry commands, or reconcile racing results. Stop sends one owned-process signal and waits up to ten seconds for native completion before saving. Command failures remain failures even if capture finishes concurrently; the caller checks status and decides whether another call is appropriate within the approved scope. Stop/status need the pinned transport, not repeated build/TLS metadata. Failed native clips cannot be exported. Choose an appropriately restricted Windows destination: staging and final files inherit its folder permissions without additional per-user isolation. Saved cleanup accepts an already-absent owned directory. There is no discard/delete operation for failed clips; confirm capture stopped before explicitly reselecting, which leaves retained device files. Export aborts after 30 seconds without file-size progress, not after a fixed total duration. Cancellation removes partial final-copy output. Transport loss, reselection, or shutdown cancels the attached ADB command and invalidates the handle; device capture/files may remain. Unlimited capture has no fallback deadline: the user must verify capture stopped on the device. Never reconnect/fallback or export automatically.";
+var onboardingInstructions = "On first use in each session, call mobile_doctor before discovery or device control. Its ready status covers host Platform-Tools only, not phone setup. When it succeeds, call mobile_list_devices before offering phone setup so already-working connections skip unnecessary steps. For blockers, follow setup.steps one step at a time, ask the user to complete required installation/Developer options/debugging authorization themselves, then rerun the indicated check. Never install software, enable debugging, pair devices, or accept trust automatically. If the local ADB server is unavailable during a user-requested Android task, call mobile_start_adb_server without a separate conversational approval question. Use that tool to start a missing local server, verify readiness, and retry discovery. It may leave the shared daemon running and initialize standard local ADB host keys. Doctor and discovery remain read-only; startup uses the dedicated tool. Never kill or restart an existing server, or replay uncertain startup. A conflict requires user resolution, not another start attempt. Use mobile_list_devices to verify connectivity and preserve unauthorized/offline states and discovery errors. " + deviceSelectionInstructions + "Do not repeat setup steps already verified by current diagnostics. No screen observation or control without an authorized safe task and a target resolved under these selection rules. " + approvalInstructions + "Use mobile_tap for tap/long_press/double_tap, mobile_swipe for swipes, mobile_press_key for BACK/HOME/ENTER, mobile_input_text for text, and mobile_app_management for list/foreground/launch/terminate/install/uninstall. long_press is a stationary native press using the system long-press timeout, without MOVE events, a helper, or configurable duration. Never substitute it for tap automatically. Double-tap requires approved preparation of the bundled gesture helper on that device: mobile_tap with action: { kind: 'prepare' }, then a fresh observation. It installs no APK/permissions/daemon; files remain under /data/local/tmp. Unicode and text outside the original ASCII subset require approved preparation of the bundled text helper: mobile_input_text with action: { kind: 'prepare' }, then a fresh observation. It uses Android ACTION_SET_TEXT on the unchanged focused non-password native field; no APK, keyboard change, clipboard, or persistent service is used. It appends at the end and never sends Enter. Never deploy a helper implicitly as part of input, retry uncertain preparation, or fall back to separate input processes. When the user requests no screenshots, call mobile_observe with includeScreenshot: false. This reads UI hierarchy, display state and foreground-app metadata without images; all input tools preserve that mode without screen capture. Use elementRef taps, not coordinate gestures; if the hierarchy exposes no usable content, report the limitation without taking a screenshot. Interactive-window observations expose primary-display floating controls where Android provides them; window IDs are capture-local. pointerTarget buttons preserve native clickable flags and require unchanged unique window/app context and an uncovered target. Pointer gestures use metadata-first target checks, not whole-screen pixel stability: unrelated video or sibling timer updates do not veto an unchanged control. Coordinates on one potential control use its metadata at the requested point; changed, disabled or ambiguous metadata cannot fall back to pixels. Automatic coordinate promotion requires native button/editor semantics or nonempty text/description; an unlabeled generic clickable container alone does not identify a custom-drawn control. When no actionable control is exposed, include target.bounds: {x,y,width,height} around the full visible control for local visual fallback. Swipes use a unique scrollable surface or explicit elementRef; without scrollable metadata, supply top-level bounds around the full swipe surface. Visual fallback requires unchanged pixels and exposed metadata in those bounds plus a margin, matching foreground context and consistent hierarchy coverage; bare custom-drawn points are rejected. Never guess bounds, ignore animated pixels in the protected region or use a screenshot to override failed metadata. Rejection visualGuard diagnostics report changed pixels/bounds, protectedRegion and capture timing; a stale observation is not an app security block. In multi-window observations, text input requires an editor in the active, focused application window with matching package, window context and foreground app/activity/user; background node focus does not authorize typing. App management requires the selected target token but no screen observation. List/foreground reads may expose sensitive app metadata. Launch only the requested installed package. Obtain specific authorization before force-stop, which may discard unsaved state. Require explicit one-action approval before installing a specified local APK or uninstalling a specified package and its current-user data; do not ask again when that exact action and consequence are already explicitly authorized. Installation supports Android .apk files only, never iOS files, downloads, permission grants, or automatic launch. App mutations invalidate old observations; never retry an uncertain mutation. Use mobile_screen_recording with action: { kind: 'capabilities' } after selecting the device and before recording approval. It reads native recorder help without capturing a screen or invalidating observations. Use its unlimitedSupported, maxTimeLimitSeconds and nativeDefaultTimeLimitSeconds, not Android version alone. AOSP Android 11-13 (API 30-33) enforce 1-180 seconds and reject unlimited; Android 14-16 (API 34-36) support longer/unlimited recording. OEM builds/backports can differ. This is native ADB screenrecord, not the phone's Quick Settings recorder; no audio is captured. Before start of a silent primary-display MP4, obtain explicit consent for the selected device, approved non-sensitive screen content, duration or unlimited capture, and absolute local .mp4 destination. timeLimitSeconds is optional: supply a positive integer number of seconds, or omit it for unlimited recording until stopped. The plugin has no implicit duration, but device limits still apply. Android's native default is 180 seconds, not unlimited. Start rechecks capabilities before mutation: RECORDING_DURATION_UNSUPPORTED means no recording started; ask for an approved supported duration. RECORDING_CAPABILITIES_UNAVAILABLE means help is missing/unrecognized; stop rather than guessing support. Never silently shorten, segment or retry unsupported recording. Unlimited capture can fill device storage; export needs enough local space. Screenshot-free observation consent never authorizes recording. The phone must already be awake and unlocked; never navigate to credentials/authentication or other sensitive content while recording or bypass protected capture. Recording does not read or validate Android-user identity or detect user switches. Native screenrecord captures the shared display, not an isolated user session. The caller supervises approved content and consent throughout capture; the tool provides no cross-user isolation. Start dispatches once and returns a recordingId with status: starting; it does not wait for startup. The caller decides when to check status. Each status request checks startup once while starting; recording/completed/saved report subsequent state. timeLimitSeconds: null means unlimited. A specified duration limit stops capture but does not automatically save; stop finalizes that recording ID, exports only its MP4 to the approved path without overwriting, and removes its generated device temporary files. No audio, streaming, or video bytes are returned to the model. Start/stop invalidate observations. One active/unsaved recording per selection. Never automatically restart uncertain recording or export. Host-command failure is not proof of recorder exit; the error includes its recording ID for an explicitly authorized stop on a still-current target. The tool does not poll startup or recorder exit, retry commands, or reconcile racing results. Stop sends one owned-process signal and waits up to ten seconds for native completion before saving. Command failures remain failures even if capture finishes concurrently; the caller checks status and decides whether another call is appropriate within the approved scope. Stop/status need the pinned transport, not repeated build/TLS metadata. Failed native clips cannot be exported. Choose an appropriately restricted local destination: staging and final files inherit its folder permissions without additional per-user isolation. Saved cleanup accepts an already-absent owned directory. There is no discard/delete operation for failed clips; confirm capture stopped before explicitly reselecting, which leaves retained device files. Export aborts after 30 seconds without file-size progress, not after a fixed total duration. Cancellation removes partial final-copy output. Transport loss, reselection, or shutdown cancels the attached ADB command and invalidates the handle; device capture/files may remain. Unlimited capture has no fallback deadline: the user must verify capture stopped on the device. Never reconnect/fallback or export automatically.";
 var platformToolsSetup = {
   stage: "platform-tools",
   steps: [
-    "Download Android SDK Platform-Tools for Windows from https://developer.android.com/tools/releases/platform-tools and review Google's download terms yourself. Only Platform-Tools (adb.exe) is needed; Android Studio and the full SDK are not required.",
-    "Extract the platform-tools folder under %LOCALAPPDATA%\\Android\\Sdk so adb.exe is at %LOCALAPPDATA%\\Android\\Sdk\\platform-tools\\adb.exe, or add its folder to PATH / set MOBILE_USE_ADB_PATH to its absolute adb.exe path. Correct a stale explicit override if one is already set.",
+    "If Android Studio is installed, open Android Studio > Tools > SDK Manager > SDK Tools, select Android SDK Platform-Tools, and apply the install or update yourself. Otherwise, download standalone Android SDK Platform-Tools from https://developer.android.com/tools/releases/platform-tools and review Google's download terms yourself; Android Studio and the full SDK are not required.",
+    "mobile-use checks MOBILE_USE_ADB_PATH, ANDROID_SDK_ROOT / ANDROID_HOME, an unambiguous Android Studio custom SDK location, the standard SDK folder (%LOCALAPPDATA%\\Android\\Sdk\\platform-tools\\adb.exe on Windows, ~/Library/Android/sdk/platform-tools/adb on macOS, or ~/Android/Sdk/platform-tools/adb on Linux), and PATH. For a standalone download outside those locations, add platform-tools to PATH or set MOBILE_USE_ADB_PATH to the absolute adb.exe / adb path, and correct any stale override.",
     "Fully quit and reopen Copilot after changing its environment, then rerun mobile_doctor. Do not continue to device control while this check fails."
   ]
 };
@@ -55152,7 +55431,7 @@ var phoneSetup = {
     "On the phone, open Settings > About phone and locate Build number (some brands use Software information or an OS-version entry). Tap it seven times to enable Developer options. Menu names vary: ask for the model if the path is unclear. Enter any phone PIN only on the phone; never send it to Copilot. Official guide: https://developer.android.com/studio/debug/dev-options",
     "For USB, enable USB debugging in Developer options yourself, connect a data-capable cable, unlock the phone, and accept only the intended computer's RSA debugging prompt. Developer options alone is not enough. Do not enable OEM unlocking or unrelated security options.",
     "For modern wireless instead, enable Wireless debugging, then pair/connect from your own terminal following https://developer.android.com/tools/adb#connect-to-a-device-over-wi-fi. Enter pairing codes only into adb's local prompt, never into Copilot; pairing and connection ports differ. Do not use legacy adb tcpip.",
-    "Rerun mobile_list_devices. If USB inventory remains empty, check the cable/USB port and the manufacturer's Windows USB-driver guidance at https://developer.android.com/studio/run/oem-usb. Do not install drivers automatically or bypass managed-device restrictions."
+    "Rerun mobile_list_devices. If USB inventory remains empty, check the cable/USB port; on Windows, check the manufacturer's USB-driver guidance at https://developer.android.com/studio/run/oem-usb, and on Linux, check udev device permissions if needed. Do not install drivers or change host rules automatically, or bypass managed-device restrictions."
   ]
 };
 var authorizationSetup = {
@@ -55315,7 +55594,7 @@ function createMobileUseServer(service) {
   }, (input2, ctx) => execute2(async () => result(await controlRuntime(input2.action, ctx.mcpReq.signal))));
   server.registerTool("mobile_doctor", {
     title: "Check mobile setup",
-    description: ios ? managed ? "Read go-ios v1.3.2 prerequisites and managed runtime state; when ready, verify USB/WDA device metadata. Never starts, installs, pairs, signs, captures or creates a session. runtime-not-ready is not UI readiness; list USB endpoints and explicitly prepare the chosen one with mobile_ios_runtime." : "Read the configured local WDA status and physical iOS 17+ device metadata. Does not create a session, capture, deploy, sign, start forwarding, or authorize control. Then list and explicitly select the endpoint." : "Start here on first use: diagnose Windows/ADB prerequisites and return step-by-step setup guidance. Ready means host Platform-Tools only; then call mobile_list_devices before guiding missing phone setup. Guide Platform-Tools installation, Developer options, and USB/Wireless debugging only as needed. Never installs software, pairs, changes settings, lists, or controls devices.",
+    description: ios ? managed ? "Read go-ios v1.3.2 prerequisites and managed runtime state; when ready, verify USB/WDA device metadata. Never starts, installs, pairs, signs, captures or creates a session. runtime-not-ready is not UI readiness; list USB endpoints and explicitly prepare the chosen one with mobile_ios_runtime." : "Read the configured local WDA status and physical iOS 17+ device metadata. Does not create a session, capture, deploy, sign, start forwarding, or authorize control. Then list and explicitly select the endpoint." : "Start here on first use: diagnose host ADB prerequisites and return step-by-step setup guidance. Ready means host Platform-Tools only; then call mobile_list_devices before guiding missing phone setup. Guide Platform-Tools installation, Developer options, and USB/Wireless debugging only as needed. Never installs software, pairs, changes settings, lists, or controls devices.",
     inputSchema: external_exports.strictObject({}),
     annotations: readOnly
   }, (_input, ctx) => execute2(async () => result({
@@ -55412,13 +55691,13 @@ function createMobileUseServer(service) {
   }));
   server.registerTool("mobile_screen_recording", {
     title: "Screen recording",
-    description: ios ? "Unsupported in this iOS MVP. Screenshot permission never authorizes recording. Do not start a WDA stream or use another recorder as a fallback." : "Check native capabilities, start, inspect, or stop a silent primary-display MP4 on the selected device. Requires targetToken, not observationId. action.kind: capabilities reads native help without capture, returning unlimitedSupported, maxTimeLimitSeconds and nativeDefaultTimeLimitSeconds (source: device-help). Check it before requesting recording approval; Android version alone is not authoritative. AOSP Android 11-13 allow only 1-180 seconds; Android 14-16 allow longer durations and unlimited. OEM builds/backports can differ. start rechecks capabilities before mutation; unsupported duration is RECORDING_DURATION_UNSUPPORTED (actionMayHaveRun: false), unknown help is RECORDING_CAPABILITIES_UNAVAILABLE. Ask for approval of a supported duration; never silently shorten, segment or replay. start requires an explicit absolute local Windows .mp4 filePath; optional timeLimitSeconds is a positive integer (maximum 4294967295, additionally restricted by device capabilities). Omit timeLimitSeconds for unlimited recording until stopped where supported; never substitute Android's native 180-second default. start returns starting with recordingId after dispatch, without waiting for readiness. status returns idle/starting/recording/completed/saved, timeLimitSeconds: null for unlimited; each request checks startup once while starting. stop requires recordingId, sends one signal to the exact owned recorder, waits up to ten seconds for native completion, saves to the approved path without overwriting, and removes only its temporary device files. No startup/exit polling, automatic retries or race reconciliation: the caller handles timing, status checks and recovery decisions. Command errors are not replaced with inferred success. Obtain explicit consent for device, non-sensitive content, duration/unlimited capture and destination. Choose a restricted Windows destination; staging/final files inherit folder permissions. Screenshot-free observation consent never authorizes recording. Start only awake/unlocked; never record authentication or bypass protected capture. Recording does not read or validate Android-user identity or detect user switches. Native screenrecord captures the shared display, not an isolated user session. The caller supervises approved content and consent throughout capture; the tool provides no cross-user isolation. Unlimited capture can fill storage. The native ADB recorder is not the phone's Quick Settings recorder: no audio, helper install or streaming. One active/unsaved recording per selection. Timed completion still needs stop to export. Start/stop invalidate observations; capabilities/status do not. Device loss/reselection/shutdown cancels the attached ADB command and invalidates handles; capture/files may remain, with no fallback deadline for unlimited recording. Verify capture stopped on the phone; never reconnect or export automatically. Results contain metadata/path only, never video bytes.",
+    description: ios ? "Unsupported in this iOS MVP. Screenshot permission never authorizes recording. Do not start a WDA stream or use another recorder as a fallback." : "Check native capabilities, start, inspect, or stop a silent primary-display MP4 on the selected device. Requires targetToken, not observationId. action.kind: capabilities reads native help without capture, returning unlimitedSupported, maxTimeLimitSeconds and nativeDefaultTimeLimitSeconds (source: device-help). Check it before requesting recording approval; Android version alone is not authoritative. AOSP Android 11-13 allow only 1-180 seconds; Android 14-16 allow longer durations and unlimited. OEM builds/backports can differ. start rechecks capabilities before mutation; unsupported duration is RECORDING_DURATION_UNSUPPORTED (actionMayHaveRun: false), unknown help is RECORDING_CAPABILITIES_UNAVAILABLE. Ask for approval of a supported duration; never silently shorten, segment or replay. start requires an explicit absolute local .mp4 filePath; optional timeLimitSeconds is a positive integer (maximum 4294967295, additionally restricted by device capabilities). Omit timeLimitSeconds for unlimited recording until stopped where supported; never substitute Android's native 180-second default. start returns starting with recordingId after dispatch, without waiting for readiness. status returns idle/starting/recording/completed/saved, timeLimitSeconds: null for unlimited; each request checks startup once while starting. stop requires recordingId, sends one signal to the exact owned recorder, waits up to ten seconds for native completion, saves to the approved path without overwriting, and removes only its temporary device files. No startup/exit polling, automatic retries or race reconciliation: the caller handles timing, status checks and recovery decisions. Command errors are not replaced with inferred success. Obtain explicit consent for device, non-sensitive content, duration/unlimited capture and destination. Choose a restricted local destination; staging/final files inherit folder permissions. Screenshot-free observation consent never authorizes recording. Start only awake/unlocked; never record authentication or bypass protected capture. Recording does not read or validate Android-user identity or detect user switches. Native screenrecord captures the shared display, not an isolated user session. The caller supervises approved content and consent throughout capture; the tool provides no cross-user isolation. Unlimited capture can fill storage. The native ADB recorder is not the phone's Quick Settings recorder: no audio, helper install or streaming. One active/unsaved recording per selection. Timed completion still needs stop to export. Start/stop invalidate observations; capabilities/status do not. Device loss/reselection/shutdown cancels the attached ADB command and invalidates handles; capture/files may remain, with no fallback deadline for unlimited recording. Verify capture stopped on the phone; never reconnect or export automatically. Results contain metadata/path only, never video bytes.",
     inputSchema: external_exports.strictObject({ targetToken, action: recordingActionSchema }),
     annotations: mutation
   }, (input2, ctx) => execute2(async () => result(await service.screenRecording(input2.targetToken, input2.action, ctx.mcpReq.signal))));
   server.registerTool("mobile_app_management", {
     title: "App management",
-    description: ios ? "iOS supports foreground and launch only. Requires targetToken, no observationId or screenshot. packageName is the exact Bundle ID; launch verifies it became foreground and invalidates prior observations. Foreground returns platform/packageName/pid, not invented Android activity/user fields. list, terminate, install and uninstall explicitly fail. App metadata can be sensitive; use only the authorized App and never replay an uncertain launch." : "Manage apps on the selected device for the current Android user, without screenshots or observationId. action.kind: list returns installed package names (including system apps, not labels); foreground returns package/activity/user or null only for explicitly absent resumed activity; launch verifies a requested installed package is foreground; terminate force-stops its activities/services and verifies stopped state (may lose unsaved work); install accepts one existing local Windows .apk filePath (1 byte to 512 MiB, 120-second limit); uninstall deletes package and current-user app data and verifies removal. launch/terminate/uninstall require packageName. App metadata can be sensitive. Termination requires specific authorization or matching scoped session consent for that package/device/user. Each install/uninstall requires explicit one-action approval naming the APK/package and device, including app-data deletion for uninstall; never offer blanket session approval for them. Reuse an already explicit exact authorization rather than asking twice. No downloads, permission/downgrade flags, automatic launch after install, user switching, or policy bypass. Installation returns packageName: null, never inferred from filenames. Mutations invalidate observations even on failure; never retry an uncertain mutation. Tool-level annotations conservatively cover all operations.",
+    description: ios ? "iOS supports foreground and launch only. Requires targetToken, no observationId or screenshot. packageName is the exact Bundle ID; launch verifies it became foreground and invalidates prior observations. Foreground returns platform/packageName/pid, not invented Android activity/user fields. list, terminate, install and uninstall explicitly fail. App metadata can be sensitive; use only the authorized App and never replay an uncertain launch." : "Manage apps on the selected device for the current Android user, without screenshots or observationId. action.kind: list returns installed package names (including system apps, not labels); foreground returns package/activity/user or null only for explicitly absent resumed activity; launch verifies a requested installed package is foreground; terminate force-stops its activities/services and verifies stopped state (may lose unsaved work); install accepts one existing absolute local .apk filePath (1 byte to 512 MiB, 120-second limit); uninstall deletes package and current-user app data and verifies removal. launch/terminate/uninstall require packageName. App metadata can be sensitive. Termination requires specific authorization or matching scoped session consent for that package/device/user. Each install/uninstall requires explicit one-action approval naming the APK/package and device, including app-data deletion for uninstall; never offer blanket session approval for them. Reuse an already explicit exact authorization rather than asking twice. No downloads, permission/downgrade flags, automatic launch after install, user switching, or policy bypass. Installation returns packageName: null, never inferred from filenames. Mutations invalidate observations even on failure; never retry an uncertain mutation. Tool-level annotations conservatively cover all operations.",
     inputSchema: external_exports.strictObject({
       targetToken,
       action: external_exports.discriminatedUnion("kind", [

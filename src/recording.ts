@@ -43,35 +43,70 @@ export function parseRecordingCapabilities(output: string): RecordingCapabilitie
 function invalidFile(): MobileUseError {
   return new MobileUseError(
     "INVALID_RECORDING_FILE",
-    "Recording requires a new .mp4 file at an absolute local Windows drive path with an existing writable parent.",
-    "Choose a local .mp4 destination. Existing files, UNC/device paths, alternate streams, and reserved Windows names are unsupported.",
+    "Recording requires a new .mp4 file at an absolute local path with an existing writable parent.",
+    "Choose a local .mp4 destination. Existing files, symlinks, special files, network/UNC/device paths, alternate streams, and reserved Windows names are unsupported.",
   );
 }
 
-function localDrivePath(value: string): boolean {
-  return /^[A-Za-z]:\\/.test(value) && !/[\u0000-\u001f\u007f<>:"|?*]/.test(value.slice(2)) &&
-    value.slice(3).split("\\").every((part) => part.length > 0 && !/[. ]$/.test(part) &&
-      !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part));
+export interface RecordingPathOptions {
+  platform?: NodeJS.Platform;
+  fs?: {
+    realpath(targetPath: string): Promise<string>;
+    lstat(targetPath: string): Promise<unknown>;
+    probeWrite(probePath: string, signal?: AbortSignal): Promise<void>;
+  };
 }
 
-export async function recordingDestination(filePath: string, signal?: AbortSignal): Promise<string> {
-  checkCancelled(signal);
-  if (!localDrivePath(filePath) || path.extname(filePath).toLowerCase() !== ".mp4") throw invalidFile();
-  try {
-    const parent = await realpath(path.dirname(filePath));
-    if (!localDrivePath(parent) && !/^[A-Za-z]:\\$/.test(parent)) throw invalidFile();
-    const destination = path.join(parent, path.basename(filePath));
+const defaultRecordingFs: NonNullable<RecordingPathOptions["fs"]> = {
+  realpath: (targetPath) => realpath(targetPath),
+  lstat: (targetPath) => lstat(targetPath),
+  async probeWrite(probePath, signal) {
+    const probe = await open(probePath, "wx");
     try {
-      await lstat(destination);
+      checkCancelled(signal);
+    } finally {
+      try { await probe.close(); } finally { await rm(probePath); }
+    }
+  },
+};
+
+function localRecordingPath(value: string, platform: NodeJS.Platform, allowRoot = false): boolean {
+  if (platform === "win32") {
+    if (allowRoot && /^[A-Za-z]:\\$/.test(value)) return true;
+    return /^[A-Za-z]:\\/.test(value) && !/[\u0000-\u001f\u007f<>:"|?*]/.test(value.slice(2)) &&
+      value.slice(3).split("\\").every((part) => part.length > 0 && !/[. ]$/.test(part) &&
+        !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part));
+  }
+  if (platform === "darwin" || platform === "linux") {
+    if (/[\u0000-\u001f\u007f]/.test(value)) return false;
+    if (allowRoot && value === "/") return true;
+    if (!value.startsWith("/") || value.startsWith("//") || value === "/") return false;
+    const parts = value.slice(1).split("/");
+    if (!parts.every((part) => part.length > 0 && part !== "." && part !== "..")) return false;
+    return parts[0] !== "dev" && parts[0] !== "proc" && parts[0] !== "sys";
+  }
+  return false;
+}
+
+export async function recordingDestination(
+  filePath: string,
+  signal?: AbortSignal,
+  options: RecordingPathOptions = {},
+): Promise<string> {
+  checkCancelled(signal);
+  const platform = options.platform ?? process.platform;
+  const pathOps = platform === "win32" ? path.win32 : path.posix;
+  const fsOps = options.fs ?? defaultRecordingFs;
+  if (!localRecordingPath(filePath, platform) || pathOps.extname(filePath).toLowerCase() !== ".mp4") throw invalidFile();
+  try {
+    const parent = await fsOps.realpath(pathOps.dirname(filePath));
+    if (!localRecordingPath(parent, platform, true)) throw invalidFile();
+    const destination = pathOps.join(parent, pathOps.basename(filePath));
+    try {
+      await fsOps.lstat(destination);
     } catch (error) {
       if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-        const probePath = path.join(parent, `.mobile-use-write-${randomUUID()}`);
-        const probe = await open(probePath, "wx");
-        try {
-          checkCancelled(signal);
-        } finally {
-          try { await probe.close(); } finally { await rm(probePath); }
-        }
+        await fsOps.probeWrite(pathOps.join(parent, `.mobile-use-write-${randomUUID()}`), signal);
         checkCancelled(signal);
         return destination;
       }
