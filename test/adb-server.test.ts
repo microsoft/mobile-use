@@ -89,6 +89,18 @@ test("a valid empty inventory is returned without implying any phone is ready", 
   assert.equal(result.inventory.length, 0);
 });
 
+test("missing-server discovery directs startup without conversational approval or an implicit launch", async () => {
+  const server = new LocalAdbServer(refused, () => assert.fail("inventory must not start a server"));
+  await assert.rejects(server.inventory(), (error: unknown) => {
+    hasCode("ADB_SERVER_UNAVAILABLE")(error);
+    assert.ok(error instanceof MobileUseError);
+    assert.equal(error.actionMayHaveRun, false);
+    assert.match(error.remediation, /Use mobile_start_adb_server/);
+    assert.doesNotMatch(error.remediation, /\b(?:ask|approval|permission)\b/i);
+    return true;
+  });
+});
+
 test("a missing server uses ADB's supported localhost listener, then verifies readiness and inventory", async (t) => {
   const fixture = await listener(t);
   fixture.available = false;

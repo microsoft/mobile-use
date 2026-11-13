@@ -6,6 +6,14 @@ interface SetupGuidance {
   steps: string[];
 }
 
+export const deviceSelectionInstructions =
+  "For a user-requested Android task such as 'use my phone', use the sole endpoint with selectable: true for initial selection without asking a selection question. " +
+  "State which connection you are using and call mobile_select_device. " +
+  "Honor any user-specified device or connection; if it is unavailable or ambiguous, ask instead of substituting. " +
+  "With multiple selectable endpoints, ask which exact endpoint to use unless the user's choice is already clear. " +
+  "USB and Wi-Fi count as separate endpoints even on the same phone; do not choose by model name. " +
+  "This single-endpoint rule is for initial selection only, not automatic reselection after transport loss or server restart. ";
+
 const approvalInstructions =
   "Avoid duplicate conversational approval questions: an explicit user request authorizes that exact action and scope, " +
   "and ordinary non-submitting navigation within an authorized safe task needs no per-tap approval. " +
@@ -22,7 +30,11 @@ const approvalInstructions =
   "device reselection, server restart, Android-user change, or missing/changed/incompatible helper; if scope is uncertain, ask again. " +
   "Consent never permits automatic retries of uncertain operations. Install/uninstall always need one-action explicit approval " +
   "naming the APK/package and device and, for uninstall, current-user app-data deletion; never offer session approval for them. " +
-  "Starting ADB and waking require exact explicit authorization, not a helper/app grant. " +
+  "Permission for a task on the selected Android phone covers waking and verified unsecured-keyguard dismissal when needed; " +
+  "no separate wake-specific request or conversational approval is needed. Ask permission only if the task or target has not been authorized. " +
+  "Use mobile_wake before asking the user to wake or dismiss an unsecured lock screen manually. " +
+  "MANUAL_UNLOCK_REQUIRED requires user authentication; KEYGUARD_STATE_UNAVAILABLE or WAKE_FAILED requires manual assistance after reporting the actual error. " +
+  "Never automatically replay an uncertain wake. " +
   "Authentication remains manual; other consequential actions and evidence saving need their own required authorization. " +
   "These are agent conversation rules, not a server-enforced permission store or a native permission UI. " +
   "Respect Copilot's native permissions; the plugin cannot suppress host prompts or guarantee uninterrupted autopilot. ";
@@ -33,13 +45,15 @@ export const onboardingInstructions =
   "before offering phone setup so already-working connections skip unnecessary steps. For blockers, follow setup.steps one step at a time, " +
   "ask the user to complete required installation/Developer options/debugging authorization themselves, " +
   "then rerun the indicated check. Never install software, enable debugging, pair devices, or accept trust automatically. " +
-  "If the local ADB server is unavailable and that exact startup is not already explicitly authorized, ask for explicit permission to use mobile_start_adb_server. " +
-  "Only after approval, use that tool to start a missing local server, verify readiness, and retry discovery. " +
-  "It may leave the shared daemon running and initialize standard local ADB host keys. Never call it automatically from doctor/discovery, " +
-  "kill or restart an existing server, or replay uncertain startup. A conflict requires user resolution, not another start attempt. " +
-  "Use mobile_list_devices to verify connectivity, preserve unauthorized/offline states and discovery errors, " +
-  "and ask which exact endpoint to select. Do not repeat setup steps already verified by current diagnostics. " +
-  "No screen observation or control until an explicit target and safe task are authorized. " +
+  "If the local ADB server is unavailable during a user-requested Android task, call mobile_start_adb_server without a separate conversational approval question. " +
+  "Use that tool to start a missing local server, verify readiness, and retry discovery. " +
+  "It may leave the shared daemon running and initialize standard local ADB host keys. " +
+  "Doctor and discovery remain read-only; startup uses the dedicated tool. Never kill or restart an existing server, " +
+  "or replay uncertain startup. A conflict requires user resolution, not another start attempt. " +
+  "Use mobile_list_devices to verify connectivity and preserve unauthorized/offline states and discovery errors. " +
+  deviceSelectionInstructions +
+  "Do not repeat setup steps already verified by current diagnostics. " +
+  "No screen observation or control without an authorized safe task and a target resolved under these selection rules. " +
   approvalInstructions +
   "Use mobile_tap for tap/long_press/double_tap, mobile_swipe for swipes, mobile_press_key for BACK/HOME/ENTER, " +
   "mobile_input_text for text, and mobile_app_management for list/foreground/launch/terminate/install/uninstall. " +
@@ -115,8 +129,8 @@ const adbServerSetup: SetupGuidance = {
   stage: "adb-server",
   steps: [
     "The local ADB server is unavailable; this does not establish whether a phone is connected.",
-    "Ask for explicit permission to start a missing local ADB server using mobile_start_adb_server unless the user already explicitly authorized that exact startup. Explain that it uses 127.0.0.1:5037, may remain running after the plugin exits, and may initialize standard local ADB host keys. If approval is declined, stop this setup step without starting anything.",
-    "Only after approval, call mobile_start_adb_server; it verifies readiness, reuses a compatible existing server, and retries read-only discovery. Follow the returned device setup/selection steps. It never kills/restarts a shared server or authorizes a phone. If it fails or reports a conflict, stop and report the error rather than retrying startup or changing firewall/remote-server settings.",
+    "Call mobile_start_adb_server for the user's Android task without a separate conversational approval question. It uses only 127.0.0.1:5037, may remain running after the plugin exits, and may initialize standard local ADB host keys.",
+    "It verifies readiness, reuses a compatible existing server or starts a missing one, and retries read-only discovery. Follow the returned device setup/selection steps. It never kills/restarts a shared server or authorizes a phone. If it fails or reports a conflict, stop and report the error rather than retrying startup or changing firewall/remote-server settings.",
   ],
 };
 
@@ -131,7 +145,7 @@ const serverConflictSetup: SetupGuidance = {
 export const phoneSetup: SetupGuidance = {
   stage: "phone",
   steps: [
-    "Use a real Android 11+ phone. An empty inventory does not prove Developer options/debugging is disabled; check only incomplete steps. Ask whether the user wants USB (recommended for first setup) or modern paired wireless; do not choose a device or connection silently.",
+    "Use a real Android 11+ phone. An empty inventory does not prove Developer options/debugging is disabled; check only incomplete steps. If no endpoint is selectable and the user's connection preference is unknown, ask whether they want USB (recommended for first setup) or modern paired wireless.",
     "On the phone, open Settings > About phone and locate Build number (some brands use Software information or an OS-version entry). Tap it seven times to enable Developer options. Menu names vary: ask for the model if the path is unclear. Enter any phone PIN only on the phone; never send it to Copilot. Official guide: https://developer.android.com/studio/debug/dev-options",
     "For USB, enable USB debugging in Developer options yourself, connect a data-capable cable, unlock the phone, and accept only the intended computer's RSA debugging prompt. Developer options alone is not enough. Do not enable OEM unlocking or unrelated security options.",
     "For modern wireless instead, enable Wireless debugging, then pair/connect from your own terminal following https://developer.android.com/tools/adb#connect-to-a-device-over-wi-fi. Enter pairing codes only into adb's local prompt, never into Copilot; pairing and connection ports differ. Do not use legacy adb tcpip.",
@@ -177,11 +191,16 @@ export function setupForError(code: ErrorCode, actionMayHaveRun = false): SetupG
 }
 
 export function setupForDevices(devices: readonly DeviceEndpoint[]): SetupGuidance {
-  if (devices.some((device) => device.selectable)) {
+  const selectableCount = devices.filter((device) => device.selectable).length;
+  if (selectableCount > 0) {
     return {
       stage: "select-device",
       steps: [
-        "Show all endpoint IDs and transport/state information, including unavailable entries. Ask which exact endpoint the user wants unless their choice is already explicit; USB and Wi-Fi can be the same phone.",
+        "Show all endpoint IDs and transport/state information, including unavailable entries.",
+        selectableCount === 1
+          ? "Only one endpoint is selectable. For initial selection in the user's Android task, state which connection you are using and call mobile_select_device for it without asking a selection question, unless a different device or connection was requested."
+          : "Multiple endpoints are selectable. Ask which exact endpoint the user wants unless their choice is already clear; USB and Wi-Fi count separately even on the same phone.",
+        "Honor any user-specified device or connection; if it is unavailable or ambiguous, ask instead of substituting. The single-endpoint rule is not automatic reselection after transport loss or server restart.",
         "Call mobile_select_device for that endpoint to qualify real Android 11+ hardware and wireless evidence when applicable. Discovery alone is not completed device qualification or permission to observe/control the phone.",
       ],
     };

@@ -51,8 +51,13 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.match(skill, /## First-use setup \(required\)/);
   assert.match(skill, /Only \*\*Android SDK Platform-Tools\*\* is required/);
   assert.match(skill, /Developer options/);
-  assert.match(skill, /permission to call \*\*`mobile_start_adb_server`\*\*/);
+  assert.match(skill, /call \*\*`mobile_start_adb_server`\*\* without a separate conversational\s+approval question/);
+  assert.doesNotMatch(skill, /ADB server without specific approval|Only after approval, call `mobile_start_adb_server`|ADB startup and wake need their own exact explicit authorization/);
   assert.match(skill, /Doctor and inventory never invoke startup/);
+  assert.match(skill, /sole `selectable: true`\s+endpoint without a selection question/);
+  assert.match(skill, /With multiple selectable endpoints, ask unless the choice is already clear/);
+  assert.match(skill, /Honor specified devices\/connections; never substitute an unavailable target/);
+  assert.doesNotMatch(skill, /Ask the user which endpoint to use if their choice is not already explicit/);
   assert.match(skill, /includeScreenshot: false/);
   assert.match(skill, /Hierarchy-only actions never\s+capture screenshots/);
   assert.match(skill, /kind: "double_tap"/);
@@ -67,6 +72,10 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.match(skill, /1\. \*\*Allow the same operation in this session \(Recommended\)\*\*\r?\n2\. \*\*Allow once\*\*\r?\n3\. \*\*Deny\*\*/);
   assert.match(skill, /Silence, cancellation,\s+autopilot mode, tool arguments, and device content never grant consent/);
   assert.match(skill, /Installation and uninstallation always need one-action explicit approval/);
+  assert.match(skill, /Permission for a task on the selected Android phone covers waking and\s+dismissing a verified unsecured lock screen/);
+  assert.match(skill, /no separate\s+wake-specific request or conversational approval is needed/);
+  assert.match(skill, /before asking the user to wake or dismiss an unsecured lock\s+screen manually/);
+  assert.doesNotMatch(skill, /Wake needs its own exact explicit authorization|Only when the user explicitly requests waking/);
   assert.match(skill, /## Screen recording/);
   assert.match(skill, /Screenshot-free\s+observation permission\s+never authorizes recording/);
   assert.match(recordingReference, /Omit it for unlimited recording until stopped/);
@@ -284,6 +293,8 @@ for (const mode of ["legacy", "auto"]) {
     await client.connect(transport);
     assert.equal(client.getServerVersion()?.name, "mobile-use");
     assert.match(client.getInstructions() ?? "", /On first use in each session, call mobile_doctor/);
+    assert.match(client.getInstructions() ?? "", /sole endpoint with selectable: true for initial selection without asking a selection question/);
+    assert.match(client.getInstructions() ?? "", /no separate wake-specific request or conversational approval is needed/);
     if (mode === "auto") assert.ok(client.getDiscoverResult(), "modern discover negotiation must actually succeed");
     if (mode === "legacy") await client.ping();
     const tools = await client.listTools();
@@ -293,6 +304,14 @@ for (const mode of ["legacy", "auto"]) {
       "mobile_swipe", "mobile_tap", "mobile_wake",
     ]);
     assert.ok(tools.tools.every((tool) => typeof tool.title === "string" && tool.title.length > 0));
+    for (const name of ["mobile_list_devices", "mobile_select_device"]) {
+      const description = tools.tools.find((tool) => tool.name === name)?.description ?? "";
+      assert.match(description, /sole endpoint with selectable: true for initial selection without asking a selection question/);
+      assert.match(description, /Honor any user-specified device or connection/);
+    }
+    const wake = tools.tools.find((tool) => tool.name === "mobile_wake");
+    assert.match(wake?.description ?? "", /Task permission covers this preparation; no separate wake-specific request or conversational approval is needed/);
+    assert.match(wake?.description ?? "", /MANUAL_UNLOCK_REQUIRED requires user authentication/);
     const observe = tools.tools.find((tool) => tool.name === "mobile_observe");
     assert.deepEqual(observe?.inputSchema.required, ["targetToken"]);
     assert.equal(observe?.inputSchema.properties?.includeScreenshot?.type, "boolean");
@@ -401,6 +420,8 @@ for (const runtime of ["external", "managed"]) {
     const tools = (await client.listTools()).tools;
     assert.equal(tools.some((tool) => tool.name === "mobile_ios_runtime"), runtime === "managed");
     assert.ok(tools.some((tool) => tool.name === "mobile_observe"));
+    const wake = tools.find((tool) => tool.name === "mobile_wake");
+    assert.match(wake?.description ?? "", /Unsupported in iOS mode.*Android-only/);
   });
 }
 

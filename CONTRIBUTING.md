@@ -141,7 +141,7 @@ Do not open an initial PR that directly edits `plugins/external.json`.
 | Submission field | Value |
 | --- | --- |
 | Plugin name | `mobile-use` |
-| Short description | Observe and interact with explicitly selected real Android devices over authorized USB or paired wireless ADB. |
+| Short description | Observe and interact with selected real Android devices over authorized USB or paired wireless ADB. |
 | GitHub repository | `microsoft/mobile-use` |
 | Plugin path inside the repository | `plugins/mobile-use` (the folder, not `plugin.json`) |
 | Ref / Commit SHA to review | An optional release tag and/or the full 40-character commit SHA from the merged candidate; both must identify the same commit when provided together. |
@@ -340,9 +340,9 @@ include `setup: { stage, steps }` guidance; errors remain errors, not empty
 device lists. Guide only the next missing setup step.
 
 The user performs installation, settings changes, host authorization, and
-pairing/connection. The plugin can start a missing local ADB server only after
-specific approval. It never installs Platform-Tools/drivers, enables debugging,
-pairs/connects a device, changes a keyboard, or installs DeviceKit.
+pairing/connection. The plugin can start a missing local ADB server for the
+requested Android task. It never installs Platform-Tools/drivers, enables
+debugging, pairs/connects a device, changes a keyboard, or installs DeviceKit.
 
 The server resolves `adb.exe` from `MOBILE_USE_ADB_PATH` (optional absolute
 `.exe` path), `ANDROID_HOME`/`ANDROID_SDK_ROOT`, the standard per-user Android
@@ -351,13 +351,14 @@ restart the plugin. Only the local ADB server at `127.0.0.1:5037` is supported;
 remote/non-default server overrides fail explicitly. The plugin does not
 kill/restart the shared ADB server or alter global ADB/network settings.
 
-If discovery reports `ADB_SERVER_UNAVAILABLE`, obtain specific approval before
-calling `mobile_start_adb_server`. It reuses a compatible server at
-`127.0.0.1:5037`, or starts one if the port refuses connections. It verifies
-the ADB protocol/version and retries read-only inventory before returning
-device setup/selection guidance. It never selects or controls a phone, accepts
-a debugging prompt, or silently starts from doctor/discovery. An unavailable
-host server says nothing about the phone's connection state.
+If discovery reports `ADB_SERVER_UNAVAILABLE`, call `mobile_start_adb_server`
+for the user's Android task without a separate conversational approval question.
+It reuses a compatible server at `127.0.0.1:5037`, or starts one if the port
+refuses connections. It verifies the ADB protocol/version and retries read-only
+inventory before returning device setup/selection guidance. It never selects
+or controls a phone, accepts a debugging prompt, or silently starts from
+doctor/discovery. An unavailable host server says nothing about the phone's
+connection state.
 
 The shared server may remain running after the plugin exits, and first startup
 may initialize standard local ADB host keys. No key material is returned.
@@ -384,10 +385,10 @@ Do not bypass local policy or change firewall settings to recover.
 | Tool | Contract |
 | --- | --- |
 | `mobile_doctor` | First-use host ADB/version check with setup guidance. `ready` is host-only; does not enumerate or control devices. |
-| `mobile_start_adb_server` | After explicit approval, reuse/start only the default local server, verify readiness, and return fresh inventory/setup steps. Never kills/restarts, selects, or controls a device. |
+| `mobile_start_adb_server` | Reuse/start only the default local server for the requested Android task without separate conversational approval, verify readiness, and return fresh inventory/setup steps. Never kills/restarts, selects, or controls a device. |
 | `mobile_list_devices` | Show endpoint IDs, transport IDs/kinds, all states, and next setup/selection steps. Discovery failure is not an empty list. |
-| `mobile_select_device` | Bind exactly the endpoint the user chose; qualify Android/physical-device and wireless evidence; return a session target token. |
-| `mobile_wake` | With explicit permission and a target token, wake the display and dismiss only an unsecured lock screen. No observation or screen capture; secure/unknown lock states require manual unlocking. |
+| `mobile_select_device` | For initial selection in a requested Android task, bind the user's chosen endpoint or the sole selectable endpoint without a selection question. Qualify Android/physical-device and wireless evidence; return a session target token. |
+| `mobile_wake` | For an authorized task on the selected phone, wake the display and dismiss only a verified unsecured lock screen; no separate wake-specific request or approval question. Requires a target token, not an observation. No screen capture; authentication or unsupported lock states need manual assistance. |
 | `mobile_observe` | Require that token; return a fresh observation ID, display geometry, hierarchy/status/warnings, and a separate PNG image block when usable. Set `includeScreenshot: false` to read only hierarchy/display state without capturing an image. |
 | `mobile_tap` | `action.kind`: `tap`, `long_press`, `double_tap`, or `prepare` for the double-tap helper. Input requires `action.observationId` and `action.target`; preparation requires consent and invalidates observations without injecting input. |
 | `mobile_swipe` | Require target and latest observation IDs, screenshot `from`/`to`, and optional `durationMs`; validate a unique scrollable surface or explicit `elementRef`, otherwise require full-surface `bounds` for visual fallback. |
@@ -411,12 +412,22 @@ calls with the corresponding tap/text tool and `action: { kind: "prepare" }`.
 Every object/operation is strict: extraneous fields and cross-category actions
 are rejected, not silently ignored.
 
-USB and Wi-Fi entries may be two connections to the same phone. Choose an
-endpoint explicitly, not by model name; the selected identity includes physical
-serial evidence when available, otherwise `null`. Every device command uses
-the selected ADB transport ID. A disconnect, observed server restart, or new
-selection invalidates tokens/references. There is **no endpoint fallback**,
-including to another connection to the same phone.
+For initial selection in a user-requested Android task, exactly one endpoint
+with `selectable: true` needs no selection question. State which connection is
+being used and call `mobile_select_device` with its exact endpoint ID. Honor any
+user-specified device or connection; never substitute the sole endpoint when the
+requested target is unavailable or ambiguous. With multiple selectable endpoints,
+ask unless the choice is already clear. USB and Wi-Fi count separately even on
+the same phone; do not choose by model name. Unavailable entries remain visible
+but do not count as selectable. Selection still qualifies hardware and wireless
+evidence; discovery and startup never select or authorize screen access.
+
+The selected identity includes physical serial evidence when available, otherwise
+`null`. Every device command uses the selected ADB transport ID. A disconnect,
+observed server restart, or new selection invalidates tokens/references. The
+single-endpoint rule does not authorize automatic reselection after transport
+loss or server restart. There is **no endpoint fallback**, including to another
+connection to the same phone.
 
 ### Screen recording
 
@@ -564,7 +575,7 @@ recording or other Android versions.
 ### App management
 
 All six `mobile_app_management` operations require the `targetToken` from
-explicit device selection. They revalidate the selected transport and physical identity; they
+device selection under the rules above. They revalidate the selected transport and physical identity; they
 never select another device, switch Android users, or capture a screen.
 They do not require an `observationId`. The four mutating operations invalidate
 earlier observations, including on a failed attempt; observe again before UI
@@ -614,9 +625,14 @@ further mutation; no app operation is retried automatically.
 
 ### Waking a selected phone
 
-After explicit permission to wake the selected phone, call `mobile_wake` with
-`targetToken`. Like app-management tools, it does not require an observation:
-the screen may be off, and capturing authentication UI is not appropriate.
+Permission for a task on the selected Android phone includes waking and verified
+unsecured-keyguard dismissal when needed; no separate wake-specific request or
+conversational approval is needed. Ask permission only if the task or target has
+not been authorized. Call `mobile_wake` with `targetToken` before asking the user
+to wake or dismiss an unsecured lock screen manually. For example, "open my
+phone to read news" covers this preparation without a literal request to "wake".
+Like app-management tools, it does not require an observation: the screen may
+be off, and capturing authentication UI is not appropriate.
 It invalidates previous observations, sends the non-toggle Android `WAKEUP`
 key, and checks bounded keyguard diagnostics. Only an explicitly unsecured
 keyguard may receive Android's `wm dismiss-keyguard` command, at most once.
@@ -693,7 +709,10 @@ new question. Never automatically retry uncertain operations using a grant.
 
 Install/uninstall always retain explicit one-action approval for the specific
 APK/package and device, including current-user app-data deletion for uninstall.
-ADB startup/wake require exact explicit authorization outside helper/app grants.
+Task permission on the selected Android phone covers needed waking and verified
+unsecured-keyguard dismissal without a separate wake-specific request or question.
+Local ADB startup for the requested Android task needs no separate
+conversational approval.
 Authentication remains manual, and other consequential actions or evidence
 saving retain their own approval requirements. Do not recommend blanket
 approval of the combined app tool or bypass native permissions.

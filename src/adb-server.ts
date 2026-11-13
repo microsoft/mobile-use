@@ -119,7 +119,7 @@ export class LocalAdbServer {
     if (inventory === null) {
       throw new MobileUseError(
         "ADB_SERVER_UNAVAILABLE", "The local ADB server is unavailable for discovery.",
-        "Ask for approval to use mobile_start_adb_server. Do not automatically replay startup or restart a shared server.",
+        "Use mobile_start_adb_server for the requested Android task. Do not automatically replay startup or restart a shared server.",
       );
     }
     return inventory;

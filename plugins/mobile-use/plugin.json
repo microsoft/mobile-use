@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "mobile-use",
   "version": "0.1.0",
-  "description": "Observe and interact with explicitly selected real Android devices over authorized USB or paired wireless ADB.",
+  "description": "Observe and interact with selected real Android devices over authorized USB or paired wireless ADB.",
   "author": {
     "name": "Microsoft",
     "url": "https://github.com/microsoft"

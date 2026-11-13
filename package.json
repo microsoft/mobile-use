@@ -2,7 +2,7 @@
   "name": "@microsoft/mobile-use",
   "version": "0.1.0",
   "private": true,
-  "description": "A local Copilot plugin for observing and controlling explicitly selected real Android devices.",
+  "description": "A local Copilot plugin for observing and controlling selected real Android devices.",
   "type": "module",
   "license": "MIT",
   "engines": {

@@ -4,7 +4,7 @@ Use GitHub Copilot to observe and interact with a **real Android 11+ phone or
 tablet** from Windows, over USB or modern paired wireless ADB.
 
 Read screens or UI text, tap and swipe, enter text, manage apps, and record
-silent screen videos on a device you explicitly select.
+silent screen videos on a selected device.
 
 An **experimental iOS 17+ adapter** is included but not yet supported. Personal
 signing and real-device acceptance remain pending; see the
@@ -57,11 +57,14 @@ you through the next missing step.
 3. For wireless, enable **Wireless debugging** and follow
    [Android's pairing instructions](https://developer.android.com/tools/adb#connect-to-a-device-over-wi-fi)
    in your own terminal. Only modern paired wireless is supported.
-4. Ask Copilot to list devices and choose the exact USB or wireless endpoint.
+4. Ask Copilot to use your phone for a task. With one selectable connection it
+   proceeds without a selection question; with several, choose the exact USB
+   or wireless endpoint unless your choice is already clear.
 
 You perform settings changes, debugging authorization, and pairing yourself.
 Enter passwords and pairing codes only on the phone or in the local ADB prompt,
-never in chat. Copilot asks before starting a missing local ADB server.
+never in chat. mobile-use asks for permission for sensitive operations and
+respects Copilot's permission controls to help protect your security and privacy.
 
 ## Use with Copilot
 

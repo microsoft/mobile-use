@@ -119,10 +119,10 @@ export class MobileUseService implements MobileService {
     if (!this.selected) {
       throw this.transportLost
         ? new MobileUseError("TRANSPORT_LOST", "The selected transport was lost.", "Rediscover and explicitly reselect; no fallback was attempted.")
-        : new MobileUseError("TARGET_NOT_SELECTED", "No device is selected.", "List devices and select the endpoint the user explicitly requested.");
+        : new MobileUseError("TARGET_NOT_SELECTED", "No device is selected.", "List devices and call mobile_select_device for the user's chosen endpoint or the sole selectable endpoint for initial selection in the requested task. Honor any specified device or connection.");
     }
     if (this.selected.token !== token) {
-      throw new MobileUseError("STALE_TARGET", "This target token is not current.", "Use the token from explicit device selection.");
+      throw new MobileUseError("STALE_TARGET", "This target token is not current.", "Use the token from the current mobile_select_device result.");
     }
     return this.selected;
   }
