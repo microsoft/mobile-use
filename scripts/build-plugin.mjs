@@ -27,12 +27,57 @@ if (
   throw new Error("Plugin manifest, schema, or package version is inconsistent.");
 }
 
+const skillTargets = {
+  "awesome-copilot": [
+    [path.join("skills", "mobile-use", "SKILL.md"), path.join("targets", "awesome-copilot", "SKILL.md")],
+    [
+      path.join("skills", "mobile-use", "references", "screen-recording.md"),
+      path.join("references", "screen-recording.md"),
+    ],
+    [path.join("skills", "mobile-use", "references", "ios-setup.md"), path.join("references", "ios-setup.md")],
+  ],
+  "android-studio": [
+    [path.join("skills", "mobile-use", "SKILL.md"), path.join("targets", "android-studio", "SKILL.md")],
+    [
+      path.join("skills", "mobile-use", "references", "screen-recording.md"),
+      path.join("references", "screen-recording.md"),
+    ],
+  ],
+};
+
+const skillRoot = path.join(root, "skills", "mobile-use");
+const readSkillSource = async (relativeSource) => {
+  const sourcePath = path.join(skillRoot, relativeSource);
+  if (!existsSync(sourcePath)) {
+    throw new Error(`Skill source is missing: ${path.join("skills", "mobile-use", relativeSource)}.`);
+  }
+  const normalized = (await readFile(sourcePath, "utf8")).replace(/\r\n/g, "\n");
+  if (path.basename(relativeSource) === "SKILL.md") {
+    const lineCount = normalized.split("\n").length;
+    if (lineCount > 500) {
+      throw new Error(
+        `Skill source exceeds 500-line limit (${lineCount} lines): ${path.join("skills", "mobile-use", relativeSource)}.`,
+      );
+    }
+    if (!/^---\nname: mobile-use\ndescription: /.test(normalized)) {
+      throw new Error(
+        `Skill source is missing required mobile-use frontmatter: ${path.join("skills", "mobile-use", relativeSource)}.`,
+      );
+    }
+  }
+  return normalized;
+};
+
+for (const entries of Object.values(skillTargets)) {
+  for (const [, relativeSource] of entries) {
+    await readSkillSource(relativeSource);
+  }
+}
+
 for (const relative of [
   "plugin.json",
   "mcp.json",
   path.join("assets", "mobile-use.png"),
-  path.join("skills", "mobile-use", "SKILL.md"),
-  path.join("skills", "mobile-use", "references", "screen-recording.md"),
 ]) {
   if (!existsSync(path.join(pluginRoot, relative))) {
     throw new Error(`Plugin artifact is incomplete: ${relative}.`);
@@ -117,12 +162,34 @@ for (const [directory, dependency] of [...dependencies].sort((a, b) =>
     notices += `\n--- ${file} ---\n${await readFile(path.join(directory, file), "utf8")}`;
   }
 }
+const generatedSkills = await Promise.all(
+  skillTargets["awesome-copilot"].map(async ([relativeOut, relativeSource]) => [
+    relativeOut,
+    await readSkillSource(relativeSource),
+  ]),
+);
+
 // The tracked plugin uses LF even when source files are checked out with CRLF.
 const generated = [
   [path.join("server", "index.mjs"), result.outputFiles[0].text],
   ["LICENSE", await readFile(path.join(root, "LICENSE"), "utf8")],
   ["THIRD_PARTY_NOTICES", notices],
+  ...generatedSkills,
 ].map(([relative, contents]) => [relative, contents.replace(/\r\n/g, "\n")]);
+
+const listRelativeFiles = async (baseDir, prefix = "") => {
+  const entries = await readdir(path.join(baseDir, prefix), { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const relative = prefix ? path.join(prefix, entry.name) : entry.name;
+    if (entry.isDirectory()) {
+      files.push(...(await listRelativeFiles(baseDir, relative)));
+    } else {
+      files.push(relative);
+    }
+  }
+  return files;
+};
 
 if (check) {
   const expectedEntries = new Set(["plugin.json", "mcp.json", "assets", "skills", "server", "LICENSE", "THIRD_PARTY_NOTICES"]);
@@ -135,6 +202,15 @@ if (check) {
     if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
     differences.push("server");
   }
+  const expectedSkillPaths = new Set(generatedSkills.map(([relative]) => relative));
+  try {
+    for (const relative of await listRelativeFiles(pluginRoot, "skills")) {
+      if (!expectedSkillPaths.has(relative)) differences.push(relative);
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+    differences.push("skills");
+  }
   for (const [relative, expected] of generated) {
     try {
       const actual = await readFile(path.join(pluginRoot, relative), "utf8");
@@ -146,16 +222,18 @@ if (check) {
   }
   if (differences.length > 0) {
     throw new Error(
-      `Plugin package is out of date: ${differences.join(", ")}. Run npm run build:plugin and commit the regenerated assets in plugins\\mobile-use.`,
+      `Plugin package is out of date: ${[...new Set(differences)].join(", ")}. Run npm run build:plugin and commit the regenerated assets in plugins\\mobile-use.`,
     );
   }
   console.log(`Verified plugins\\mobile-use (${dependencies.size} bundled dependencies).`);
 } else {
   await rm(path.join(pluginRoot, "server"), { recursive: true, force: true });
+  await rm(path.join(pluginRoot, "skills"), { recursive: true, force: true });
   await rm(path.join(pluginRoot, "licenses"), { recursive: true, force: true });
-  await mkdir(path.join(pluginRoot, "server"), { recursive: true });
   for (const [relative, contents] of generated) {
-    await writeFile(path.join(pluginRoot, relative), contents);
+    const destination = path.join(pluginRoot, relative);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeFile(destination, contents);
   }
-  console.log(`Built plugins\\mobile-use (${dependencies.size} bundled dependencies). Authored manifests, assets, and skills are unchanged.`);
+  console.log(`Built plugins\\mobile-use (${dependencies.size} bundled dependencies). Authored manifests and assets are unchanged.`);
 }

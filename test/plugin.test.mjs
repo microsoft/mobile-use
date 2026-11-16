@@ -44,9 +44,21 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   const skill = await readFile(path.join(artifact, "skills", "mobile-use", "SKILL.md"), "utf8");
   assert.ok(skill.split(/\r?\n/).length <= 500, "Agent Skills intake limits SKILL.md to 500 lines.");
   assert.match(skill, /\[screen recording reference\]\(references\/screen-recording\.md\)/);
+  assert.match(skill, /\[iOS setup and WDA workflow reference\]\(references\/ios-setup\.md\)/);
   const recordingReference = await readFile(
     path.join(artifact, "skills", "mobile-use", "references", "screen-recording.md"), "utf8",
   );
+  const iosReference = await readFile(
+    path.join(artifact, "skills", "mobile-use", "references", "ios-setup.md"), "utf8",
+  );
+  assert.match(iosReference, /MOBILE_USE_IOS_RUNTIME=managed/);
+  assert.match(iosReference, /MOBILE_USE_WDA_URL/);
+  const androidStudioSkill = await readFile(
+    path.join(root, "skills", "mobile-use", "targets", "android-studio", "SKILL.md"), "utf8",
+  );
+  assert.ok(androidStudioSkill.split(/\r?\n/).length <= 500, "Android Studio SKILL.md must stay within 500 lines.");
+  assert.match(androidStudioSkill, /\[screen recording reference\]\(references\/screen-recording\.md\)/);
+  assert.doesNotMatch(androidStudioSkill, /ios-setup\.md|WebDriverAgent|MOBILE_USE_WDA_URL|go-ios|\bWDA\b/);
   assert.match(skill, /^---\r?\nname: mobile-use\r?\ndescription: /);
   assert.match(skill, /## First-use setup \(required\)/);
   assert.match(skill, /Only \*\*Android SDK Platform-Tools\*\* is required/);
@@ -158,11 +170,15 @@ test("plugin generation preserves authored files and detects stale assets withou
   t.after(() => rm(fixture, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
   await mkdir(path.join(fixture, "scripts"));
   await cp(path.join(root, "scripts", "build-plugin.mjs"), path.join(fixture, "scripts", "build-plugin.mjs"));
-  for (const relative of ["src", "third_party", "plugins", "package.json", "LICENSE", "THIRD_PARTY_NOTICES"]) {
+  for (const relative of ["src", "skills", "third_party", "plugins", "package.json", "LICENSE", "THIRD_PARTY_NOTICES"]) {
     await cp(path.join(root, relative), path.join(fixture, relative), { recursive: true });
   }
   await symlink(path.join(root, "node_modules"), path.join(fixture, "node_modules"), "junction");
-  for (const relative of ["LICENSE", "THIRD_PARTY_NOTICES"]) {
+  for (const relative of [
+    "LICENSE",
+    "THIRD_PARTY_NOTICES",
+    path.join("skills", "mobile-use", "targets", "awesome-copilot", "SKILL.md"),
+  ]) {
     const file = path.join(fixture, relative);
     await writeFile(file, (await readFile(file, "utf8")).replace(/\r?\n/g, "\r\n"));
   }
@@ -172,11 +188,15 @@ test("plugin generation preserves authored files and detects stale assets withou
   assert.equal(scripts["build:plugin"], scripts["build:marketplace"]);
   const authoredPaths = [
     "plugin.json", "mcp.json", path.join("assets", "mobile-use.png"),
+  ];
+  const generatedSkillPaths = [
     path.join("skills", "mobile-use", "SKILL.md"),
     path.join("skills", "mobile-use", "references", "screen-recording.md"),
+    path.join("skills", "mobile-use", "references", "ios-setup.md"),
   ];
   const authored = await Promise.all(authoredPaths.map((relative) => readFile(path.join(published, relative))));
-  for (const relative of ["server", "licenses"]) {
+  const expectedSkills = await Promise.all(generatedSkillPaths.map((relative) => readFile(path.join(published, relative))));
+  for (const relative of ["server", "licenses", path.join("skills", "mobile-use")]) {
     await mkdir(path.join(published, relative), { recursive: true });
     await writeFile(path.join(published, relative, "stale-build-probe.txt"), "stale\n", { flag: "wx" });
   }
@@ -194,21 +214,34 @@ test("plugin generation preserves authored files and detects stale assets withou
   };
 
   runBuild(["--check"], /Plugin package is out of date/);
-  for (const relative of ["server", "licenses"]) {
+  for (const relative of ["server", "licenses", path.join("skills", "mobile-use")]) {
     assert.equal(await readFile(path.join(published, relative, "stale-build-probe.txt"), "utf8"), "stale\n");
   }
   runBuild([]);
   for (const [index, relative] of authoredPaths.entries()) {
     assert.deepEqual(await readFile(path.join(published, relative)), authored[index], `${relative} must not be rewritten.`);
   }
-  for (const relative of ["server", "licenses"]) {
+  for (const [index, relative] of generatedSkillPaths.entries()) {
+    assert.deepEqual(await readFile(path.join(published, relative)), expectedSkills[index], `${relative} must match generated skill source.`);
+  }
+  for (const relative of ["server", "licenses", path.join("skills", "mobile-use")]) {
     await assert.rejects(stat(path.join(published, relative, "stale-build-probe.txt")), { code: "ENOENT" });
   }
   await assert.rejects(stat(path.join(published, "licenses")), { code: "ENOENT" });
   await assert.rejects(stat(path.join(fixture, "dist")), { code: "ENOENT" });
-  for (const relative of ["LICENSE", "THIRD_PARTY_NOTICES"]) {
+  for (const relative of ["LICENSE", "THIRD_PARTY_NOTICES", ...generatedSkillPaths]) {
     assert.doesNotMatch(await readFile(path.join(published, relative), "utf8"), /\r\n/);
   }
+  runBuild(["--check"]);
+
+  const skillSourcePath = path.join(fixture, "skills", "mobile-use", "targets", "awesome-copilot", "SKILL.md");
+  const skillSource = await readFile(skillSourcePath, "utf8");
+  const publishedSkillPath = path.join(published, "skills", "mobile-use", "SKILL.md");
+  const publishedSkill = await readFile(publishedSkillPath);
+  await writeFile(skillSourcePath, `${skillSource}\nFixture skill source edit.\n`);
+  runBuild(["--check"], /skills[\\/]mobile-use[\\/]SKILL\.md/);
+  assert.deepEqual(await readFile(publishedSkillPath), publishedSkill);
+  await writeFile(skillSourcePath, skillSource);
   runBuild(["--check"]);
 
   const logoPath = path.join(published, "assets", "mobile-use.png");
