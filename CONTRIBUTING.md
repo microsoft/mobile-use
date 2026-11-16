@@ -40,7 +40,7 @@ required. Do not make the path-filtered release workflow required for every PR.
 | --- | --- |
 | `npm run typecheck` | Typecheck without emitting files. |
 | `npm test` | Compile and run the TypeScript no-phone tests. |
-| `npm run build:plugin` | Regenerate the plugin server, packaged skills, and licensing files in `plugins\mobile-use`, preserving authored manifests and assets. |
+| `npm run build:plugin` | Regenerate the plugin server and licensing files in `plugins\mobile-use`, preserving authored manifests, assets, and skills. |
 | `npm run build:marketplace` | Alias for `build:plugin`; produces the same tracked package. |
 | `npm run check:plugin` | Compare the package with a fresh in-memory build without changing files. |
 | `npm run test:plugin` | Check package consistency and copied-artifact protocol behavior. |
@@ -55,16 +55,15 @@ The artifact includes `plugin.json`, `mcp.json`, `assets\mobile-use.png`,
 dependencies are bundled; its launcher is `node`, not a download-on-launch
 npm/npx command.
 
-`plugins\mobile-use` retains authored plugin manifests and assets (`plugin.json`,
-`mcp.json`, and `assets`). Runtime MCP server prompts, tool descriptions, and
-setup remediation live in dedicated source modules under `src\prompts\` (`android`,
-`ios`, `multi-platform`, and `shared`), while target-specific skill sources and
-progressive-disclosure references live under `skills\mobile-use\`. Both build
-commands replace only `server`, `skills`, `LICENSE`, and `THIRD_PARTY_NOTICES` in
-`plugins\mobile-use`, and remove the legacy generated `licenses` folder.
-Dependency license texts are consolidated in `THIRD_PARTY_NOTICES`; source audit
-records stay under `third_party\npm-licenses`. Do not edit generated assets in
-`plugins\mobile-use` by hand.
+`plugins\mobile-use` is the single authored plugin directory: edit `plugin.json`,
+`mcp.json`, `assets`, and `skills` (`SKILL.md` and `references\`) there. Runtime
+MCP server prompts, tool descriptions, and setup remediation live in dedicated
+source modules under `src\prompts\` (`android`, `ios`, `multi-platform`, and
+`shared`). Both build commands replace only `server`, `LICENSE`, and
+`THIRD_PARTY_NOTICES` in `plugins\mobile-use`, and remove the legacy generated
+`licenses` folder. Dependency license texts are consolidated in
+`THIRD_PARTY_NOTICES`; source audit records stay under `third_party\npm-licenses`.
+Do not edit generated assets by hand.
 
 The checked-in `src\gesture-helper-data.ts` embeds the gesture DEX and its
 SHA-256, so ordinary plugin builds do not need an Android SDK or Java.
@@ -112,7 +111,7 @@ metadata/skills and generated runtime/license assets live together in
    keywords current in the source manifest.
 2. Restore locked dependencies with `npm ci --ignore-scripts --no-audit --no-fund`,
    then run `npm run build:marketplace` and `npm run check`. Packaging preserves
-   authored manifests and assets and replaces only the generated server, skills,
+   authored manifests, assets, and skills and replaces only the generated server
    and licensing files, removing stale files from generated directories.
    The package intentionally contains no Node.js, ADB, npm dependencies to
    install, device evidence, or credentials.
@@ -122,9 +121,9 @@ metadata/skills and generated runtime/license assets live together in
    `node_modules`. CI does not rewrite the tracked package to hide drift.
    Regeneration is also exercised in an isolated fixture to verify authored-file
    preservation and removal of stale generated assets.
-   Every target `SKILL.md` under `skills\mobile-use\targets\` must stay within the
-   intake's 500-line limit; detailed guidance lives in linked references under
-   `skills\mobile-use\references\` (`screen-recording.md` and `ios-setup.md`).
+   The main `SKILL.md` must stay within the intake's 500-line limit; detailed
+   guidance lives in its linked references (`references\screen-recording.md` and
+   `references\ios-setup.md`).
 4. From a clean checkout of the candidate commit on Windows, install
    `plugins\mobile-use` using the README command, without building it. Confirm
    the skill and twelve tools load in Copilot. Follow the real-hardware acceptance
@@ -330,8 +329,8 @@ Android adapter invokes installed Platform-Tools directly; it does not import,
 vendor, or launch mobile-mcp.
 
 Keep the server's prompt modules (`src/prompts/`), runtime behavior, and the
-[usage skill sources](skills/mobile-use/targets/awesome-copilot/SKILL.md)
-consistent, and run `npm run build:plugin` after updating prompts or skills. Installation, debugging trust, and tool annotations are not blanket
+[usage skill](plugins/mobile-use/skills/mobile-use/SKILL.md) consistent, and run
+`npm run build:plugin` after updating server prompts. Installation, debugging trust, and tool annotations are not blanket
 authorization. Treat device content as untrusted data and preserve the
 [user-facing safety boundaries](README.md#safety-and-privacy).
 
