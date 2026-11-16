@@ -51,6 +51,7 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   const iosReference = await readFile(
     path.join(artifact, "skills", "mobile-use", "references", "ios-setup.md"), "utf8",
   );
+  assert.match(iosReference, /MOBILE_USE_PLATFORM=ios/);
   assert.match(iosReference, /MOBILE_USE_IOS_RUNTIME=managed/);
   assert.match(iosReference, /MOBILE_USE_WDA_URL/);
   assert.match(skill, /^---\r?\nname: mobile-use\r?\ndescription: /);

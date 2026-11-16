@@ -50,6 +50,7 @@ export type IosExternalPromptPack = PromptPack<CoreToolName>;
 export type IosManagedPromptPack = PromptPack<CoreToolName | IosRuntimeToolName>;
 export type MultiPlatformPromptPack = PromptPack<CoreToolName | IosRuntimeToolName>;
 
+/* @__NO_SIDE_EFFECTS__ */
 export function joinPrompt(parts: readonly string[]): string {
   return parts.map((part) => part.trim()).filter(Boolean).join(" ");
 }

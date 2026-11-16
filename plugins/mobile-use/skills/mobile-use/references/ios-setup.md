@@ -11,14 +11,19 @@ The user completes Apple pairing, Developer Mode, and signing outside chat;
 signing certificates, Apple IDs, passcodes, and pairing records never belong in
 conversation.
 
-Two local iOS runtime paths are supported:
+Two local iOS runtime paths are supported. Both require setting
+`MOBILE_USE_PLATFORM=ios` in the MCP server launch environment and fully
+quitting/reopening Copilot after configuration changes (without
+`MOBILE_USE_PLATFORM=ios`, the server starts in Android mode and omits iOS
+discovery and `mobile_ios_runtime`):
 
-1. **Managed USB runtime (`MOBILE_USE_IOS_RUNTIME=managed`)**:
+1. **Managed USB runtime (`MOBILE_USE_PLATFORM=ios`, `MOBILE_USE_IOS_RUNTIME=managed`)**:
    - Requires a physical iOS 17.4.1+ device connected over USB (Windows with
      Apple USB services or macOS), `go-ios` `v1.3.2` (`MOBILE_USE_GO_IOS_PATH`,
      default `ios`), and `MOBILE_USE_IOS_RUNNER_BUNDLE_ID` set to the user-built
      signed `.xctrunner` bundle ID (optional `MOBILE_USE_IOS_RUNNER_IPA` absolute
      `.ipa` path and `MOBILE_USE_IOS_STATE_DIR`). Do not set `MOBILE_USE_WDA_URL`.
+     Restart Copilot after setting these variables.
    - `mobile_doctor` and `mobile_list_devices` are strictly read-only and never
      start tunnels, mount developer images, or install apps.
    - After explicit user approval for an enumerated `ios:usb:<UDID>` endpoint,
@@ -36,10 +41,11 @@ Two local iOS runtime paths are supported:
      endpoint. Stop managed resources explicitly with
      `action: { kind: "stop", runtimeToken }`; stopping retains the installed
      Runner and local pairing/image caches.
-2. **External user-managed WDA (`MOBILE_USE_IOS_RUNTIME=external`, default for iOS mode)**:
+2. **External user-managed WDA (`MOBILE_USE_PLATFORM=ios`, `MOBILE_USE_IOS_RUNTIME=external`, default for iOS mode)**:
    - Requires a real unlocked iOS 17+ device with a dedicated user-started WDA
-     Runner and local port forwarding, plus `MOBILE_USE_WDA_URL` set to the exact
-     `http://127.0.0.1:<port>` endpoint.
+     Runner and local port forwarding, plus `MOBILE_USE_PLATFORM=ios` and
+     `MOBILE_USE_WDA_URL` set to the exact `http://127.0.0.1:<port>` endpoint,
+     followed by a full Copilot restart.
    - Do not share the Runner with Appium or another client: foreign WDA sessions
      are rejected (`WDA_SESSION_CONFLICT`), never taken over or deleted.
    - Shutdown deletes only the identifiable WDA HTTP session created by

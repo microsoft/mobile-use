@@ -19,7 +19,7 @@ export {
   managedIosSetup,
   type IosSetupGuidance,
 } from "./ios/setup.js";
-export { iosInstructions, managedIosInstructions } from "./ios/instructions.js";
+export { iosInstructions, iosSharedSafetyInstructions, managedIosInstructions } from "./ios/instructions.js";
 export {
   iosExternalPromptPack,
   iosExternalToolPrompts,

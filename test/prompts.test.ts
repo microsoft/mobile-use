@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { build } from "esbuild";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -99,6 +100,31 @@ test("android prompt modules remain free of iOS imports and iOS-specific runtime
       `${path.relative(root, file)} must not import iOS or multi-platform modules`,
     );
   }
+
+  const bundleResult = await build({
+    absWorkingDir: root,
+    entryPoints: [path.join(root, "src", "prompts", "android", "tools.ts")],
+    write: false,
+    bundle: true,
+    platform: "node",
+    target: "node22",
+    format: "esm",
+    metafile: true,
+    logLevel: "silent",
+  });
+  for (const input of Object.keys(bundleResult.metafile.inputs)) {
+    const normalized = input.replace(/\\/g, "/");
+    assert.doesNotMatch(
+      normalized,
+      /(?:^|\/)src\/prompts\/(?:ios|multi-platform)\//,
+      `Android prompt bundle must not include ${normalized}`,
+    );
+  }
+  const bundledCode = bundleResult.outputFiles[0]?.text ?? "";
+  assert.doesNotMatch(
+    bundledCode,
+    /WebDriverAgent|MOBILE_USE_WDA_URL|go-ios|\bWDA\b|iosSharedSafetyInstructions|Authenticate manually; never observe authentication screens/,
+  );
 });
 
 test("select-device setup builders return fresh single vs multi-endpoint guidance", () => {
