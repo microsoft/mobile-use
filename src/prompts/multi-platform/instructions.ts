@@ -1,4 +1,5 @@
 import { joinPrompt } from "../contracts.js";
+import { iosSharedSafetyInstructions } from "../ios/instructions.js";
 import { androidApprovalInstructions } from "../shared/consent.js";
 import { multiPlatformDeviceSelectionInstructions } from "./setup.js";
 
@@ -26,10 +27,15 @@ const platformCapabilityInstructions = joinPrompt([
   "Pointer gestures enforce metadata-first guards and local visual fallback bounds ({x,y,width,height}) where supported; changed, disabled, or ambiguous controls never fall back to pixels, and stale observations are never proof of an app security block. Never replay uncertain mutations or inputs.",
 ]);
 
+const multiPlatformSafetyAndApprovalInstructions = joinPrompt([
+  `On Android targets only (never overriding iOS safety restrictions on iOS targets): ${androidApprovalInstructions}`,
+  `On iOS targets, enforce the stricter iOS safety boundary unconditionally (conversational authorization never permits prohibited iOS actions): ${iosSharedSafetyInstructions}`,
+]);
+
 export const multiPlatformServerInstructions = joinPrompt([
   multiPlatformOnboardingPrelude,
   multiPlatformDeviceSelectionInstructions,
   multiDeviceIsolationInstructions,
-  androidApprovalInstructions,
+  multiPlatformSafetyAndApprovalInstructions,
   platformCapabilityInstructions,
 ]);

@@ -13,6 +13,7 @@ import {
   iosExternalPromptPack,
   iosManagedPromptPack,
   iosSetup,
+  iosSharedSafetyInstructions,
   managedIosSetup,
   multiPlatformHostSetup,
   multiPlatformPromptPack,
@@ -60,6 +61,12 @@ test("prompt packs define complete tool metadata and runtime-specific tool gatin
 
 test("multi-platform prompt pack replaces unsupported-mode stubs with simultaneous Android and iOS contracts", () => {
   assert.match(multiPlatformPromptPack.instructions, /Android 11\+ and iOS 17\+/);
+  assert.match(multiPlatformPromptPack.instructions, /On Android targets only/);
+  assert.match(multiPlatformPromptPack.instructions, /On iOS targets, enforce the stricter iOS safety boundary/);
+  assert.ok(
+    multiPlatformPromptPack.instructions.includes(iosSharedSafetyInstructions),
+    "multi-platform instructions must preserve iosSharedSafetyInstructions for iOS targets",
+  );
   for (const choice of SESSION_CONSENT_CHOICES) {
     assert.ok(
       multiPlatformPromptPack.instructions.includes(choice),
