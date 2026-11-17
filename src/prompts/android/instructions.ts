@@ -1,5 +1,5 @@
 import { joinPrompt } from "../contracts.js";
-import { androidApprovalInstructions } from "../shared/consent.js";
+import { androidApprovalInstructions } from "./consent.js";
 import { deviceSelectionInstructions } from "./setup.js";
 
 const onboardingPrelude = joinPrompt([

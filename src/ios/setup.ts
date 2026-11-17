@@ -1,11 +1,11 @@
 import type { ErrorCode } from "../errors.js";
-import { iosInstructions, managedIosInstructions } from "../prompts/ios/instructions.js";
+import { iosInstructions, managedIosInstructions } from "../prompts/multi-platform/ios-instructions.js";
 import {
   buildIosSelectDeviceSetup,
   iosSetup,
   managedIosSetup,
   type IosSetupGuidance,
-} from "../prompts/ios/setup.js";
+} from "../prompts/multi-platform/ios-setup.js";
 import type { DeviceEndpoint } from "../types.js";
 
 export { iosInstructions, iosSetup, managedIosInstructions, managedIosSetup };

@@ -1,5 +1,5 @@
 export * from "./contracts.js";
-export * from "./shared/consent.js";
+export * from "./android/consent.js";
 export {
   adbServerSetup,
   authorizationSetup,
@@ -18,15 +18,15 @@ export {
   iosSetup,
   managedIosSetup,
   type IosSetupGuidance,
-} from "./ios/setup.js";
-export { iosInstructions, iosSharedSafetyInstructions, managedIosInstructions } from "./ios/instructions.js";
+} from "./multi-platform/ios-setup.js";
+export { iosInstructions, iosSharedSafetyInstructions, managedIosInstructions } from "./multi-platform/ios-instructions.js";
 export {
   iosExternalPromptPack,
   iosExternalToolPrompts,
   iosManagedPromptPack,
   iosManagedToolPrompts,
   iosRuntimeToolPrompt,
-} from "./ios/tools.js";
+} from "./multi-platform/ios-tools.js";
 export {
   buildMultiPlatformSelectDeviceSetup,
   multiPlatformDeviceSelectionInstructions,

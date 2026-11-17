@@ -83,6 +83,9 @@ test("multi-platform prompt pack replaces unsupported-mode stubs with simultaneo
 });
 
 test("android prompt modules remain free of iOS imports and iOS-specific runtime terminology", async () => {
+  const promptTopLevelEntries = (await readdir(path.join(root, "src", "prompts"))).sort();
+  assert.deepEqual(promptTopLevelEntries, ["android", "contracts.ts", "index.ts", "multi-platform"]);
+
   assert.doesNotMatch(androidPromptPack.instructions, /WebDriverAgent|MOBILE_USE_WDA_URL|go-ios|\bWDA\b/);
   for (const name of coreToolNames) {
     assert.doesNotMatch(
@@ -94,7 +97,6 @@ test("android prompt modules remain free of iOS imports and iOS-specific runtime
 
   const androidOnlyFiles = [
     path.join(root, "src", "prompts", "contracts.ts"),
-    path.join(root, "src", "prompts", "shared", "consent.ts"),
     ...(await readdir(path.join(root, "src", "prompts", "android"))).map((entry) =>
       path.join(root, "src", "prompts", "android", entry),
     ),
@@ -103,8 +105,8 @@ test("android prompt modules remain free of iOS imports and iOS-specific runtime
     const source = await readFile(file, "utf8");
     assert.doesNotMatch(
       source,
-      /from\s+["'][^"']*(?:\/ios\/|\/multi-platform\/)/,
-      `${path.relative(root, file)} must not import iOS or multi-platform modules`,
+      /from\s+["'][^"']*\/multi-platform\//,
+      `${path.relative(root, file)} must not import multi-platform modules`,
     );
   }
 
@@ -123,7 +125,7 @@ test("android prompt modules remain free of iOS imports and iOS-specific runtime
     const normalized = input.replace(/\\/g, "/");
     assert.doesNotMatch(
       normalized,
-      /(?:^|\/)src\/prompts\/(?:ios|multi-platform)\//,
+      /(?:^|\/)src\/prompts\/multi-platform\//,
       `Android prompt bundle must not include ${normalized}`,
     );
   }

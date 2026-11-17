@@ -55124,7 +55124,7 @@ function joinPrompt(parts) {
   return parts.map((part) => part.trim()).filter(Boolean).join(" ");
 }
 
-// src/prompts/shared/consent.ts
+// src/prompts/android/consent.ts
 var SESSION_CONSENT_CHOICES = [
   "Allow the same operation in this session (Recommended)",
   "Allow once",
@@ -55459,7 +55459,7 @@ var androidPromptPack = {
   tools: androidToolPrompts
 };
 
-// src/prompts/ios/instructions.ts
+// src/prompts/multi-platform/ios-instructions.ts
 var iosSharedSafetyInstructions = joinPrompt([
   "Keep consent in the conversation for the selected device and non-sensitive task; ordinary non-submitting navigation within that scope needs no repeated per-tap questions.",
   "Native client permissions still apply.",
@@ -55521,7 +55521,7 @@ var managedIosInstructions = joinPrompt([
   iosFallbackBoundary
 ]);
 
-// src/prompts/ios/tools.ts
+// src/prompts/multi-platform/ios-tools.ts
 var iosRuntimeToolPrompt = {
   title: "Manage iOS USB runtime",
   description: joinPrompt([
@@ -55689,7 +55689,7 @@ function setupForDevices(devices) {
   return connectionSetup;
 }
 
-// src/prompts/ios/setup.ts
+// src/prompts/multi-platform/ios-setup.ts
 var iosSetup = {
   stage: "connection",
   steps: [

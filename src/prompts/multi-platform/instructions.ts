@@ -1,6 +1,6 @@
+import { androidApprovalInstructions } from "../android/consent.js";
 import { joinPrompt } from "../contracts.js";
-import { iosSharedSafetyInstructions } from "../ios/instructions.js";
-import { androidApprovalInstructions } from "../shared/consent.js";
+import { iosSharedSafetyInstructions } from "./ios-instructions.js";
 import { multiPlatformDeviceSelectionInstructions } from "./setup.js";
 
 const multiPlatformOnboardingPrelude = joinPrompt([

@@ -6,7 +6,7 @@ import type { MobileService } from "./mobile-service.js";
 import { publicError } from "./errors.js";
 import { androidPromptPack } from "./prompts/android/tools.js";
 import type { PromptPack } from "./prompts/contracts.js";
-import { iosExternalPromptPack, iosManagedPromptPack, iosRuntimeToolPrompt } from "./prompts/ios/tools.js";
+import { iosExternalPromptPack, iosManagedPromptPack, iosRuntimeToolPrompt } from "./prompts/multi-platform/ios-tools.js";
 import { phoneSetup, setupForDevices, setupForError } from "./setup.js";
 import { iosSetup, managedIosSetup, setupForIosDevices, setupForIosError } from "./ios/setup.js";
 import { iosBundleIdSchema } from "./ios/wda.js";

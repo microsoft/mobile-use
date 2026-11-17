@@ -5,8 +5,8 @@ import {
   type ToolPrompt,
 } from "../contracts.js";
 import { androidToolPrompts } from "../android/tools.js";
-import { iosRuntimeToolPrompt } from "../ios/tools.js";
 import { multiPlatformServerInstructions } from "./instructions.js";
+import { iosRuntimeToolPrompt } from "./ios-tools.js";
 import { multiPlatformDeviceSelectionInstructions } from "./setup.js";
 
 export const multiPlatformToolPrompts: Readonly<Record<CoreToolName | "mobile_ios_runtime", ToolPrompt>> = {

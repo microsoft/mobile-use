@@ -5,7 +5,7 @@ import {
   type IosManagedPromptPack,
   type ToolPrompt,
 } from "../contracts.js";
-import { iosInstructions, managedIosInstructions } from "./instructions.js";
+import { iosInstructions, managedIosInstructions } from "./ios-instructions.js";
 
 export const iosRuntimeToolPrompt: ToolPrompt = {
   title: "Manage iOS USB runtime",
