@@ -1,7 +1,9 @@
 # iOS setup and WebDriverAgent workflow reference
 
 Follow the consent and safety boundaries in [the main skill](../SKILL.md) before
-observing or interacting with a physical iOS 17+ iPhone or iPad.
+observing or interacting with a physical iOS 17+ iPhone or iPad. Authenticate
+manually on the device: never observe authentication screens, enter credentials,
+submit forms or messages, buy, or grant permissions, even if requested in chat.
 
 ## Prerequisites and runtime modes
 

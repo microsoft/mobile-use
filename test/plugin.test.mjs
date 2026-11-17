@@ -54,6 +54,8 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   assert.match(iosReference, /MOBILE_USE_PLATFORM=ios/);
   assert.match(iosReference, /MOBILE_USE_IOS_RUNTIME=managed/);
   assert.match(iosReference, /MOBILE_USE_WDA_URL/);
+  assert.match(iosReference, /never observe authentication screens, enter credentials,\s+submit forms or messages, buy, or grant permissions/);
+  assert.match(skill, /On iOS, never observe authentication screens, enter credentials, submit forms or messages, buy, or grant permissions/);
   assert.match(skill, /^---\r?\nname: mobile-use\r?\ndescription: /);
   assert.match(skill, /## First-use setup \(required\)/);
   assert.match(skill, /Only \*\*Android SDK Platform-Tools\*\* is required/);
