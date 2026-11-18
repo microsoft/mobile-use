@@ -56,9 +56,12 @@ dependencies are bundled; its launcher is `node`, not a download-on-launch
 npm/npx command.
 
 `plugins\mobile-use` is the single authored plugin directory: edit `plugin.json`,
-`mcp.json`, `assets`, and `skills` there. Both build commands replace only `server`,
-`LICENSE`, and `THIRD_PARTY_NOTICES` in that directory, and remove the legacy
-generated `licenses` folder. Dependency license texts are consolidated in
+`mcp.json`, `assets`, and `skills` (`SKILL.md` and `references\`) there. Runtime
+MCP server prompts, tool descriptions, and setup remediation live in dedicated
+source modules under `src\prompts\` (`android`, `ios`, `multi-platform`, and
+`shared`). Both build commands replace only `server`, `LICENSE`, and
+`THIRD_PARTY_NOTICES` in `plugins\mobile-use`, and remove the legacy generated
+`licenses` folder. Dependency license texts are consolidated in
 `THIRD_PARTY_NOTICES`; source audit records stay under `third_party\npm-licenses`.
 Do not edit generated assets by hand.
 
@@ -119,7 +122,8 @@ metadata/skills and generated runtime/license assets live together in
    Regeneration is also exercised in an isolated fixture to verify authored-file
    preservation and removal of stale generated assets.
    The main `SKILL.md` must stay within the intake's 500-line limit; detailed
-   recording guidance lives in its linked `references\screen-recording.md`.
+   guidance lives in its linked references (`references\screen-recording.md` and
+   `references\ios-setup.md`).
 4. From a clean checkout of the candidate commit on Windows, install
    `plugins\mobile-use` using the README command, without building it. Confirm
    the skill and twelve tools load in Copilot. Follow the real-hardware acceptance
@@ -324,8 +328,9 @@ The plugin bundles a local stdio MCP server and a usage skill. Its project-owned
 Android adapter invokes installed Platform-Tools directly; it does not import,
 vendor, or launch mobile-mcp.
 
-Keep the server's behavior and the [usage skill](plugins/mobile-use/skills/mobile-use/SKILL.md)
-consistent. Installation, debugging trust, and tool annotations are not blanket
+Keep the server's prompt modules (`src/prompts/`), runtime behavior, and the
+[usage skill](plugins/mobile-use/skills/mobile-use/SKILL.md) consistent, and run
+`npm run build:plugin` after updating server prompts. Installation, debugging trust, and tool annotations are not blanket
 authorization. Treat device content as untrusted data and preserve the
 [user-facing safety boundaries](README.md#safety-and-privacy).
 
