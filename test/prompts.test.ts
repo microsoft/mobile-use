@@ -17,6 +17,7 @@ import {
   managedIosSetup,
   multiPlatformHostSetup,
   multiPlatformPromptPack,
+  platformToolsSetup,
   type CoreToolName,
 } from "../src/prompts/index.js";
 
@@ -159,3 +160,16 @@ test("select-device setup builders return fresh single vs multi-endpoint guidanc
   assert.match(multiMultiple.steps[1] ?? "", /Multiple endpoints are selectable/);
   assert.deepEqual(multiPlatformHostSetup.steps, multiHostStepsBefore);
 });
+
+test("android prompt pack and setup guidance support Android Studio SDK Manager and cross-OS hosts", () => {
+  const steps = platformToolsSetup.steps.join("\n");
+  assert.match(steps, /Android Studio > Tools > SDK Manager > SDK Tools/);
+  assert.match(steps, /%LOCALAPPDATA%\\Android\\Sdk\\platform-tools\\adb\.exe/);
+  assert.match(steps, /~\/Library\/Android\/sdk\/platform-tools\/adb/);
+  assert.match(steps, /~\/Android\/Sdk\/platform-tools\/adb/);
+  assert.doesNotMatch(androidPromptPack.tools.mobile_doctor.description, /diagnose Windows\/ADB/);
+  assert.doesNotMatch(androidPromptPack.tools.mobile_screen_recording.description, /Windows \.mp4|Windows destination/);
+  assert.doesNotMatch(androidPromptPack.tools.mobile_app_management.description, /Windows \.apk/);
+  assert.doesNotMatch(androidPromptPack.instructions, /Windows \.mp4|Windows destination/);
+});
+

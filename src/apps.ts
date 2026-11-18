@@ -1,4 +1,4 @@
-import { access, constants, realpath, stat } from "node:fs/promises";
+import { access, constants, lstat, realpath } from "node:fs/promises";
 import path from "node:path";
 import { checkCancelled, MobileUseError } from "./errors.js";
 import { packageNameSchema } from "./types.js";
@@ -89,21 +89,64 @@ export function parsePackageStopped(output: string, userId: number): boolean {
   return stopped[0]?.[1] === "true";
 }
 
-export async function localApkFile(filePath: string, signal?: AbortSignal): Promise<string> {
-  const invalid = (): never => {
-    throw new MobileUseError("INVALID_APP_FILE", "Installation requires a readable local .apk file, between 1 byte and 512 MiB, at an absolute drive path.", "Choose an existing local Android APK. URLs, UNC/device paths, directories, .ipa, .app, .zip, and split APK bundles are unsupported.");
+export interface ApkPathOptions {
+  platform?: NodeJS.Platform;
+  fs?: {
+    lstat(targetPath: string): Promise<{ isFile(): boolean; size: number }>;
+    realpath(targetPath: string): Promise<string>;
+    accessReadable(targetPath: string): Promise<void>;
   };
-  const validPath = (value: string): boolean => /^[A-Za-z]:[\\]/.test(value) &&
-    !/[\u0000-\u001f\u007f]/.test(value) && !value.slice(2).includes(":") &&
-    path.extname(value).toLowerCase() === ".apk";
+}
+
+const defaultApkFs: NonNullable<ApkPathOptions["fs"]> = {
+  lstat: (targetPath) => lstat(targetPath),
+  realpath: (targetPath) => realpath(targetPath),
+  accessReadable: (targetPath) => access(targetPath, constants.R_OK),
+};
+
+function validApkPath(value: string, platform: NodeJS.Platform): boolean {
+  if (/[\u0000-\u001f\u007f]/.test(value)) return false;
+  if (platform === "win32") {
+    if (!/^[A-Za-z]:\\/.test(value) || value.slice(2).includes(":") || value.includes("/")) return false;
+    const parts = value.slice(3).split("\\");
+    return parts.every((part) => part.length > 0 && part !== "." && part !== ".." &&
+      !/^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part)) &&
+      path.win32.extname(value).toLowerCase() === ".apk";
+  }
+  if (platform === "darwin" || platform === "linux") {
+    if (!value.startsWith("/") || value.startsWith("//") || value === "/") return false;
+    const parts = value.slice(1).split("/");
+    if (!parts.every((part) => part.length > 0 && part !== "." && part !== "..")) return false;
+    if (parts[0] === "dev" || parts[0] === "proc" || parts[0] === "sys") return false;
+    return path.posix.extname(value).toLowerCase() === ".apk";
+  }
+  return false;
+}
+
+export async function localApkFile(
+  filePath: string,
+  signal?: AbortSignal,
+  options: ApkPathOptions = {},
+): Promise<string> {
+  const invalid = (): never => {
+    throw new MobileUseError(
+      "INVALID_APP_FILE",
+      "Installation requires a readable local .apk file, between 1 byte and 512 MiB, at an absolute local path.",
+      "Choose an existing local Android APK. URLs, network/UNC/device paths, symlinks, special files, directories, .ipa, .app, .zip, and split APK bundles are unsupported.",
+    );
+  };
   checkCancelled(signal);
-  if (!validPath(filePath)) invalid();
+  const platform = options.platform ?? process.platform;
+  const fsOps = options.fs ?? defaultApkFs;
+  if (!validApkPath(filePath, platform)) invalid();
   try {
-    const resolved = await realpath(filePath);
-    if (!validPath(resolved)) invalid();
-    const info = await stat(resolved);
+    const initial = await fsOps.lstat(filePath);
+    if (!initial.isFile()) invalid();
+    const resolved = await fsOps.realpath(filePath);
+    if (!validApkPath(resolved, platform)) invalid();
+    const info = await fsOps.lstat(resolved);
     if (!info.isFile() || info.size < 1 || info.size > 512 * 1024 * 1024) invalid();
-    await access(resolved, constants.R_OK);
+    await fsOps.accessReadable(resolved);
     checkCancelled(signal);
     return resolved;
   } catch (error) {
