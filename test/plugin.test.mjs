@@ -44,9 +44,18 @@ test("plugin uses matching Agent Plugins 1.0 schemas and a local bundled launche
   const skill = await readFile(path.join(artifact, "skills", "mobile-use", "SKILL.md"), "utf8");
   assert.ok(skill.split(/\r?\n/).length <= 500, "Agent Skills intake limits SKILL.md to 500 lines.");
   assert.match(skill, /\[screen recording reference\]\(references\/screen-recording\.md\)/);
+  assert.match(skill, /\[iOS setup and WDA workflow reference\]\(references\/ios-setup\.md\)/);
   const recordingReference = await readFile(
     path.join(artifact, "skills", "mobile-use", "references", "screen-recording.md"), "utf8",
   );
+  const iosReference = await readFile(
+    path.join(artifact, "skills", "mobile-use", "references", "ios-setup.md"), "utf8",
+  );
+  assert.match(iosReference, /MOBILE_USE_PLATFORM=ios/);
+  assert.match(iosReference, /MOBILE_USE_IOS_RUNTIME=managed/);
+  assert.match(iosReference, /MOBILE_USE_WDA_URL/);
+  assert.match(iosReference, /never observe authentication screens, enter credentials,\s+submit forms or messages, buy, or grant permissions/);
+  assert.match(skill, /On iOS, never observe authentication screens, enter credentials, submit forms or messages, buy, or grant permissions/);
   assert.match(skill, /^---\r?\nname: mobile-use\r?\ndescription: /);
   assert.match(skill, /## First-use setup \(required\)/);
   assert.match(skill, /Only \*\*Android SDK Platform-Tools\*\* is required/);
@@ -174,6 +183,7 @@ test("plugin generation preserves authored files and detects stale assets withou
     "plugin.json", "mcp.json", path.join("assets", "mobile-use.png"),
     path.join("skills", "mobile-use", "SKILL.md"),
     path.join("skills", "mobile-use", "references", "screen-recording.md"),
+    path.join("skills", "mobile-use", "references", "ios-setup.md"),
   ];
   const authored = await Promise.all(authoredPaths.map((relative) => readFile(path.join(published, relative))));
   for (const relative of ["server", "licenses"]) {

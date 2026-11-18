@@ -33,10 +33,25 @@ for (const relative of [
   path.join("assets", "mobile-use.png"),
   path.join("skills", "mobile-use", "SKILL.md"),
   path.join("skills", "mobile-use", "references", "screen-recording.md"),
+  path.join("skills", "mobile-use", "references", "ios-setup.md"),
 ]) {
   if (!existsSync(path.join(pluginRoot, relative))) {
     throw new Error(`Plugin artifact is incomplete: ${relative}.`);
   }
+}
+
+const authoredSkillPath = path.join(pluginRoot, "skills", "mobile-use", "SKILL.md");
+const authoredSkill = (await readFile(authoredSkillPath, "utf8")).replace(/\r\n/g, "\n");
+const skillLineCount = authoredSkill.split("\n").length;
+if (skillLineCount > 500) {
+  throw new Error(
+    `Skill exceeds 500-line limit (${skillLineCount} lines): ${path.join("plugins", "mobile-use", "skills", "mobile-use", "SKILL.md")}.`,
+  );
+}
+if (!/^---\nname: mobile-use\ndescription: /.test(authoredSkill)) {
+  throw new Error(
+    `Skill is missing required mobile-use frontmatter: ${path.join("plugins", "mobile-use", "skills", "mobile-use", "SKILL.md")}.`,
+  );
 }
 
 const result = await build({
