@@ -86,8 +86,9 @@ Appium WDA Runner (adapter protocol reference: 16.16.5), already signed and
 validated by the user for the chosen device. Complete computer trust/pairing,
 Developer Mode and device unlocking manually.
 
-Build and launch the same source development server as above, but use these
-environment settings instead of `MOBILE_USE_WDA_URL`:
+Build and launch the same source development server as above with managed
+runtime settings (`MOBILE_USE_WDA_URL` may be omitted, or retained to expose an
+external local WDA endpoint alongside managed USB devices):
 
 ```powershell
 $env:MOBILE_USE_PLATFORM = "ios"

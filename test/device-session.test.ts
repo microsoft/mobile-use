@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 import type { TestContext } from "node:test";
 import type { MonitorFactory } from "../src/adb.js";
@@ -1151,4 +1154,225 @@ test("selection cancellation during discovery never opens a monitor or touches a
   await assert.rejects(service.selectDevice(USB, controller.signal), hasCode("CANCELLED"));
   assert.equal(monitors.sessions.length, 0);
   assert.equal(adb.calls.length, 1);
+});
+
+test("concurrent Android target sessions isolate snapshots, prepared helpers, screen recordings, and per-target queues", async (t) => {
+  const { adb, service } = harness(t);
+  const directory = await mkdtemp(path.join(tmpdir(), "mobile-use-multi-android-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const phoneB = "PHONE_B_USB";
+  const phoneBLine = `${phoneB} device usb:1-3 product:poc2 model:POC_Phone_B device:poc2 transport_id:21`;
+  adb.inventory = `List of devices attached\n${USB_LINE}\n${phoneBLine}\n`;
+
+  const recState = new Map<string, { argv?: string[]; running: boolean; exit?: (error?: MobileUseError) => void }>([
+    ["7", { running: false }],
+    ["21", { running: false }],
+  ]);
+  let releaseBlockedA: (() => void) | undefined;
+  let enteredBlockedA: (() => void) | undefined;
+  let blockNextObserveA = false;
+  const blockedObserveEntered = new Promise<void>((resolve) => { enteredBlockedA = resolve; });
+
+  adb.handler = async (call) => {
+    if (call.args[0] !== "-t") return undefined;
+    const transport = call.args[1] ?? "";
+    const cmd = call.args.slice(2).join(" ");
+    if (cmd === "shell getprop ro.serialno") {
+      return Buffer.from(transport === "21" ? "SERIAL_B" : "SERIAL_A");
+    }
+    if (cmd === "exec-out screencap -p" && transport === "7" && blockNextObserveA) {
+      blockNextObserveA = false;
+      enteredBlockedA?.();
+      await new Promise<void>((resolve) => { releaseBlockedA = resolve; });
+      return undefined;
+    }
+    if (cmd === "shell -tt uiautomator dump --windows /dev/tty") {
+      const label = transport === "21" ? "Phone B" : "Phone A";
+      return Buffer.from(hierarchy(node({ text: label }) + editField()));
+    }
+    if (cmd === "shell dumpsys activity activities") {
+      const pkg = transport === "21" ? "example.phoneb/.MainActivity" : "example.phonea/.MainActivity";
+      return Buffer.from(`ACTIVITY MANAGER ACTIVITIES\nDisplay #0 (activities from top to bottom):\n  topResumedActivity=ActivityRecord{abc u0 ${pkg} t1}\n`);
+    }
+    const rec = recState.get(transport);
+    if (rec) {
+      if (cmd.startsWith("shell umask 077; mkdir -m 700 /data/local/tmp/mobile-use-recording-")) {
+        rec.argv = (cmd.split("; exec ")[1] ?? "").split(" ");
+        rec.running = true;
+        return new Promise<Buffer>((resolve, reject) => {
+          const abort = (): void => {
+            rec.exit?.(new MobileUseError("CANCELLED", "Interrupted.", "Do not replay.", false, true));
+          };
+          rec.exit = (error) => {
+            call.options.signal?.removeEventListener("abort", abort);
+            delete rec.exit;
+            if (!error) rec.running = false;
+            if (error) reject(error);
+            else resolve(Buffer.alloc(0));
+          };
+          call.options.signal?.addEventListener("abort", abort, { once: true });
+          if (call.options.signal?.aborted) abort();
+        });
+      }
+      if (cmd.startsWith("shell if [ -r /proc/12345/cmdline ] && [ -f /data/local/tmp/mobile-use-recording-")) {
+        return Buffer.from(`${rec.argv?.join("\0")}\0`);
+      }
+      if (cmd.startsWith("shell if [ ! -e /proc/12345 ];")) {
+        if (cmd.includes("kill -INT")) {
+          rec.running = false;
+          rec.exit?.();
+          return Buffer.from("STOPPED\n");
+        }
+        return Buffer.from(rec.running ? "RUNNING\n" : "EXITED\n");
+      }
+    }
+    return undefined;
+  };
+
+  const selectedA = await service.selectDevice(USB);
+  const selectedB = await service.selectDevice(phoneB);
+  assert.notEqual(selectedA.targetToken, selectedB.targetToken);
+
+  const [obsA, obsB] = await Promise.all([
+    service.observe(selectedA.targetToken),
+    service.observe(selectedB.targetToken),
+  ]);
+  assert.equal(obsA.observation.elements[0]?.text, "Phone A");
+  assert.equal(obsB.observation.elements[0]?.text, "Phone B");
+
+  await service.prepareGestures(selectedA.targetToken);
+  await assert.rejects(
+    service.act(selectedB.targetToken, obsB.observation.observationId, {
+      kind: "double_tap",
+      target: { elementRef: "e1" },
+      delayMs: 100,
+    }),
+    hasCode("GESTURE_HELPER_NOT_PREPARED"),
+  );
+  const obsB2 = await service.observe(selectedB.targetToken);
+  await assert.rejects(
+    service.act(selectedB.targetToken, obsB2.observation.observationId, {
+      kind: "type_text",
+      text: "café",
+    }),
+    hasCode("TEXT_HELPER_NOT_PREPARED"),
+  );
+  const obsAAfterPrep = await service.observe(selectedA.targetToken);
+  const doubleTapA = await service.act(selectedA.targetToken, obsAAfterPrep.observation.observationId, {
+    kind: "double_tap",
+    target: { elementRef: "e1" },
+    delayMs: 100,
+  });
+  assert.equal(doubleTapA.dispatchStatus, "dispatched");
+
+  const fileA = path.join(directory, "phone-a.mp4");
+  const fileB = path.join(directory, "phone-b.mp4");
+  const [recStartA, recStartB] = await Promise.all([
+    service.screenRecording(selectedA.targetToken, { kind: "start", filePath: fileA, timeLimitSeconds: 60 }),
+    service.screenRecording(selectedB.targetToken, { kind: "start", filePath: fileB, timeLimitSeconds: 60 }),
+  ]);
+  assert.ok("recordingId" in recStartA && recStartA.status === "starting");
+  assert.ok("recordingId" in recStartB && recStartB.status === "starting");
+  assert.notEqual(recStartA.recordingId, recStartB.recordingId);
+  const [recStatusA, recStatusB] = await Promise.all([
+    service.screenRecording(selectedA.targetToken, { kind: "status" }),
+    service.screenRecording(selectedB.targetToken, { kind: "status" }),
+  ]);
+  assert.equal(recStatusA.status, "recording");
+  assert.equal(recStatusB.status, "recording");
+
+  // Verify per-target queue isolation: Phone B completes while Phone A is blocked in observe,
+  // and a second operation on Phone A remains strictly serialized behind Phone A's observe.
+  blockNextObserveA = true;
+  const order: string[] = [];
+  const inFlightObserveA = service.observe(selectedA.targetToken).then((screen) => {
+    order.push("observe-A");
+    return screen;
+  });
+  await blockedObserveEntered;
+  const queuedAppA = service.getForegroundApp(selectedA.targetToken).then((fg) => {
+    order.push("foreground-A");
+    return fg;
+  });
+  const obsBWhileABlocked = await service.observe(selectedB.targetToken);
+  order.push("observe-B");
+  const actBWhileABlocked = await service.act(selectedB.targetToken, obsBWhileABlocked.observation.observationId, {
+    kind: "tap",
+    target: { elementRef: "e1" },
+  });
+  order.push("act-B");
+  assert.equal(actBWhileABlocked.dispatchStatus, "dispatched");
+  assert.deepEqual(order, ["observe-B", "act-B"]);
+
+  releaseBlockedA?.();
+  const [, fgA] = await Promise.all([inFlightObserveA, queuedAppA]);
+  assert.equal(fgA?.packageName, "example.phonea");
+  assert.deepEqual(order, ["observe-B", "act-B", "observe-A", "foreground-A"]);
+
+  // Prepare Unicode text helper only on Phone A and verify Phone B remains unprepared.
+  await service.prepareTextInput(selectedA.targetToken);
+  const obsB3 = await service.observe(selectedB.targetToken);
+  await assert.rejects(
+    service.act(selectedB.targetToken, obsB3.observation.observationId, { kind: "type_text", text: "café" }),
+    hasCode("TEXT_HELPER_NOT_PREPARED"),
+  );
+
+  const [recStopA, recStopB] = await Promise.all([
+    service.screenRecording(selectedA.targetToken, { kind: "stop", recordingId: recStartA.recordingId }),
+    service.screenRecording(selectedB.targetToken, { kind: "stop", recordingId: recStartB.recordingId }),
+  ]);
+  assert.equal(recStopA.status, "saved");
+  assert.equal(recStopB.status, "saved");
+});
+
+test("physical-device deduplication retires only a re-selected phone across USB and Wi-Fi while scoped disconnects spare healthy phones", async (t) => {
+  const { adb, monitors, service } = harness(t);
+  const phoneB = "PHONE_B_USB";
+  const phoneBLine = `${phoneB} device usb:1-3 product:poc2 model:POC_Phone_B device:poc2 transport_id:21`;
+  adb.inventory = `List of devices attached\n${USB_LINE}\n${WIFI_LINE}\n${phoneBLine}\n`;
+
+  adb.handler = (call) => {
+    if (call.args[0] === "-t" && call.args.slice(2).join(" ") === "shell getprop ro.serialno") {
+      return Buffer.from(call.args[1] === "21" ? "SERIAL_PHONE_B" : "SERIAL_PHONE_A");
+    }
+    return undefined;
+  };
+
+  const selectedAUsb = await service.selectDevice(USB);
+  const selectedB = await service.selectDevice(phoneB);
+  const monitorAUsb = monitors.sessions[0]!;
+  const monitorB = monitors.sessions[1]!;
+  const [, obsB] = await Promise.all([
+    service.observe(selectedAUsb.targetToken),
+    service.observe(selectedB.targetToken),
+  ]);
+
+  // Re-selecting Phone A over paired Wi-Fi (matching hardwareSerial SERIAL_PHONE_A) retires only Phone A's USB session as stale.
+  const selectedAWifi = await service.selectDevice(WIFI);
+  assert.notEqual(selectedAWifi.targetToken, selectedAUsb.targetToken);
+  assert.equal(monitorAUsb.closed, true);
+  assert.equal(monitorB.closed, false);
+  await assert.rejects(service.observe(selectedAUsb.targetToken), hasCode("STALE_TARGET"));
+
+  // Phone B's session and prior observation snapshot remain untouched.
+  const homeB = await service.act(selectedB.targetToken, obsB.observation.observationId, { kind: "key", key: "HOME" });
+  assert.equal(homeB.dispatchStatus, "dispatched");
+
+  // Scoped disconnect via listDevices retires only the disappeared Wi-Fi target as lost.
+  adb.inventory = `List of devices attached\n${phoneBLine}\n`;
+  const remaining = await service.listDevices();
+  assert.deepEqual(remaining.map((entry) => entry.endpointId), [phoneB]);
+  await assert.rejects(service.observe(selectedAWifi.targetToken), hasCode("TRANSPORT_LOST"));
+  await assert.rejects(service.observe(selectedAUsb.targetToken), hasCode("STALE_TARGET"));
+  assert.equal((await service.observe(selectedB.targetToken)).observation.targetToken, selectedB.targetToken);
+
+  // Compatible ADB server reuse preserves Phone B; actual daemon restart retires all active Android targets.
+  adb.startupAttempted = false;
+  await service.startAdbServer();
+  assert.equal((await service.observe(selectedB.targetToken)).observation.targetToken, selectedB.targetToken);
+
+  adb.startupAttempted = true;
+  await service.startAdbServer();
+  await assert.rejects(service.observe(selectedB.targetToken), hasCode("TRANSPORT_LOST"));
 });

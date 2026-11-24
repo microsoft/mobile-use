@@ -9,24 +9,36 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { MobileUseError } from "../src/errors.js";
 import { createMobileService } from "../src/service-factory.js";
-import { runtimeCommands } from "../src/ios/runtime-process.js";
-import { availableTunnelPort } from "../src/ios/runtime.js";
-import { MuxConnection } from "../src/ios/usb.js";
-import { IOS_ENDPOINT, IOS_UDID, runtimeFixture, waitRuntimeState } from "./ios-runtime-fixture.js";
+import { IosMobileUseService } from "../src/ios/device-session.js";
+import { runtimeCommands, runtimeFailure, type OwnedProcess, type RuntimeCommands } from "../src/ios/runtime-process.js";
+import { availableTunnelPort, ManagedIosRuntimePool, readRuntimeConfig } from "../src/ios/runtime.js";
+import { MuxConnection, usbFailure, type UsbBackend } from "../src/ios/usb.js";
+import { createIosFixture } from "./ios-fixture.js";
+import { IOS_ENDPOINT, IOS_OTHER_UDID, IOS_UDID, runtimeFixture, waitRuntimeState } from "./ios-runtime-fixture.js";
 
-test("managed mode is explicit, rejects ambiguous endpoint/configuration and leaves external mode unchanged", async () => {
+test("managed mode constructs lazily without throwing, validates runtime configuration on demand, and coexists with external WDA", async () => {
   assert.equal(createMobileService({ MOBILE_USE_PLATFORM: "ios" }).iosRuntime, undefined);
   const config = { MOBILE_USE_PLATFORM: "ios", MOBILE_USE_IOS_RUNTIME: "managed",
     MOBILE_USE_IOS_RUNNER_BUNDLE_ID: "example.runner.xctrunner" };
   assert.equal(typeof createMobileService(config).iosRuntime, "function");
+  const coexisting = createMobileService({ ...config, MOBILE_USE_WDA_URL: "http://127.0.0.1:8100" });
+  assert.ok(coexisting.iosRuntime);
+  assert.equal((await coexisting.iosRuntime({ kind: "status" })).state, "idle");
   for (const environment of [
-    { ...config, MOBILE_USE_WDA_URL: "http://127.0.0.1:8100" },
+    { MOBILE_USE_PLATFORM: "ios", MOBILE_USE_IOS_RUNTIME: "managed" },
     { ...config, MOBILE_USE_IOS_RUNTIME: "automatic" },
     { ...config, MOBILE_USE_IOS_RUNNER_BUNDLE_ID: "example.runner" },
     { ...config, MOBILE_USE_IOS_RUNNER_IPA: "relative.ipa" },
     { ...config, MOBILE_USE_IOS_TUNNEL_PORT: "65535" },
     { ...config, MOBILE_USE_IOS_TUNNEL_PORT: "65536" },
-  ]) assert.throws(() => createMobileService(environment), { code: "IOS_RUNTIME_CONFIG_INVALID" });
+  ]) {
+    const service = createMobileService(environment);
+    assert.ok(service.iosRuntime);
+    await assert.rejects(service.iosRuntime({ kind: "status" }), { code: "IOS_RUNTIME_CONFIG_INVALID" });
+    await assert.rejects(service.iosRuntime({ kind: "start", endpointId: IOS_ENDPOINT, installRunner: false }),
+      { code: "IOS_RUNTIME_CONFIG_INVALID" });
+    await assert.rejects(service.doctor(), { code: "IOS_RUNTIME_CONFIG_INVALID" });
+  }
 });
 
 test("tunnel-info allocation leaves room for the derived userspace listener, including ephemeral allocations", async () => {
@@ -461,4 +473,256 @@ test("native launcher isolates stdout in logs, observes child exit and stops onl
   (error: unknown) => error instanceof MobileUseError && error.code === "IOS_RUNTIME_FAILED" &&
     error.actionMayHaveRun && !error.message.includes("fixture-private-diagnostic"));
   assert.match(await readFile(failureLog, "utf8"), /fixture-private-diagnostic/);
+});
+
+test("passive USB discovery lists unselectable UDIDs before MOBILE_USE_IOS_RUNNER_BUNDLE_ID is configured", async () => {
+  let commandCalls = 0;
+  const usb: UsbBackend = {
+    async readBuid() { return "fixture-buid"; },
+    async readPairRecord() { return Buffer.from("pair"); },
+    async list() { return [{ udid: IOS_UDID, deviceId: 1 }, { udid: IOS_OTHER_UDID, deviceId: 2 }]; },
+    async connect() { throw usbFailure("WDA_UNAVAILABLE"); },
+  };
+  const commands: RuntimeCommands = {
+    async run() { commandCalls++; return JSON.stringify({ version: "v1.3.2" }); },
+    async start() { throw runtimeFailure("IOS_RUNTIME_FAILED"); },
+  };
+  const pool = new ManagedIosRuntimePool(
+    () => readRuntimeConfig({ MOBILE_USE_PLATFORM: "ios", MOBILE_USE_IOS_RUNTIME: "managed" }),
+    usb,
+    commands,
+    { platform: "win32" },
+  );
+  const service = new IosMobileUseService(undefined, Date.now, pool);
+  const devices = await service.listDevices();
+  assert.equal(commandCalls, 0);
+  assert.deepEqual(devices.map((entry) => ({ endpointId: entry.endpointId, selectable: entry.selectable })), [
+    { endpointId: IOS_ENDPOINT, selectable: false },
+    { endpointId: `ios:usb:${IOS_OTHER_UDID}`, selectable: false },
+  ]);
+  assert.ok(devices.every((entry) => entry.reason?.includes("MOBILE_USE_IOS_RUNNER_BUNDLE_ID")));
+  await assert.rejects(service.doctor(), { code: "IOS_RUNTIME_CONFIG_INVALID" });
+  assert.ok(service.iosRuntime);
+  await assert.rejects(service.iosRuntime({ kind: "status" }), { code: "IOS_RUNTIME_CONFIG_INVALID" });
+});
+
+test("ManagedIosRuntimePool runs multiple USB UDIDs with ephemeral tunnel ports alongside external WDA and isolates concurrent sessions", async (t) => {
+  const [wdaUsb1, wdaUsb2, wdaExt] = await Promise.all([
+    createIosFixture(),
+    createIosFixture(),
+    createIosFixture(),
+  ]);
+  wdaUsb1.state.uuid = "11111111-1111-4111-8111-111111111111";
+  wdaUsb1.state.buttonLabel = "USB One";
+  wdaUsb2.state.uuid = "22222222-2222-4222-8222-222222222222";
+  wdaUsb2.state.buttonLabel = "USB Two";
+  wdaExt.state.uuid = "33333333-3333-4333-8333-333333333333";
+  wdaExt.state.buttonLabel = "External Three";
+
+  const directory = await mkdtemp(join(tmpdir(), "mobile-use-runtime-pool-"));
+  const otherEndpoint = `ios:usb:${IOS_OTHER_UDID}`;
+  const extEndpoint = `ios:${new URL(wdaExt.url).host}`;
+  const connected = new Set([IOS_UDID, IOS_OTHER_UDID]);
+  const running = new Set<string>();
+  const mounted = new Set<string>();
+  const tunnelPorts = new Map<string, number>();
+  const wdaUrls = new Map<string, string>([
+    [IOS_UDID, wdaUsb1.url],
+    [IOS_OTHER_UDID, wdaUsb2.url],
+  ]);
+
+  const usb: UsbBackend = {
+    async readBuid() { return "fixture-host-buid"; },
+    async readPairRecord(udid) { return Buffer.from(`pair-${udid}`); },
+    async list() {
+      return [...connected].map((udid, index) => ({ udid, deviceId: index + 1 }));
+    },
+    async connect(udid, _port, signal) {
+      if (!connected.has(udid)) throw usbFailure("DEVICE_NOT_FOUND");
+      if (!running.has(udid)) throw usbFailure("WDA_UNAVAILABLE");
+      const targetUrl = wdaUrls.get(udid);
+      assert.ok(targetUrl);
+      return new Promise((resolve, reject) => {
+        const socket = createConnection({
+          host: "127.0.0.1",
+          port: Number(new URL(targetUrl).port),
+          ...(signal ? { signal } : {}),
+        });
+        socket.once("error", reject);
+        socket.once("connect", () => resolve(socket));
+      });
+    },
+  };
+
+  const commands: RuntimeCommands = {
+    async run(_file, args) {
+      if (args[0] === "version") return JSON.stringify({ version: "v1.3.2" });
+      const udid = args[1] ?? "";
+      if (args.includes("info")) return JSON.stringify({ UniqueDeviceID: udid, ProductVersion: "18.5" });
+      if (args.includes("image") && args.includes("list")) {
+        return JSON.stringify(mounted.has(udid)
+          ? { level: "INFO", msg: "image signature", signature: "aabbccdd" }
+          : { level: "INFO", msg: "none" });
+      }
+      if (args.includes("image")) mounted.add(udid);
+      return "";
+    },
+    async start(_file, args) {
+      const udid = args[1] ?? "";
+      const portIndex = args.indexOf("--tunnel-info-port");
+      if (portIndex >= 0 && !args.includes("runwda")) {
+        tunnelPorts.set(udid, Number(args[portIndex + 1]));
+      }
+      const isWda = args.includes("runwda");
+      if (isWda) running.add(udid);
+      let stopped = false;
+      let resolveExited: (() => void) | undefined;
+      const exited = new Promise<void>((resolve) => { resolveExited = resolve; });
+      const owned: OwnedProcess = {
+        exited,
+        assertRunning() { if (stopped) throw runtimeFailure("IOS_RUNTIME_FAILED"); },
+        async stop() {
+          stopped = true;
+          if (isWda) running.delete(udid);
+          resolveExited?.();
+        },
+      };
+      return owned;
+    },
+  };
+
+  const pool = new ManagedIosRuntimePool({
+    executable: "fixture-go-ios",
+    bundleId: "example.runner.xctrunner",
+    stateDirectory: directory,
+    devicePort: 8100,
+    tunnelPort: 0,
+  }, usb, commands, { platform: "win32", tunnelCheck: async () => {}, readinessTimeoutMs: 1000, pollMs: 5, stopTimeoutMs: 50 });
+
+  const service = new IosMobileUseService(wdaExt.url, Date.now, pool);
+  t.after(async () => {
+    await service.stop();
+    await Promise.all([wdaUsb1.close(), wdaUsb2.close(), wdaExt.close()]);
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  assert.ok(service.iosRuntime);
+  const [prep1, prep2] = await Promise.all([
+    service.iosRuntime({ kind: "start", endpointId: IOS_ENDPOINT, installRunner: false }),
+    service.iosRuntime({ kind: "start", endpointId: otherEndpoint, installRunner: false }),
+  ]);
+  assert.ok(prep1.runtimeToken && prep2.runtimeToken);
+  assert.notEqual(prep1.runtimeToken, prep2.runtimeToken);
+
+  for (const endpointId of [IOS_ENDPOINT, otherEndpoint]) {
+    for (let i = 0; i < 200; i++) {
+      const current = await service.iosRuntime({ kind: "status", endpointId });
+      if (current.state === "awaiting-developer-trust") break;
+      await delay(5);
+    }
+  }
+  assert.equal((await service.iosRuntime({ kind: "status", runtimeToken: prep1.runtimeToken })).udid, IOS_UDID);
+  assert.equal((await service.iosRuntime({ kind: "status", runtimeToken: prep2.runtimeToken })).udid, IOS_OTHER_UDID);
+
+  await Promise.all([
+    service.iosRuntime({ kind: "confirm_trust", runtimeToken: prep1.runtimeToken }),
+    service.iosRuntime({ kind: "confirm_trust", runtimeToken: prep2.runtimeToken }),
+  ]);
+  for (const endpointId of [IOS_ENDPOINT, otherEndpoint]) {
+    for (let i = 0; i < 200; i++) {
+      const current = await service.iosRuntime({ kind: "status", endpointId });
+      if (current.state === "ready") break;
+      await delay(5);
+    }
+  }
+
+  const combinedStatus = await service.iosRuntime({ kind: "status" });
+  assert.equal(combinedStatus.runtimes?.length, 2);
+  assert.notEqual(tunnelPorts.get(IOS_UDID), tunnelPorts.get(IOS_OTHER_UDID));
+  assert.ok(JSON.parse(await readFile(join(directory, "locks", `${IOS_UDID}.lock`), "utf8")).token === prep1.runtimeToken);
+  assert.ok(JSON.parse(await readFile(join(directory, "locks", `${IOS_OTHER_UDID}.lock`), "utf8")).token === prep2.runtimeToken);
+
+  const devices = await service.listDevices();
+  assert.deepEqual(devices.map((entry) => ({ id: entry.endpointId, selectable: entry.selectable })), [
+    { id: IOS_ENDPOINT, selectable: true },
+    { id: otherEndpoint, selectable: true },
+    { id: extEndpoint, selectable: true },
+  ]);
+
+  const sel1 = await service.selectDevice(IOS_ENDPOINT);
+  const sel2 = await service.selectDevice(otherEndpoint);
+  const selExt = await service.selectDevice(extEndpoint);
+  assert.equal(new Set([sel1.targetToken, sel2.targetToken, selExt.targetToken]).size, 3);
+
+  const [obs1, obs2, obsExt] = await Promise.all([
+    service.observe(sel1.targetToken, undefined, false),
+    service.observe(sel2.targetToken, undefined, false),
+    service.observe(selExt.targetToken, undefined, false),
+  ]);
+  const usb1Button = obs1.observation.elements.find((element) => element.label === "USB One" || element.text === "USB One");
+  assert.ok(usb1Button);
+  assert.ok(obs2.observation.elements.some((element) => element.label === "USB Two" || element.text === "USB Two"));
+  assert.ok(obsExt.observation.elements.some((element) => element.label === "External Three" || element.text === "External Three"));
+
+  // Verify per-target queue concurrency: USB 2 and External WDA complete while USB 1 is blocked in dispatch.
+  let releaseUsb1: (() => void) | undefined;
+  let enteredUsb1: (() => void) | undefined;
+  const usb1Entered = new Promise<void>((resolve) => { enteredUsb1 = resolve; });
+  wdaUsb1.state.actionHook = () => new Promise<void>((resolve) => { releaseUsb1 = resolve; enteredUsb1?.(); });
+
+  const order: string[] = [];
+  const act1Promise = service.act(sel1.targetToken, obs1.observation.observationId, {
+    kind: "tap",
+    target: { elementRef: usb1Button.ref },
+  }).then((res) => {
+    order.push("usb1");
+    return res;
+  });
+  await usb1Entered;
+
+  const [act2, actExt] = await Promise.all([
+    service.act(sel2.targetToken, obs2.observation.observationId, { kind: "type_text", text: "-two" }).then((res) => {
+      order.push("usb2");
+      return res;
+    }),
+    service.act(selExt.targetToken, obsExt.observation.observationId, { kind: "type_text", text: "-ext" }).then((res) => {
+      order.push("ext");
+      return res;
+    }),
+  ]);
+  assert.equal(act2.dispatchStatus, "dispatched");
+  assert.equal(actExt.dispatchStatus, "dispatched");
+  assert.equal(wdaUsb2.state.value, "safe-two");
+  assert.equal(wdaExt.state.value, "safe-ext");
+  assert.equal(order.includes("usb1"), false);
+
+  wdaUsb1.state.actionHook = undefined;
+  releaseUsb1?.();
+  assert.equal((await act1Promise).dispatchStatus, "dispatched");
+
+  // Re-selecting USB 1 retires only USB 1's old token as STALE_TARGET without disturbing USB 2 or External WDA.
+  const sel1Next = await service.selectDevice(IOS_ENDPOINT);
+  await assert.rejects(service.observe(sel1.targetToken, undefined, false), { code: "STALE_TARGET" });
+  assert.equal((await service.getForegroundApp(sel2.targetToken)).packageName, "example.demo");
+  assert.equal((await service.getForegroundApp(selExt.targetToken)).packageName, "example.demo");
+
+  // Explicit runtime stop on USB 1 deselects only USB 1 (TARGET_NOT_SELECTED) and closes only USB 1's WDA session.
+  const stopped1 = await service.iosRuntime({ kind: "stop", runtimeToken: prep1.runtimeToken });
+  assert.equal(stopped1.state, "stopped");
+  assert.equal(wdaUsb1.state.sessionId, null);
+  assert.notEqual(wdaUsb2.state.sessionId, null);
+  assert.notEqual(wdaExt.state.sessionId, null);
+  await assert.rejects(service.observe(sel1Next.targetToken, undefined, false), { code: "TARGET_NOT_SELECTED" });
+
+  // Scoped USB disconnect on USB 2 retires USB 2 as lost while External WDA continues working.
+  connected.delete(IOS_OTHER_UDID);
+  const remainingDevices = await service.listDevices();
+  assert.deepEqual(remainingDevices.map((entry) => entry.endpointId), [IOS_ENDPOINT, extEndpoint]);
+  await assert.rejects(service.observe(sel2.targetToken, undefined, false), { code: "TRANSPORT_LOST" });
+  assert.equal((await service.observe(selExt.targetToken, undefined, false)).observation.targetToken, selExt.targetToken);
+
+  // Reconnect USB 2 so service.stop() can verify port closure cleanly, then assert all remaining sessions close.
+  connected.add(IOS_OTHER_UDID);
+  await service.stop();
+  assert.equal(wdaExt.state.sessionId, null);
 });

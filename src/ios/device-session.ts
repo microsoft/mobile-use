@@ -12,14 +12,39 @@ import { matchesWdaElement, nodeSignature, parseIosHierarchy } from "./hierarchy
 import type { IosNode } from "./hierarchy.js";
 import { iosBundleIdSchema, readWdaUrl, WdaClient, wdaFailure } from "./wda.js";
 import type { WdaElement, WdaProbe } from "./wda.js";
-import { iosRuntimeActionSchema, type IosRuntime, type IosRuntimeAction, type IosRuntimeStatus } from "./runtime.js";
+import {
+  iosRuntimeActionSchema,
+  type IosRuntime,
+  type IosRuntimeAction,
+  type IosRuntimeLostEvent,
+  type IosRuntimeStatus,
+  type RuntimeBinding,
+} from "./runtime.js";
+import { runtimeFailure } from "./runtime-process.js";
 
-interface Target {
-  token: string;
-  sessionId: string;
-  probe: WdaProbe;
-  controller: AbortController;
-  runtimeToken?: string;
+const MAX_RETIRED_TOKENS = 256;
+
+interface IosTargetSession {
+  readonly token: string;
+  readonly endpointId: string;
+  readonly udid?: string;
+  readonly wda: WdaClient;
+  readonly sessionId: string;
+  readonly probe: WdaProbe;
+  readonly controller: AbortController;
+  readonly runtimeToken?: string;
+  snapshot: Snapshot | undefined;
+  lost: boolean;
+  queue: Promise<void>;
+}
+
+interface OwnedWdaSession {
+  readonly endpointId: string;
+  readonly udid?: string;
+  readonly wda: WdaClient;
+  readonly sessionId: string;
+  readonly probe: WdaProbe;
+  readonly runtimeToken?: string;
 }
 
 interface Snapshot {
@@ -36,15 +61,38 @@ const unsupported = ["adb", "wake", "BACK", "ENTER", "helper-prepare", "recordin
 const invalidatingCodes = new Set(["WDA_UNAVAILABLE", "TRANSPORT_LOST", "WDA_RESPONSE_INVALID", "DEVICE_UNSUPPORTED",
   "IOS_USB_UNAVAILABLE", "IOS_RUNTIME_FAILED", "IOS_RUNTIME_NOT_READY"]);
 
+async function awaitTargetQueue(queue: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) {
+    await queue;
+    return;
+  }
+  checkCancelled(signal);
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => reject(wdaFailure("CANCELLED"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    queue.then(
+      () => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      },
+      () => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      },
+    );
+  });
+  checkCancelled(signal);
+}
+
 export class IosMobileUseService implements MobileService {
   readonly platform = "ios";
-  private client: WdaClient | undefined;
-  private selected: Target | undefined;
-  private owned: Target | undefined;
-  private snapshot: Snapshot | undefined;
-  private queue: Promise<void> = Promise.resolve();
+  private readonly clients = new Map<string, WdaClient>();
+  private readonly targets = new Map<string, IosTargetSession>();
+  private readonly ownedSessions = new Map<string, OwnedWdaSession>();
+  private readonly retiredTokens = new Map<string, "stale" | "lost">();
+  private hostQueue: Promise<void> = Promise.resolve();
   private stopped = false;
-  private transportLost = false;
+  private hostLost = false;
   private readonly lifetime = new AbortController();
   private closing: Promise<void> | undefined;
   readonly iosRuntime?: (action: IosRuntimeAction, signal?: AbortSignal) => Promise<IosRuntimeStatus>;
@@ -52,67 +100,172 @@ export class IosMobileUseService implements MobileService {
   constructor(private readonly configuredUrl: string | undefined,
     private readonly now: () => number = Date.now, private readonly runtime?: IosRuntime) {
     if (runtime) {
-      runtime.onLost = () => { this.invalidate(true); this.client = undefined; };
+      runtime.onLost = (event) => this.handleRuntimeLost(event);
       this.iosRuntime = (action, signal) => this.controlRuntime(action, signal);
     }
   }
 
-  private get wda(): WdaClient {
-    const url = this.runtime?.binding().url ?? readWdaUrl(this.configuredUrl);
-    if (this.client?.url !== url) this.client = new WdaClient(url);
-    return this.client;
+  private clientForUrl(url: string): WdaClient {
+    let client = this.clients.get(url);
+    if (!client) {
+      client = new WdaClient(url);
+      this.clients.set(url, client);
+    }
+    return client;
   }
 
-  private serialize<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const result = this.queue.then(async () => {
+  private externalClient(): WdaClient {
+    return this.clientForUrl(readWdaUrl(this.configuredUrl));
+  }
+
+  private readyRuntimeBindings(): RuntimeBinding[] {
+    if (!this.runtime) return [];
+    if (this.runtime.bindings) return this.runtime.bindings();
+    try { return [this.runtime.binding()]; } catch { return []; }
+  }
+
+  private recordRetiredToken(token: string, reason: "stale" | "lost") {
+    if (this.retiredTokens.has(token)) this.retiredTokens.delete(token);
+    this.retiredTokens.set(token, reason);
+    while (this.retiredTokens.size > MAX_RETIRED_TOKENS) {
+      const oldest = this.retiredTokens.keys().next().value;
+      if (oldest === undefined) break;
+      this.retiredTokens.delete(oldest);
+    }
+  }
+
+  private retireTarget(token: string, reason: "stale" | "lost", dropOwned: boolean) {
+    const session = this.targets.get(token);
+    if (!session) return;
+    this.targets.delete(token);
+    session.lost = reason === "lost";
+    session.snapshot = undefined;
+    session.controller.abort();
+    this.recordRetiredToken(token, reason);
+    if (dropOwned) {
+      const owned = this.ownedSessions.get(session.endpointId);
+      if (owned?.sessionId === session.sessionId) this.ownedSessions.delete(session.endpointId);
+    }
+  }
+
+  private deselectEndpoint(endpointId: string, clearRetired = true) {
+    for (const [token, session] of [...this.targets.entries()]) {
+      if (session.endpointId !== endpointId) continue;
+      this.targets.delete(token);
+      session.snapshot = undefined;
+      session.controller.abort();
+      if (clearRetired) this.retiredTokens.delete(token);
+    }
+  }
+
+  private handleRuntimeLost(event?: IosRuntimeLostEvent) {
+    const matchAllManaged = !event?.runtimeToken && !event?.udid;
+    for (const session of [...this.targets.values()]) {
+      if (!session.runtimeToken && !session.udid) continue;
+      const matches = matchAllManaged ||
+        (event?.runtimeToken !== undefined && session.runtimeToken === event.runtimeToken) ||
+        (event?.udid !== undefined && session.udid === event.udid);
+      if (!matches) continue;
+      this.clients.delete(session.wda.url);
+      this.retireTarget(session.token, "lost", true);
+    }
+    for (const [endpointId, owned] of [...this.ownedSessions.entries()]) {
+      if (!owned.runtimeToken && !owned.udid) continue;
+      const matches = matchAllManaged ||
+        (event?.runtimeToken !== undefined && owned.runtimeToken === event.runtimeToken) ||
+        (event?.udid !== undefined && owned.udid === event.udid);
+      if (matches) {
+        this.clients.delete(owned.wda.url);
+        this.ownedSessions.delete(endpointId);
+      }
+    }
+  }
+
+  private serializeHost<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const result = this.hostQueue.then(async () => {
       if (this.stopped) throw wdaFailure("SERVER_STOPPED");
       checkCancelled(signal);
-      try { return await operation(); }
-      catch (error) {
-        if (error instanceof MobileUseError && invalidatingCodes.has(error.code)) this.invalidate(true);
-        throw error;
-      }
+      return operation();
     });
-    this.queue = result.then(() => undefined, () => undefined);
+    this.hostQueue = result.then(() => undefined, () => undefined);
     return result;
   }
 
-  private invalidate(lost = false) {
-    this.selected?.controller.abort();
-    this.selected = undefined;
-    this.snapshot = undefined;
-    this.transportLost = lost;
-    if (lost) this.owned = undefined;
+  private requireTarget(token: string): IosTargetSession {
+    const active = this.targets.get(token);
+    if (active) {
+      if (active.lost) {
+        this.retireTarget(token, "lost", true);
+        throw wdaFailure("TRANSPORT_LOST");
+      }
+      return active;
+    }
+    const retired = this.retiredTokens.get(token);
+    if (retired === "lost") throw wdaFailure("TRANSPORT_LOST");
+    if (retired === "stale") throw wdaFailure("STALE_TARGET");
+    throw wdaFailure(this.hostLost ? "TRANSPORT_LOST" : "TARGET_NOT_SELECTED");
   }
 
-  private target(token: string): Target {
-    if (!this.selected) throw wdaFailure(this.transportLost ? "TRANSPORT_LOST" : "TARGET_NOT_SELECTED");
-    if (this.selected.token !== token) throw wdaFailure("STALE_TARGET");
-    return this.selected;
+  private serializeTarget<T>(
+    token: string,
+    operation: (target: IosTargetSession) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    if (this.stopped) return Promise.reject(wdaFailure("SERVER_STOPPED"));
+    try { checkCancelled(signal); } catch (error) { return Promise.reject(error); }
+    const existing = this.targets.get(token);
+    if (!existing) {
+      return this.serializeHost(async () => {
+        const resolved = this.requireTarget(token);
+        return operation(resolved);
+      }, signal);
+    }
+    const result = existing.queue.then(async () => {
+      if (this.stopped) throw wdaFailure("SERVER_STOPPED");
+      checkCancelled(signal);
+      const current = this.requireTarget(token);
+      try {
+        return await operation(current);
+      } catch (error) {
+        if (error instanceof MobileUseError && invalidatingCodes.has(error.code)) {
+          this.retireTarget(current.token, "lost", true);
+        }
+        throw error;
+      }
+    });
+    existing.queue = result.then(() => undefined, () => undefined);
+    return result;
   }
 
-  private signal(target: Target, request?: AbortSignal): AbortSignal {
+  private signal(target: IosTargetSession, request?: AbortSignal): AbortSignal {
     return AbortSignal.any([target.controller.signal, this.lifetime.signal, ...(request ? [request] : [])]);
   }
 
-  private async ensure(target: Target, signal: AbortSignal) {
-    this.target(target.token);
-    if (this.runtime) await this.runtime.verify(target.runtimeToken ?? "", signal);
-    const probe = await this.wda.probe(signal);
+  private async ensure(target: IosTargetSession, signal: AbortSignal) {
+    this.requireTarget(target.token);
+    if (this.runtime && target.runtimeToken !== undefined) {
+      await this.runtime.verify(target.runtimeToken, signal);
+    }
+    const probe = await target.wda.probe(signal);
     if (probe.sessionId !== target.sessionId || probe.vendorId !== target.probe.vendorId ||
       probe.build !== target.probe.build || probe.iosVersion !== target.probe.iosVersion) {
       throw wdaFailure("TRANSPORT_LOST");
     }
-    this.target(target.token);
+    this.requireTarget(target.token);
     checkCancelled(signal);
   }
 
-  private endpoint(probe: WdaProbe): DeviceEndpoint {
-    const conflict = probe.sessionId !== null && probe.sessionId !== this.owned?.sessionId;
-    const binding = this.runtime?.binding();
+  private buildEndpoint(probe: WdaProbe, wdaUrl: string, binding?: RuntimeBinding): DeviceEndpoint {
+    const endpointId = binding ? `ios:usb:${binding.udid}` : `ios:${new URL(wdaUrl).host}`;
+    const owned = this.ownedSessions.get(endpointId);
+    const conflict = probe.sessionId !== null && probe.sessionId !== owned?.sessionId;
     return {
-      platform: "ios", endpointId: binding ? `ios:usb:${binding.udid}` : `ios:${new URL(this.wda.url).host}`,
-      transportId: binding?.udid ?? null, kind: binding ? "usb" : "unknown", state: "device", model: probe.model,
+      platform: "ios",
+      endpointId,
+      transportId: binding?.udid ?? null,
+      kind: binding ? "usb" : "unknown",
+      state: "device",
+      model: probe.model,
       selectable: !conflict,
       reason: conflict ? "A foreign WDA session is active. Use a dedicated Runner; never replace another controller's session."
         : binding ? "Managed WDA bound to the verified USB UDID."
@@ -120,85 +273,209 @@ export class IosMobileUseService implements MobileService {
     };
   }
 
-  doctor(signal?: AbortSignal): Promise<IosDoctor> {
-    return this.serialize(async () => {
-      if (this.runtime) {
-        const goIosVersion = await this.runtime.prerequisites(signal);
-        if (this.runtime.status().state !== "ready") {
-          return { status: "runtime-not-ready" as const, platform: "ios" as const,
-            goIosVersion, runtime: this.runtime.status() };
-        }
-        await this.runtime.verify(this.runtime.binding().token, signal);
+  private reconcileTargetProbe(endpointId: string, probe: WdaProbe) {
+    for (const session of [...this.targets.values()]) {
+      if (session.endpointId !== endpointId) continue;
+      if (probe.vendorId !== session.probe.vendorId ||
+        probe.build !== session.probe.build ||
+        probe.sessionId !== session.sessionId) {
+        this.retireTarget(session.token, "lost", true);
       }
-      const probe = await this.wda.probe(signal);
-      return { status: "ready" as const, platform: "ios" as const, wdaUrl: this.wda.url,
-        iosVersion: probe.iosVersion, model: probe.model,
-        ...(this.runtime ? { runtime: this.runtime.status() } : {}) };
+    }
+  }
+
+  doctor(signal?: AbortSignal): Promise<IosDoctor> {
+    return this.serializeHost(async () => {
+      if (this.runtime && this.configuredUrl === undefined) {
+        const goIosVersion = await this.runtime.prerequisites(signal);
+        const ready = this.readyRuntimeBindings();
+        if (ready.length === 0) {
+          return {
+            status: "runtime-not-ready" as const,
+            platform: "ios" as const,
+            goIosVersion,
+            runtime: this.runtime.status(),
+          };
+        }
+        const primary = ready[0]!;
+        await this.runtime.verify(primary.token, signal);
+        const client = this.clientForUrl(primary.url);
+        const probe = await client.probe(signal);
+        return {
+          status: "ready" as const,
+          platform: "ios" as const,
+          wdaUrl: client.url,
+          iosVersion: probe.iosVersion,
+          model: probe.model,
+          runtime: this.runtime.status(),
+        };
+      }
+      const client = this.externalClient();
+      const ready = this.readyRuntimeBindings();
+      if (this.runtime && ready[0]) await this.runtime.verify(ready[0].token, signal);
+      const probe = await client.probe(signal);
+      let runtimeStatus: IosRuntimeStatus | undefined;
+      if (this.runtime) {
+        try { runtimeStatus = this.runtime.status(); } catch { runtimeStatus = undefined; }
+      }
+      return {
+        status: "ready" as const,
+        platform: "ios" as const,
+        wdaUrl: client.url,
+        iosVersion: probe.iosVersion,
+        model: probe.model,
+        ...(runtimeStatus ? { runtime: runtimeStatus } : {}),
+      };
     }, signal);
   }
 
   listDevices(signal?: AbortSignal): Promise<DeviceEndpoint[]> {
-    return this.serialize(async () => {
-      const devices = this.runtime ? await this.runtime.devices(signal) : undefined;
-      if (devices && this.runtime?.status().state !== "ready") return devices;
-      const probe = await this.wda.probe(signal);
-      if (this.selected && (probe.vendorId !== this.selected.probe.vendorId ||
-        probe.build !== this.selected.probe.build || probe.sessionId !== this.selected.sessionId)) {
-        this.invalidate(true);
+    return this.serializeHost(async () => {
+      const results: DeviceEndpoint[] = [];
+      if (this.runtime) {
+        const usbDevices = await this.runtime.devices(signal);
+        const connectedEndpoints = new Set(usbDevices.map((entry) => entry.endpointId));
+        for (const session of [...this.targets.values()]) {
+          if (session.udid && !connectedEndpoints.has(session.endpointId)) {
+            this.retireTarget(session.token, "lost", true);
+          }
+        }
+        const bindingsByEndpoint = new Map<string, RuntimeBinding>(
+          this.readyRuntimeBindings().map((binding) => [`ios:usb:${binding.udid}`, binding] as const),
+        );
+        for (const entry of usbDevices) {
+          const binding = bindingsByEndpoint.get(entry.endpointId);
+          if (!binding) {
+            results.push(entry);
+            continue;
+          }
+          const client = this.clientForUrl(binding.url);
+          const probe = await client.probe(signal);
+          this.reconcileTargetProbe(entry.endpointId, probe);
+          results.push(this.buildEndpoint(probe, client.url, binding));
+        }
       }
-      const endpoint = this.endpoint(probe);
-      return devices ? devices.map((entry) => entry.endpointId === endpoint.endpointId ? endpoint : entry) : [endpoint];
-    }, signal);
+      if (!this.runtime || this.configuredUrl !== undefined) {
+        const client = this.externalClient();
+        const endpointId = `ios:${new URL(client.url).host}`;
+        const probe = await client.probe(signal);
+        this.reconcileTargetProbe(endpointId, probe);
+        results.push(this.buildEndpoint(probe, client.url));
+      }
+      return results;
+     }, signal);
   }
 
   selectDevice(endpointId: string, request?: AbortSignal): Promise<IosSelectedTarget> {
-    return this.serialize(async () => {
-      this.invalidate();
+    return this.serializeHost(async () => {
       const signal = AbortSignal.any([this.lifetime.signal, ...(request ? [request] : [])]);
-      if (this.runtime) await this.runtime.verify(this.runtime.binding().token, signal);
-      const probe = await this.wda.probe(signal);
-      if (endpointId !== this.endpoint(probe).endpointId) throw wdaFailure("DEVICE_NOT_FOUND");
-      if (this.owned) {
-        if (probe.sessionId !== this.owned.sessionId || probe.vendorId !== this.owned.probe.vendorId ||
-          probe.build !== this.owned.probe.build) throw wdaFailure("TRANSPORT_LOST");
-        await this.wda.closeSession(this.owned.sessionId);
-        this.owned = undefined;
-      } else if (probe.sessionId !== null) {
-        throw wdaFailure("WDA_SESSION_CONFLICT");
+      let binding: RuntimeBinding | undefined;
+      let client: WdaClient;
+      if (this.runtime && endpointId.startsWith("ios:usb:")) {
+        try {
+          binding = this.runtime.binding(endpointId);
+        } catch (error) {
+          if (error instanceof MobileUseError && error.code === "IOS_RUNTIME_NOT_READY" &&
+            this.readyRuntimeBindings().length > 0) {
+            const usbDevices = await this.runtime.devices(signal);
+            if (!usbDevices.some((entry) => entry.endpointId === endpointId)) throw wdaFailure("DEVICE_NOT_FOUND");
+          }
+          throw error;
+        }
+        await this.runtime.verify(binding.token, signal);
+        client = this.clientForUrl(binding.url);
+      } else if (!this.runtime || this.configuredUrl !== undefined) {
+        client = this.externalClient();
+      } else {
+        if (this.readyRuntimeBindings().length === 0) throw runtimeFailure("IOS_RUNTIME_NOT_READY");
+        throw wdaFailure("DEVICE_NOT_FOUND");
       }
-      checkCancelled(signal);
-      const before = await this.wda.probe(signal);
-      if (before.sessionId !== null || before.vendorId !== probe.vendorId || before.build !== probe.build) {
-        throw wdaFailure("WDA_SESSION_CONFLICT");
+
+      const matchingActive = [...this.targets.values()].filter((session) =>
+        session.endpointId === endpointId || (binding !== undefined && session.udid === binding.udid));
+      for (const existing of matchingActive) {
+        await awaitTargetQueue(existing.queue, signal);
+        this.retireTarget(existing.token, "stale", false);
       }
-      const sessionId = await this.wda.createSession(signal);
-      const target: Target = { token: randomUUID(), sessionId, probe: before, controller: new AbortController(),
-        ...(this.runtime ? { runtimeToken: this.runtime.binding().token } : {}) };
-      this.owned = target;
-      checkCancelled(signal);
-      this.selected = target;
-      await this.ensure(target, signal);
-      return {
-        targetToken: target.token, endpoint: this.endpoint({ ...before, sessionId }),
-        identity: { platform: "ios", vendorId: before.vendorId, iosVersion: before.iosVersion, model: before.model,
-          ...(this.runtime ? { udid: this.runtime.binding().udid } : {}) },
-        capabilities: { tap: true, swipe: true, text: true, home: true, appLaunch: true, screenshot: true, unsupported },
-      };
+
+      try {
+        const probe = await client.probe(signal);
+        const resolvedEndpoint = this.buildEndpoint(probe, client.url, binding);
+        if (endpointId !== resolvedEndpoint.endpointId) throw wdaFailure("DEVICE_NOT_FOUND");
+        const owned = this.ownedSessions.get(endpointId);
+        if (owned) {
+          if (probe.sessionId !== owned.sessionId || probe.vendorId !== owned.probe.vendorId ||
+            probe.build !== owned.probe.build) {
+            this.ownedSessions.delete(endpointId);
+            throw wdaFailure("TRANSPORT_LOST");
+          }
+          await client.closeSession(owned.sessionId);
+          this.ownedSessions.delete(endpointId);
+        } else if (probe.sessionId !== null) {
+          throw wdaFailure("WDA_SESSION_CONFLICT");
+        }
+        checkCancelled(signal);
+        const before = await client.probe(signal);
+        if (before.sessionId !== null || before.vendorId !== probe.vendorId || before.build !== probe.build) {
+          throw wdaFailure("WDA_SESSION_CONFLICT");
+        }
+        const sessionId = await client.createSession(signal);
+        this.ownedSessions.set(endpointId, {
+          endpointId,
+          ...(binding ? { udid: binding.udid, runtimeToken: binding.token } : {}),
+          wda: client,
+          sessionId,
+          probe: before,
+        });
+        checkCancelled(signal);
+        const target: IosTargetSession = {
+          token: randomUUID(),
+          endpointId,
+          ...(binding ? { udid: binding.udid, runtimeToken: binding.token } : {}),
+          wda: client,
+          sessionId,
+          probe: before,
+          controller: new AbortController(),
+          snapshot: undefined,
+          lost: false,
+          queue: Promise.resolve(),
+        };
+        this.targets.set(target.token, target);
+        this.hostLost = false;
+        await this.ensure(target, signal);
+        return {
+          targetToken: target.token,
+          endpoint: this.buildEndpoint({ ...before, sessionId }, client.url, binding),
+          identity: {
+            platform: "ios",
+            vendorId: before.vendorId,
+            iosVersion: before.iosVersion,
+            model: before.model,
+            ...(binding ? { udid: binding.udid } : {}),
+          },
+          capabilities: { tap: true, swipe: true, text: true, home: true, appLaunch: true, screenshot: true, unsupported },
+        };
+      } catch (error) {
+        if (error instanceof MobileUseError && invalidatingCodes.has(error.code)) {
+          for (const existing of matchingActive) this.recordRetiredToken(existing.token, "lost");
+        }
+        throw error;
+      }
     }, request);
   }
 
-  private async capture(target: Target, signal: AbortSignal, includeScreenshot: boolean): Promise<Snapshot> {
+  private async capture(target: IosTargetSession, signal: AbortSignal, includeScreenshot: boolean): Promise<Snapshot> {
     await this.ensure(target, signal);
-    await this.wda.assertUnlocked(target.sessionId, signal);
+    await target.wda.assertUnlocked(target.sessionId, signal);
     const startedAt = new Date(this.now()).toISOString();
     const start = performance.now();
-    const display = await this.wda.screen(target.sessionId, signal);
-    const app = await this.wda.activeApp(target.sessionId, signal);
+    const display = await target.wda.screen(target.sessionId, signal);
+    const app = await target.wda.activeApp(target.sessionId, signal);
     const hierarchyStart = performance.now();
-    const hierarchy = parseIosHierarchy(await this.wda.source(target.sessionId, signal), display.scale, app.bundleId, display);
+    const hierarchy = parseIosHierarchy(await target.wda.source(target.sessionId, signal), display.scale, app.bundleId, display);
     const hierarchyDurationMs = Math.round(performance.now() - hierarchyStart);
     const focus = hierarchy.nodes.some((node) => node.element.editable)
-      ? await this.wda.focused(target.sessionId, signal) : null;
+      ? await target.wda.focused(target.sessionId, signal) : null;
     const focused = focus ? hierarchy.nodes.filter((node) =>
       node.element.editable && matchesWdaElement(node, focus, display.scale)) : [];
     if (focused.length === 1) {
@@ -208,14 +485,14 @@ export class IosMobileUseService implements MobileService {
     let screenshotDurationMs: number | null = null;
     if (includeScreenshot) {
       const screenshotStart = performance.now();
-      image = await this.wda.screenshot(target.sessionId, signal);
+      image = await target.wda.screenshot(target.sessionId, signal);
       const decoded = decodePng(image);
       if (decoded.width !== display.width || decoded.height !== display.height) throw wdaFailure("STALE_OBSERVATION");
       screenshotDurationMs = Math.round(performance.now() - screenshotStart);
     }
-    const afterApp = await this.wda.activeApp(target.sessionId, signal);
-    const afterDisplay = await this.wda.screen(target.sessionId, signal);
-    await this.wda.assertUnlocked(target.sessionId, signal);
+    const afterApp = await target.wda.activeApp(target.sessionId, signal);
+    const afterDisplay = await target.wda.screen(target.sessionId, signal);
+    await target.wda.assertUnlocked(target.sessionId, signal);
     await this.ensure(target, signal);
     if (app.bundleId !== afterApp.bundleId || app.pid !== afterApp.pid ||
       JSON.stringify(display) !== JSON.stringify(afterDisplay)) throw wdaFailure("STALE_OBSERVATION");
@@ -245,11 +522,10 @@ export class IosMobileUseService implements MobileService {
   }
 
   observe(token: string, request?: AbortSignal, includeScreenshot = true): Promise<ObservedScreen> {
-    return this.serialize(async () => {
-      const target = this.target(token);
-      this.snapshot = undefined;
+    return this.serializeTarget(token, async (target) => {
+      target.snapshot = undefined;
       const snapshot = await this.capture(target, this.signal(target, request), includeScreenshot);
-      this.snapshot = snapshot;
+      target.snapshot = snapshot;
       return snapshot.screen;
     }, request);
   }
@@ -285,16 +561,16 @@ export class IosMobileUseService implements MobileService {
     }
   }
 
-  private async resolve(target: Target, node: IosNode, scale: number, signal: AbortSignal) {
-    const matches = (await this.wda.find(target.sessionId, node.element.className, node.name, signal))
+  private async resolve(target: IosTargetSession, node: IosNode, scale: number, signal: AbortSignal) {
+    const matches = (await target.wda.find(target.sessionId, node.element.className, node.name, signal))
       .filter((element) => matchesWdaElement(node, element, scale));
     const element = matches.length === 1 ? matches[0] : undefined;
     if (!element) throw wdaFailure("ELEMENT_CHANGED");
-    await this.wda.assertHittable(target.sessionId, element.id, signal);
+    await target.wda.assertHittable(target.sessionId, element.id, signal);
     return element;
   }
 
-  private async dispatch(target: Target, action: MobileAction, previous: Snapshot, live: Snapshot, signal: AbortSignal) {
+  private async dispatch(target: IosTargetSession, action: MobileAction, previous: Snapshot, live: Snapshot, signal: AbortSignal) {
     const refNode = (ref: string) => {
       const index = previous.screen.observation.elements.findIndex((element) => element.ref === ref);
       return previous.nodes[index];
@@ -372,46 +648,45 @@ export class IosMobileUseService implements MobileService {
         throw wdaFailure("ELEMENT_CHANGED");
       }
       this.verifyNode(previous, live, before);
-      await this.wda.assertHittable(target.sessionId, live.focus.id, signal);
-      const current = await this.wda.focused(target.sessionId, signal);
+      await target.wda.assertHittable(target.sessionId, live.focus.id, signal);
+      const current = await target.wda.focused(target.sessionId, signal);
       if (!current || current.id !== live.focus.id || !matchesWdaElement(node, current, live.display.scale)) {
         throw wdaFailure("ELEMENT_CHANGED");
       }
       await this.assertContext(target, live, signal);
-      await this.wda.command(target.sessionId, "POST", `/element/${current.id}/value`, signal, { text: action.text });
+      await target.wda.command(target.sessionId, "POST", `/element/${current.id}/value`, signal, { text: action.text });
       return;
     } else if (action.kind === "key") {
       if (action.key !== "HOME") throw wdaFailure("UNSUPPORTED_OPERATION");
       await this.assertContext(target, live, signal);
-      await this.wda.home(target.sessionId, signal);
+      await target.wda.home(target.sessionId, signal);
       return;
     } else {
       throw wdaFailure("UNSUPPORTED_OPERATION");
     }
     await this.assertContext(target, live, signal);
-    await this.wda.command(target.sessionId, "POST", "/actions", signal, {
+    await target.wda.command(target.sessionId, "POST", "/actions", signal, {
       actions: [{ type: "pointer", id: "mobile-use-finger", parameters: { pointerType: "touch" }, actions: pointerActions }],
     });
   }
 
-  private async assertContext(target: Target, snapshot: Snapshot, signal: AbortSignal) {
+  private async assertContext(target: IosTargetSession, snapshot: Snapshot, signal: AbortSignal) {
     await this.ensure(target, signal);
-    await this.wda.assertUnlocked(target.sessionId, signal);
-    const app = await this.wda.activeApp(target.sessionId, signal);
-    const display = await this.wda.screen(target.sessionId, signal);
+    await target.wda.assertUnlocked(target.sessionId, signal);
+    const app = await target.wda.activeApp(target.sessionId, signal);
+    const display = await target.wda.screen(target.sessionId, signal);
     if (app.bundleId !== snapshot.app.bundleId || app.pid !== snapshot.app.pid ||
       JSON.stringify(display) !== JSON.stringify(snapshot.display)) throw wdaFailure("STALE_OBSERVATION");
     checkCancelled(signal);
   }
 
   act(token: string, observationId: string, input: unknown, request?: AbortSignal): Promise<ActionResult> {
-    return this.serialize(async () => {
+    return this.serializeTarget(token, async (target) => {
       const parsed = actionSchema.safeParse(input);
       if (!parsed.success) throw wdaFailure("INVALID_INPUT");
       const action = parsed.data;
-      const target = this.target(token);
-      const previous = this.snapshot;
-      this.snapshot = undefined;
+      const previous = target.snapshot;
+      target.snapshot = undefined;
       const age = previous ? this.now() - previous.createdAt : -1;
       if (!previous || previous.screen.observation.observationId !== observationId ||
         previous.screen.observation.targetToken !== token || age < 0 || age > 30_000) throw wdaFailure("STALE_OBSERVATION");
@@ -429,17 +704,17 @@ export class IosMobileUseService implements MobileService {
         await this.dispatch(target, action, previous, live, signal);
       } catch (error) {
         const failure = publicError(error);
-        if (invalidatingCodes.has(failure.code)) this.invalidate(true);
+        if (invalidatingCodes.has(failure.code)) this.retireTarget(target.token, "lost", true);
         if (!failure.actionMayHaveRun) throw failure;
         return { dispatchStatus: "outcome-unknown", verificationStatus: "unverified", after: null, error: failure.toJSON() };
       }
       try {
         const after = await this.capture(target, signal, includeScreenshot);
-        this.snapshot = after;
+        target.snapshot = after;
         return { dispatchStatus: "dispatched", verificationStatus: "requires-observation-review", after: after.screen, error: null };
       } catch (error) {
         const failure = publicError(error);
-        if (invalidatingCodes.has(failure.code)) this.invalidate(true);
+        if (invalidatingCodes.has(failure.code)) this.retireTarget(target.token, "lost", true);
         return { dispatchStatus: "dispatched", verificationStatus: "unverified", after: null,
           error: { ...failure.toJSON(), retryable: false, actionMayHaveRun: true } };
       }
@@ -447,27 +722,25 @@ export class IosMobileUseService implements MobileService {
   }
 
   getForegroundApp(token: string, request?: AbortSignal): Promise<IosForegroundApp> {
-    return this.serialize(async () => {
-      const target = this.target(token);
+    return this.serializeTarget(token, async (target) => {
       const signal = this.signal(target, request);
       await this.ensure(target, signal);
-      const app = await this.wda.activeApp(target.sessionId, signal);
+      const app = await target.wda.activeApp(target.sessionId, signal);
       await this.ensure(target, signal);
       return { platform: "ios", packageName: app.bundleId, pid: app.pid };
     }, request);
   }
 
   launchApp(token: string, packageName: string, request?: AbortSignal): Promise<IosAppOperationResult> {
-    return this.serialize(async () => {
+    return this.serializeTarget(token, async (target) => {
       if (!iosBundleIdSchema.safeParse(packageName).success) throw wdaFailure("INVALID_INPUT");
-      const target = this.target(token);
-      this.snapshot = undefined;
+      target.snapshot = undefined;
       const signal = this.signal(target, request);
       await this.ensure(target, signal);
-      await this.wda.assertUnlocked(target.sessionId, signal);
-      await this.wda.command(target.sessionId, "POST", "/wda/apps/launch", signal, { bundleId: packageName });
+      await target.wda.assertUnlocked(target.sessionId, signal);
+      await target.wda.command(target.sessionId, "POST", "/wda/apps/launch", signal, { bundleId: packageName });
       try {
-        const app = await this.wda.activeApp(target.sessionId, signal);
+        const app = await target.wda.activeApp(target.sessionId, signal);
         await this.ensure(target, signal);
         if (app.bundleId !== packageName) throw wdaFailure("APP_LAUNCH_FAILED", true);
         return { platform: "ios", status: "launched", packageName };
@@ -479,10 +752,10 @@ export class IosMobileUseService implements MobileService {
   }
 
   private rejectSelected<T>(token: string, signal?: AbortSignal): Promise<T> {
-    return this.serialize(async () => { this.target(token); throw wdaFailure("UNSUPPORTED_OPERATION"); }, signal);
+    return this.serializeTarget(token, async () => { throw wdaFailure("UNSUPPORTED_OPERATION"); }, signal);
   }
   startAdbServer(signal?: AbortSignal): Promise<AdbServerResult> {
-    return this.serialize(async () => { throw wdaFailure("UNSUPPORTED_OPERATION"); }, signal);
+    return this.serializeHost(async () => { throw wdaFailure("UNSUPPORTED_OPERATION"); }, signal);
   }
   wake(token: string, signal?: AbortSignal): Promise<WakeResult> { return this.rejectSelected(token, signal); }
   prepareGestures(token: string, signal?: AbortSignal): Promise<PreparedGestures> { return this.rejectSelected(token, signal); }
@@ -495,17 +768,12 @@ export class IosMobileUseService implements MobileService {
     return this.rejectSelected(token, signal);
   }
 
-  private async releaseOwnedSession(): Promise<void> {
-    const owned = this.owned;
-    const client = this.client;
-    this.selected = undefined;
-    this.owned = undefined;
-    if (!owned) return;
-    if (!client) throw wdaFailure("TRANSPORT_LOST");
-    const probe = await client.probe();
+  private async releaseOwnedSessionEntry(owned: OwnedWdaSession): Promise<void> {
+    this.ownedSessions.delete(owned.endpointId);
+    const probe = await owned.wda.probe();
     if (probe.vendorId !== owned.probe.vendorId || probe.build !== owned.probe.build ||
       probe.sessionId !== owned.sessionId) throw wdaFailure("TRANSPORT_LOST");
-    await client.closeSession(owned.sessionId);
+    await owned.wda.closeSession(owned.sessionId);
   }
 
   private async controlRuntime(input: IosRuntimeAction, signal?: AbortSignal): Promise<IosRuntimeStatus> {
@@ -516,27 +784,44 @@ export class IosMobileUseService implements MobileService {
     const action = parsed.data;
     if (action.kind === "status") {
       if (this.stopped) throw wdaFailure("SERVER_STOPPED");
-      return runtime.status();
+      return runtime.control(action, signal);
     }
+    const matchingStopTargets = action.kind === "stop"
+      ? [...this.targets.values()].filter((session) => session.runtimeToken === action.runtimeToken)
+      : [];
     if (action.kind === "stop") {
       runtime.cancelPending(action.runtimeToken);
-      this.selected?.controller.abort();
+      for (const session of matchingStopTargets) session.controller.abort();
     }
-    return this.serialize(async () => {
+    return this.serializeHost(async () => {
       if (action.kind === "stop") {
+        const stopTokens = new Set(matchingStopTargets.map((session) => session.token));
+        await Promise.all(matchingStopTargets.map((session) => session.queue));
         const errors: unknown[] = [];
-        try { await this.releaseOwnedSession(); } catch (error) { errors.push(error); }
+        for (const owned of [...this.ownedSessions.values()]) {
+          if (owned.runtimeToken !== action.runtimeToken) continue;
+          try { await this.releaseOwnedSessionEntry(owned); } catch (error) { errors.push(error); }
+        }
         let status: IosRuntimeStatus | undefined;
         // Once stop invalidates the target, finish cleanup even if the request is cancelled.
         try { status = await runtime.control(action, undefined, errors.length > 0); } catch (error) { errors.push(error); }
-        this.invalidate();
-        this.client = undefined;
+        for (const token of stopTokens) {
+          const session = this.targets.get(token);
+          if (session) {
+            this.targets.delete(token);
+            session.snapshot = undefined;
+            session.controller.abort();
+          }
+          this.retiredTokens.delete(token);
+        }
         if (errors.length) throw publicError(errors[errors.length - 1]);
         if (!status) throw wdaFailure("INTERNAL_ERROR");
         return status;
       }
       const status = await runtime.control(action, signal);
-      if (action.kind === "start") { this.invalidate(); this.client = undefined; }
+      if (action.kind === "start") {
+        this.deselectEndpoint(action.endpointId);
+      }
       return status;
     }, action.kind === "stop" ? undefined : signal);
   }
@@ -545,13 +830,30 @@ export class IosMobileUseService implements MobileService {
     this.stopped = true;
     this.lifetime.abort();
     this.runtime?.cancelPending();
-    this.selected?.controller.abort();
-    this.snapshot = undefined;
+    for (const session of this.targets.values()) {
+      session.controller.abort();
+      session.snapshot = undefined;
+    }
     this.closing ??= (async () => {
-      await this.queue;
+      await Promise.all([this.hostQueue, ...[...this.targets.values()].map((session) => session.queue)]);
+      this.targets.clear();
       const errors: unknown[] = [];
-      try { await this.releaseOwnedSession(); } catch (error) { errors.push(error); }
-      try { await this.runtime?.close(errors.length > 0); } catch (error) { errors.push(error); }
+      const failedRuntimeTokens = new Set<string>();
+      let nonRuntimeReleaseFailed = false;
+      for (const owned of [...this.ownedSessions.values()]) {
+        try {
+          await this.releaseOwnedSessionEntry(owned);
+        } catch (error) {
+          errors.push(error);
+          if (owned.runtimeToken) failedRuntimeTokens.add(owned.runtimeToken);
+          else nonRuntimeReleaseFailed = true;
+        }
+      }
+      const priorCleanupFailed: boolean | ReadonlySet<string> = nonRuntimeReleaseFailed
+        ? true
+        : (failedRuntimeTokens.size > 0 ? failedRuntimeTokens : false);
+      try { await this.runtime?.close(priorCleanupFailed); } catch (error) { errors.push(error); }
+      this.clients.clear();
       if (errors.length) throw publicError(errors[errors.length - 1]);
     })();
     return this.closing;
