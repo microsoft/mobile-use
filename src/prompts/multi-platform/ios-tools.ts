@@ -46,7 +46,7 @@ const sharedIosToolPrompts = {
     title: "Taps",
     description: joinPrompt([
       "Tap, long_press (one stationary second), or double_tap (one W3C sequence preserving delayMs).",
-      "Requires latest action.observationId, at most 30 seconds old and consumed on attempt.",
+      "Requires latest action.observationId, at most 120 seconds old and consumed on attempt.",
       "Prefer an eligible unchanged elementRef; screenshot-coordinate targets require verified metadata or full target.bounds with unchanged local pixels/metadata. Disabled, changed or ambiguous targets never fall back.",
       "Returns a new observation in the same screenshot mode. prepare is unsupported; WDA needs no Android helper. Never replay uncertain input.",
     ]),
@@ -54,7 +54,7 @@ const sharedIosToolPrompts = {
   mobile_swipe: {
     title: "Swipes",
     description: joinPrompt([
-      "One W3C swipe with screenshot-pixel from/to coordinates and durationMs (100-2000, default 400), requiring latest observationId, at most 30 seconds old and consumed on attempt.",
+      "One W3C swipe with screenshot-pixel from/to coordinates and durationMs (100-2000, default 400), requiring latest observationId, at most 120 seconds old and consumed on attempt.",
       "Both points must stay within an unchanged eligible scrollable elementRef/surface; otherwise provide complete bounds with unchanged pixels/metadata and margin.",
       "Screenshot-free mode rejects swipes without capture. Returns a new observation; never replay uncertain input.",
     ]),
@@ -62,7 +62,7 @@ const sharedIosToolPrompts = {
   mobile_press_key: {
     title: "Back / Home / Enter",
     description: joinPrompt([
-      "HOME only on iOS, using latest observationId (30-second limit, consumed on attempt).",
+      "HOME only on iOS, using latest observationId (120-second limit, consumed on attempt).",
       "Revalidates context and returns a new observation in the same screenshot mode.",
       "BACK and ENTER explicitly fail; never substitute a guessed back gesture or submit text. Never replay uncertain input.",
     ]),
@@ -71,7 +71,7 @@ const sharedIosToolPrompts = {
     title: "Input text",
     description: joinPrompt([
       "Type 1-256 UTF-16 code units at the current cursor in one unchanged, enabled, visible, focused non-password native iOS editor.",
-      "Requires latest action.observationId, at most 30 seconds old and consumed on attempt.",
+      "Requires latest action.observationId, at most 120 seconds old and consumed on attempt.",
       "Unicode needs no helper; prepare is unsupported. Unlike Android's helper, insertion at the end cannot be guaranteed.",
       "Never clears, submits, changes keyboard or uses clipboard; control characters/line breaks are rejected.",
       "Preserves screenshot-free mode and returns a new observation for review. Never replay uncertain input.",

@@ -52049,7 +52049,7 @@ function compareScreens(previous, current, region) {
 }
 
 // src/device-session.ts
-var OBSERVATION_MAX_AGE_MS = 3e4;
+var OBSERVATION_MAX_AGE_MS = 12e4;
 var invalidatingCodes = /* @__PURE__ */ new Set([
   "DEVICE_UNAUTHORIZED",
   "DEVICE_OFFLINE",
@@ -55152,7 +55152,7 @@ var IosMobileUseService = class {
       const previous = this.snapshot;
       this.snapshot = void 0;
       const age = previous ? this.now() - previous.createdAt : -1;
-      if (!previous || previous.screen.observation.observationId !== observationId || previous.screen.observation.targetToken !== token || age < 0 || age > 3e4) throw wdaFailure("STALE_OBSERVATION");
+      if (!previous || previous.screen.observation.observationId !== observationId || previous.screen.observation.targetToken !== token || age < 0 || age > OBSERVATION_MAX_AGE_MS) throw wdaFailure("STALE_OBSERVATION");
       if (action.kind === "key" && action.key !== "HOME" || action.kind === "launch_app") throw wdaFailure("UNSUPPORTED_OPERATION");
       if (action.kind === "type_text" && /[\u0000-\u001f\u007f-\u009f]/.test(action.text)) {
         throw new MobileUseError(
@@ -55656,7 +55656,7 @@ var androidToolPrompts = {
     title: "Taps",
     description: joinPrompt([
       "Tap, long-press, or double-tap one observed target. action.kind is tap, long_press, double_tap, or prepare.",
-      "Input actions require action.observationId (latest, at most 30 seconds old, consumed on attempt) and target: an enabled clickable or pointerTarget elementRef, or screenshot coordinates.",
+      "Input actions require action.observationId (latest, at most 120 seconds old, consumed on attempt) and target: an enabled clickable or pointerTarget elementRef, or screenshot coordinates.",
       "Metadata-first guards validate the unique unchanged control, window/app context and potential occlusion, without a pixel veto for unrelated video or timer changes.",
       "Coordinates identifying one potential control use that metadata at the exact requested point; ambiguous, disabled or changed controls are rejected, never bypassed with visual bounds.",
       "Automatic identification requires native button/editor semantics or nonempty text/description; an unlabeled generic clickable container alone does not identify a custom-drawn control.",
@@ -55672,7 +55672,7 @@ var androidToolPrompts = {
   mobile_swipe: {
     title: "Swipes",
     description: joinPrompt([
-      "Perform one bounded swipe using the latest observationId (at most 30 seconds old, consumed on attempt), screenshot from/to coordinates and optional durationMs (100-2000, default 400).",
+      "Perform one bounded swipe using the latest observationId (at most 120 seconds old, consumed on attempt), screenshot from/to coordinates and optional durationMs (100-2000, default 400).",
       "Metadata-first guards use an optional scrollable elementRef or one uniquely identified scrollable surface containing the start; both endpoints must remain inside that unchanged enabled surface with matching app/window context and no potentially covering window along the path.",
       "Actionable controls and competing scrollable surfaces at the initial touch must retain their metadata and owning-window context, including with an explicit reference, but child-content changes elsewhere and video pixels do not veto a verified surface. Changed, disabled or ambiguous metadata never falls back to pixels.",
       "If no scrollable surface is exposed, supply bounds: {x,y,width,height} around the complete visible swipe surface containing both endpoints. Visual fallback protects that surface plus a clipped margin (8% of the shorter display dimension, at least 8 pixels), checking decoded pixels and exposed metadata.",
@@ -55683,7 +55683,7 @@ var androidToolPrompts = {
   mobile_press_key: {
     title: "Back / Home / Enter",
     description: joinPrompt([
-      "Press exactly one BACK, HOME, or ENTER key using the latest observationId (at most 30 seconds old, consumed on attempt).",
+      "Press exactly one BACK, HOME, or ENTER key using the latest observationId (at most 120 seconds old, consumed on attempt).",
       "Revalidate display state and return the next observation, preserving screenshot-free mode.",
       "Ordinary safe navigation needs no repeated conversational approval within the authorized task.",
       "ENTER can submit a field: require specific authorization for any consequential action, and never enter credentials or replay uncertain input."
@@ -55694,7 +55694,7 @@ var androidToolPrompts = {
     description: joinPrompt([
       "Append text to one unchanged focused enabled non-password native EditText. In multi-window observations, only the active, focused application window is eligible; background node focus is not input focus.",
       "The editor package, unique window context and foreground app/activity/user must match. action.kind is type_text or prepare.",
-      "type_text requires action.observationId (latest, at most 30 seconds old, consumed on attempt) and 1-256 UTF-16 code units of text.",
+      "type_text requires action.observationId (latest, at most 120 seconds old, consumed on attempt) and 1-256 UTF-16 code units of text.",
       "ASCII letters/digits/space/period/comma/underscore/hyphen use ADB input; Unicode, emoji, other punctuation, tabs and line breaks require the prepared helper.",
       "prepare requires explicit approval or matching scoped session consent to upload and run the pinned read-only DEX; no APK, keyboard change, clipboard, permissions, service, or daemon is installed, and files remain.",
       "Preparation invalidates observations and needs no observationId; observe again afterward.",
@@ -55760,7 +55760,7 @@ var managedRuntimePrelude = joinPrompt([
 ]);
 var iosInteractionInstructions = joinPrompt([
   "Coordinates and bounds are screenshot pixels; the adapter converts them to iOS points.",
-  "Actions consume the latest observationId, at most 30 seconds old, even on a failed attempt.",
+  "Actions consume the latest observationId, at most 120 seconds old, even on a failed attempt.",
   "Use eligible elementRef targets; coordinate taps/swipes require screenshot-enabled observations.",
   "Custom-drawn targets need explicit complete bounds; metadata changes or disabled/ambiguous targets cannot fall back to pixels.",
   "includeScreenshot:false never captures images during input revalidation or results.",
@@ -55839,7 +55839,7 @@ var sharedIosToolPrompts = {
     title: "Taps",
     description: joinPrompt([
       "Tap, long_press (one stationary second), or double_tap (one W3C sequence preserving delayMs).",
-      "Requires latest action.observationId, at most 30 seconds old and consumed on attempt.",
+      "Requires latest action.observationId, at most 120 seconds old and consumed on attempt.",
       "Prefer an eligible unchanged elementRef; screenshot-coordinate targets require verified metadata or full target.bounds with unchanged local pixels/metadata. Disabled, changed or ambiguous targets never fall back.",
       "Returns a new observation in the same screenshot mode. prepare is unsupported; WDA needs no Android helper. Never replay uncertain input."
     ])
@@ -55847,7 +55847,7 @@ var sharedIosToolPrompts = {
   mobile_swipe: {
     title: "Swipes",
     description: joinPrompt([
-      "One W3C swipe with screenshot-pixel from/to coordinates and durationMs (100-2000, default 400), requiring latest observationId, at most 30 seconds old and consumed on attempt.",
+      "One W3C swipe with screenshot-pixel from/to coordinates and durationMs (100-2000, default 400), requiring latest observationId, at most 120 seconds old and consumed on attempt.",
       "Both points must stay within an unchanged eligible scrollable elementRef/surface; otherwise provide complete bounds with unchanged pixels/metadata and margin.",
       "Screenshot-free mode rejects swipes without capture. Returns a new observation; never replay uncertain input."
     ])
@@ -55855,7 +55855,7 @@ var sharedIosToolPrompts = {
   mobile_press_key: {
     title: "Back / Home / Enter",
     description: joinPrompt([
-      "HOME only on iOS, using latest observationId (30-second limit, consumed on attempt).",
+      "HOME only on iOS, using latest observationId (120-second limit, consumed on attempt).",
       "Revalidates context and returns a new observation in the same screenshot mode.",
       "BACK and ENTER explicitly fail; never substitute a guessed back gesture or submit text. Never replay uncertain input."
     ])
@@ -55864,7 +55864,7 @@ var sharedIosToolPrompts = {
     title: "Input text",
     description: joinPrompt([
       "Type 1-256 UTF-16 code units at the current cursor in one unchanged, enabled, visible, focused non-password native iOS editor.",
-      "Requires latest action.observationId, at most 30 seconds old and consumed on attempt.",
+      "Requires latest action.observationId, at most 120 seconds old and consumed on attempt.",
       "Unicode needs no helper; prepare is unsupported. Unlike Android's helper, insertion at the end cannot be guaranteed.",
       "Never clears, submits, changes keyboard or uses clipboard; control characters/line breaks are rejected.",
       "Preserves screenshot-free mode and returns a new observation for review. Never replay uncertain input."

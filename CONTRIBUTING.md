@@ -273,7 +273,7 @@ reference paths. Partially visible native controls keep their original bounds
 for matching and input guards. Full interface rotation comes from `/rotation`,
 not the direction-collapsing `/orientation` endpoint.
 
-Observations keep the existing token/ID/30-second/single-attempt model. iOS
+Observations keep the existing token/ID/120-second/single-attempt model. iOS
 adds optional platform and screen scale metadata without changing Android
 outputs. Native roles indicate pointer/scroll eligibility; they are not exposed
 as Android-derived semantics. Reference revalidation binds the unique unchanged
@@ -987,7 +987,7 @@ Extended text requires the explicitly
 prepared Unicode helper described above. Clipboard fallback and arbitrary
 shell are rejected.
 
-Observations expire after 30 seconds and are consumed on an action attempt.
+Observations expire after 120 seconds and are consumed on an action attempt.
 Pointer gestures are **metadata-first**: revalidate a unique enabled target,
 its identity/state/bounds, matching foreground app/activity/Android user, and
 owning-window context. Metadata-backed input does not compare screenshot pixels.

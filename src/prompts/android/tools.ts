@@ -70,7 +70,7 @@ export const androidToolPrompts: Readonly<Record<CoreToolName, ToolPrompt>> = {
     title: "Taps",
     description: joinPrompt([
       "Tap, long-press, or double-tap one observed target. action.kind is tap, long_press, double_tap, or prepare.",
-      "Input actions require action.observationId (latest, at most 30 seconds old, consumed on attempt) and target: an enabled clickable or pointerTarget elementRef, or screenshot coordinates.",
+      "Input actions require action.observationId (latest, at most 120 seconds old, consumed on attempt) and target: an enabled clickable or pointerTarget elementRef, or screenshot coordinates.",
       "Metadata-first guards validate the unique unchanged control, window/app context and potential occlusion, without a pixel veto for unrelated video or timer changes.",
       "Coordinates identifying one potential control use that metadata at the exact requested point; ambiguous, disabled or changed controls are rejected, never bypassed with visual bounds.",
       "Automatic identification requires native button/editor semantics or nonempty text/description; an unlabeled generic clickable container alone does not identify a custom-drawn control.",
@@ -86,7 +86,7 @@ export const androidToolPrompts: Readonly<Record<CoreToolName, ToolPrompt>> = {
   mobile_swipe: {
     title: "Swipes",
     description: joinPrompt([
-      "Perform one bounded swipe using the latest observationId (at most 30 seconds old, consumed on attempt), screenshot from/to coordinates and optional durationMs (100-2000, default 400).",
+      "Perform one bounded swipe using the latest observationId (at most 120 seconds old, consumed on attempt), screenshot from/to coordinates and optional durationMs (100-2000, default 400).",
       "Metadata-first guards use an optional scrollable elementRef or one uniquely identified scrollable surface containing the start; both endpoints must remain inside that unchanged enabled surface with matching app/window context and no potentially covering window along the path.",
       "Actionable controls and competing scrollable surfaces at the initial touch must retain their metadata and owning-window context, including with an explicit reference, but child-content changes elsewhere and video pixels do not veto a verified surface. Changed, disabled or ambiguous metadata never falls back to pixels.",
       "If no scrollable surface is exposed, supply bounds: {x,y,width,height} around the complete visible swipe surface containing both endpoints. Visual fallback protects that surface plus a clipped margin (8% of the shorter display dimension, at least 8 pixels), checking decoded pixels and exposed metadata.",
@@ -97,7 +97,7 @@ export const androidToolPrompts: Readonly<Record<CoreToolName, ToolPrompt>> = {
   mobile_press_key: {
     title: "Back / Home / Enter",
     description: joinPrompt([
-      "Press exactly one BACK, HOME, or ENTER key using the latest observationId (at most 30 seconds old, consumed on attempt).",
+      "Press exactly one BACK, HOME, or ENTER key using the latest observationId (at most 120 seconds old, consumed on attempt).",
       "Revalidate display state and return the next observation, preserving screenshot-free mode.",
       "Ordinary safe navigation needs no repeated conversational approval within the authorized task.",
       "ENTER can submit a field: require specific authorization for any consequential action, and never enter credentials or replay uncertain input.",
@@ -108,7 +108,7 @@ export const androidToolPrompts: Readonly<Record<CoreToolName, ToolPrompt>> = {
     description: joinPrompt([
       "Append text to one unchanged focused enabled non-password native EditText. In multi-window observations, only the active, focused application window is eligible; background node focus is not input focus.",
       "The editor package, unique window context and foreground app/activity/user must match. action.kind is type_text or prepare.",
-      "type_text requires action.observationId (latest, at most 30 seconds old, consumed on attempt) and 1-256 UTF-16 code units of text.",
+      "type_text requires action.observationId (latest, at most 120 seconds old, consumed on attempt) and 1-256 UTF-16 code units of text.",
       "ASCII letters/digits/space/period/comma/underscore/hyphen use ADB input; Unicode, emoji, other punctuation, tabs and line breaks require the prepared helper.",
       "prepare requires explicit approval or matching scoped session consent to upload and run the pinned read-only DEX; no APK, keyboard change, clipboard, permissions, service, or daemon is installed, and files remain.",
       "Preparation invalidates observations and needs no observationId; observe again afterward.",

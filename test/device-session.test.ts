@@ -352,7 +352,7 @@ test("expired observations and cancellation block double-taps before input", asy
   let time = 100_000;
   const { adb, service } = harness(t, () => time);
   const { selected, screen } = await ready(service);
-  time += 30_001;
+  time += 120_001;
   await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, {
     kind: "double_tap", target: { elementRef: "e1" },
   }), hasCode("STALE_OBSERVATION"));
@@ -480,14 +480,14 @@ test("only the latest observation is usable", async (t) => {
   await assert.rejects(service.act(selected.targetToken, screen.observation.observationId, { kind: "key", key: "HOME" }), hasCode("STALE_OBSERVATION"));
 });
 
-test("the exact 30-second age boundary is enforced, including clock rollback", async (t) => {
+test("the exact 120-second age boundary is enforced, including clock rollback", async (t) => {
   let time = 100_000;
   const { adb, service } = harness(t, () => time);
   const { selected, screen } = await ready(service);
-  time += 30_000;
+  time += 120_000;
   await service.act(selected.targetToken, screen.observation.observationId, { kind: "key", key: "HOME" });
   const old = await service.observe(selected.targetToken);
-  time += 30_001;
+  time += 120_001;
   await assert.rejects(service.act(selected.targetToken, old.observation.observationId, { kind: "key", key: "HOME" }), hasCode("STALE_OBSERVATION"));
   const rollback = await service.observe(selected.targetToken);
   time -= 1;
