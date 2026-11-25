@@ -11,7 +11,7 @@ import { MobileUseError } from "../src/errors.js";
 import { createMobileService } from "../src/service-factory.js";
 import { IosMobileUseService } from "../src/ios/device-session.js";
 import { runtimeCommands, runtimeFailure, type OwnedProcess, type RuntimeCommands } from "../src/ios/runtime-process.js";
-import { availableTunnelPort, ManagedIosRuntimePool, readRuntimeConfig } from "../src/ios/runtime.js";
+import { availableTunnelPort, ManagedIosRuntime, ManagedIosRuntimePool, readRuntimeConfig } from "../src/ios/runtime.js";
 import { MuxConnection, usbFailure, type UsbBackend } from "../src/ios/usb.js";
 import { createIosFixture } from "./ios-fixture.js";
 import { IOS_ENDPOINT, IOS_OTHER_UDID, IOS_UDID, runtimeFixture, waitRuntimeState } from "./ios-runtime-fixture.js";
@@ -1130,4 +1130,109 @@ test("coexistence mode validates managed prerequisites in doctor, isolates listD
   assert.equal(pool.status({ endpointId: IOS_ENDPOINT }).state, "stopped");
   await assert.rejects(stat(lockFile), { code: "ENOENT" });
 });
+
+test("reselection drains target operations appended while waiting on existing.queue before replacing the WDA session", async (t) => {
+  const f = await runtimeFixture(t);
+  await f.ready();
+  const selected1 = await f.service.selectDevice(IOS_ENDPOINT);
+
+  let notifySource1: (() => void) | undefined;
+  const sourceEntered1 = new Promise<void>((resolve) => { notifySource1 = resolve; });
+  let releaseSource1: (() => void) | undefined;
+  const sourceGate1 = new Promise<void>((resolve) => { releaseSource1 = resolve; });
+
+  let notifySource2: (() => void) | undefined;
+  const sourceEntered2 = new Promise<void>((resolve) => { notifySource2 = resolve; });
+  let releaseSource2: (() => void) | undefined;
+  const sourceGate2 = new Promise<void>((resolve) => { releaseSource2 = resolve; });
+
+  let sourceCalls = 0;
+  f.http.state.sourceHook = async () => {
+    sourceCalls++;
+    if (sourceCalls === 1) {
+      notifySource1?.();
+      await sourceGate1;
+    } else if (sourceCalls === 2) {
+      notifySource2?.();
+      await sourceGate2;
+    }
+  };
+
+  const obs1 = f.service.observe(selected1.targetToken, undefined, false);
+  await sourceEntered1;
+
+  // Start reselection while obs1 holds existing.queue, then append obs2 after reselection captured the first queue snapshot.
+  const reselectPromise = f.service.selectDevice(IOS_ENDPOINT);
+  await delay(10);
+  const obs2 = f.service.observe(selected1.targetToken, undefined, false);
+
+  releaseSource1?.();
+  await obs1;
+  await sourceEntered2;
+
+  // While obs2 is still executing, reselection must not have retired selected1 or closed its WDA session yet.
+  assert.equal(f.http.calls.some((call) => call.method === "DELETE"), false);
+
+  f.http.state.sourceHook = undefined;
+  releaseSource2?.();
+  const obs2Result = await obs2;
+  assert.equal(obs2Result.observation.targetToken, selected1.targetToken);
+
+  const selected2 = await reselectPromise;
+  assert.notEqual(selected2.targetToken, selected1.targetToken);
+  assert.equal(f.http.calls.some((call) => call.method === "DELETE"), true);
+  await assert.rejects(f.service.observe(selected1.targetToken, undefined, false), { code: "STALE_TARGET" });
+});
+
+test("managed doctor translates missing go-ios executable to IOS_RUNTIME_CONFIG_INVALID while preserving cancellation", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "mobile-use-ios-missing-exe-"));
+  t.after(async () => {
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const missingExecutable = join(directory, "nonexistent-go-ios-binary");
+  const service = createMobileService({
+    MOBILE_USE_PLATFORM: "ios",
+    MOBILE_USE_IOS_RUNTIME: "managed",
+    MOBILE_USE_IOS_RUNNER_BUNDLE_ID: "example.runner.xctrunner",
+    MOBILE_USE_GO_IOS_PATH: missingExecutable,
+  });
+
+  await assert.rejects(service.doctor(), { code: "IOS_RUNTIME_CONFIG_INVALID" });
+
+  const aborted = new AbortController();
+  aborted.abort();
+  await assert.rejects(service.doctor(aborted.signal), { code: "CANCELLED" });
+
+  // Also cover in-flight cancellation during version execution on ManagedIosRuntime directly.
+  let notifyVersionRun: (() => void) | undefined;
+  const versionEntered = new Promise<void>((resolve) => { notifyVersionRun = resolve; });
+  const inFlightAbort = new AbortController();
+  const runtime = new ManagedIosRuntime(
+    {
+      executable: missingExecutable,
+      bundleId: "example.runner.xctrunner",
+      stateDirectory: directory,
+      devicePort: 8100,
+      tunnelPort: 60105,
+    },
+    undefined,
+    {
+      async run(_file, _args, _timeout, signal) {
+        notifyVersionRun?.();
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new MobileUseError("CANCELLED", "Cancelled.", "Retry.")), { once: true });
+        });
+        return "";
+      },
+      async start() { throw new Error("unexpected start"); },
+    },
+    { platform: "win32" },
+  );
+  const prereqPromise = runtime.prerequisites(inFlightAbort.signal);
+  await versionEntered;
+  inFlightAbort.abort();
+  await assert.rejects(prereqPromise, { code: "CANCELLED" });
+});
+
 

@@ -54487,6 +54487,26 @@ function idleRuntimeStatus(bundleId, udid = null) {
     error: null
   };
 }
+async function checkGoIosPrerequisites(executable, commands, platform, signal) {
+  usbMuxEndpoint(platform);
+  let output2;
+  try {
+    output2 = await commands.run(executable, ["version"], 3e4, signal);
+  } catch (error62) {
+    checkCancelled(signal);
+    if (error62 instanceof MobileUseError && error62.code === "CANCELLED") throw error62;
+    throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
+  }
+  let version2;
+  try {
+    version2 = JSON.parse(output2);
+  } catch {
+    throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
+  }
+  const parsed = external_exports.object({ version: external_exports.enum(["v1.3.2", "1.3.2"]) }).safeParse(version2);
+  if (!parsed.success) throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
+  return parsed.data.version;
+}
 var ManagedIosRuntime = class {
   constructor(config2, usb = new AppleUsbBackend(), commands = runtimeCommands, options = {}) {
     this.config = config2;
@@ -54560,17 +54580,7 @@ var ManagedIosRuntime = class {
     };
   }
   async prerequisites(signal) {
-    usbMuxEndpoint(this.options.platform);
-    const output2 = await this.commands.run(this.config.executable, ["version"], 3e4, signal);
-    let version2;
-    try {
-      version2 = JSON.parse(output2);
-    } catch {
-      throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
-    }
-    const parsed = external_exports.object({ version: external_exports.enum(["v1.3.2", "1.3.2"]) }).safeParse(version2);
-    if (!parsed.success) throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
-    return parsed.data.version;
+    return checkGoIosPrerequisites(this.config.executable, this.commands, this.options.platform, signal);
   }
   async devices(signal) {
     const devices = await this.usb.list(signal);
@@ -55128,17 +55138,7 @@ var ManagedIosRuntimePool = class {
   }
   async prerequisites(signal) {
     const config2 = this.resolveConfig();
-    usbMuxEndpoint(this.options.platform);
-    const output2 = await this.commands.run(config2.executable, ["version"], 3e4, signal);
-    let version2;
-    try {
-      version2 = JSON.parse(output2);
-    } catch {
-      throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
-    }
-    const parsed = external_exports.object({ version: external_exports.enum(["v1.3.2", "1.3.2"]) }).safeParse(version2);
-    if (!parsed.success) throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
-    return parsed.data.version;
+    return checkGoIosPrerequisites(config2.executable, this.commands, this.options.platform, signal);
   }
   async devices(signal) {
     const config2 = this.tryConfig();
@@ -55673,7 +55673,11 @@ var IosMobileUseService = class {
       }
       const matchingActive = [...this.targets.values()].filter((session) => session.endpointId === endpointId || binding !== void 0 && session.udid === binding.udid);
       for (const existing of matchingActive) {
-        await awaitTargetQueue2(existing.queue, signal);
+        let settled;
+        do {
+          settled = existing.queue;
+          await awaitTargetQueue2(settled, signal);
+        } while (existing.queue !== settled);
         this.retireTarget(existing.token, "stale", false);
       }
       try {
@@ -56841,7 +56845,7 @@ var managedIosSetup = {
     "Use Windows with Apple USB services or macOS, go-ios v1.3.2, and a physical iOS 17.4.1+ device for userspace tunnels. The user supplies an already signed/validated Runner and completes pairing, Developer Mode and developer trust manually.",
     "Configure MOBILE_USE_PLATFORM=ios, MOBILE_USE_IOS_RUNTIME=managed and MOBILE_USE_IOS_RUNNER_BUNDLE_ID with the full .xctrunner ID. Optional MOBILE_USE_WDA_URL may also be set when combining an external WDA endpoint with USB devices. See docs/ios-mvp.md for optional go-ios, signed IPA and state-directory configuration.",
     "Run mobile_doctor and mobile_list_devices. After explicit approval for the exact USB endpoint, call mobile_ios_runtime with action.kind=start. installRunner defaults to false; true explicitly installs/replaces the configured signed IPA.",
-    "start returns preparing with a runtimeToken; poll action.kind=status. When awaiting-developer-trust, ask the user to verify Developer App trust on that device. Only after confirmation call confirm_trust with this token, then poll starting until ready. Never confirm for the user or silently install during discovery.",
+    "start returns preparing with a runtimeToken; include that runtimeToken (or the chosen endpointId) in every action.kind=status poll so another ready device is not mistaken for this startup. When awaiting-developer-trust, ask the user to verify Developer App trust on that device. Only after confirmation call confirm_trust with this token, then poll status with runtimeToken (or endpointId) until ready. Never confirm for the user or silently install during discovery.",
     "Once ready, select the USB endpoint and follow the normal mobile_* observation/input flow. Stop with this runtimeToken; invalidate old selections. Runner installation and local pairing/log/image caches are retained."
   ]
 };
@@ -56850,7 +56854,7 @@ var iosRuntimeSetup = {
   steps: [
     "Managed USB iOS requires Apple USB services on Windows or macOS, go-ios v1.3.2 on PATH (or MOBILE_USE_GO_IOS_PATH), and a physical iOS 17.4.1+ device with Developer Mode enabled.",
     "Set MOBILE_USE_IOS_RUNNER_BUNDLE_ID to the full user-signed WebDriverAgent .xctrunner bundle ID (and optional absolute .ipa path in MOBILE_USE_IOS_RUNNER_IPA, plus ephemeral MOBILE_USE_IOS_TUNNEL_PORT=0 when running multiple USB devices), then reopen Copilot.",
-    "Run mobile_list_devices to inspect attached ios:usb:<UDID> endpoints. After explicit user approval for a chosen USB endpoint, start its managed runtime with mobile_ios_runtime (action.kind=start), confirm Developer App trust on the device when awaiting-developer-trust, then call confirm_trust and poll status until ready."
+    "Run mobile_list_devices to inspect attached ios:usb:<UDID> endpoints. After explicit user approval for a chosen USB endpoint, start its managed runtime with mobile_ios_runtime (action.kind=start), poll status with the returned runtimeToken (or the chosen endpointId), confirm Developer App trust on the device when awaiting-developer-trust, then call confirm_trust and poll status with that runtimeToken (or endpointId) until ready."
   ]
 };
 function buildIosSelectDeviceSetup(managed) {

@@ -481,7 +481,11 @@ export class IosMobileUseService implements MobileService {
       const matchingActive = [...this.targets.values()].filter((session) =>
         session.endpointId === endpointId || (binding !== undefined && session.udid === binding.udid));
       for (const existing of matchingActive) {
-        await awaitTargetQueue(existing.queue, signal);
+        let settled: Promise<void>;
+        do {
+          settled = existing.queue;
+          await awaitTargetQueue(settled, signal);
+        } while (existing.queue !== settled);
         this.retireTarget(existing.token, "stale", false);
       }
 

@@ -212,6 +212,28 @@ function idleRuntimeStatus(bundleId: string, udid: string | null = null): IosRun
   };
 }
 
+async function checkGoIosPrerequisites(
+  executable: string,
+  commands: RuntimeCommands,
+  platform: NodeJS.Platform | undefined,
+  signal?: AbortSignal,
+): Promise<string> {
+  usbMuxEndpoint(platform);
+  let output: string;
+  try {
+    output = await commands.run(executable, ["version"], 30000, signal);
+  } catch (error) {
+    checkCancelled(signal);
+    if (error instanceof MobileUseError && error.code === "CANCELLED") throw error;
+    throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
+  }
+  let version: unknown;
+  try { version = JSON.parse(output); } catch { throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID"); }
+  const parsed = z.object({ version: z.enum(["v1.3.2", "1.3.2"]) }).safeParse(version);
+  if (!parsed.success) throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
+  return parsed.data.version;
+}
+
 export class ManagedIosRuntime implements IosRuntime {
   onLost: (event?: IosRuntimeLostEvent) => void = () => {};
   private state: IosRuntimeStatus["state"] = "idle";
@@ -269,13 +291,7 @@ export class ManagedIosRuntime implements IosRuntime {
   }
 
   async prerequisites(signal?: AbortSignal): Promise<string> {
-    usbMuxEndpoint(this.options.platform);
-    const output = await this.commands.run(this.config.executable, ["version"], 30000, signal);
-    let version: unknown;
-    try { version = JSON.parse(output); } catch { throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID"); }
-    const parsed = z.object({ version: z.enum(["v1.3.2", "1.3.2"]) }).safeParse(version);
-    if (!parsed.success) throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
-    return parsed.data.version;
+    return checkGoIosPrerequisites(this.config.executable, this.commands, this.options.platform, signal);
   }
 
   async devices(signal?: AbortSignal): Promise<DeviceEndpoint[]> {
@@ -753,13 +769,7 @@ export class ManagedIosRuntimePool implements IosRuntime {
 
   async prerequisites(signal?: AbortSignal): Promise<string> {
     const config = this.resolveConfig();
-    usbMuxEndpoint(this.options.platform);
-    const output = await this.commands.run(config.executable, ["version"], 30000, signal);
-    let version: unknown;
-    try { version = JSON.parse(output); } catch { throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID"); }
-    const parsed = z.object({ version: z.enum(["v1.3.2", "1.3.2"]) }).safeParse(version);
-    if (!parsed.success) throw runtimeFailure("IOS_RUNTIME_CONFIG_INVALID");
-    return parsed.data.version;
+    return checkGoIosPrerequisites(config.executable, this.commands, this.options.platform, signal);
   }
 
   async devices(signal?: AbortSignal): Promise<DeviceEndpoint[]> {
