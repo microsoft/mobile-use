@@ -68,6 +68,9 @@ export interface ManagedIosRuntimeOptions {
   pollMs?: number;
   stopTimeoutMs?: number;
   occupiedTunnelPorts?: () => ReadonlySet<number>;
+  allocateTunnelPort?: (requestedPort: number, signal?: AbortSignal) => Promise<number>;
+  releaseTunnelPort?: () => void;
+  portProber?: (port: number) => Promise<number>;
 }
 export interface RuntimeConfig {
   executable: string;
@@ -235,7 +238,7 @@ export class ManagedIosRuntime implements IosRuntime {
     private readonly options: ManagedIosRuntimeOptions = {}) {}
 
   get activeTunnelPorts(): readonly number[] {
-    if (!this.tunnelPort || ["idle", "stopped", "failed", "cleanup-failed"].includes(this.state)) return [];
+    if (!this.tunnelPort) return [];
     return [this.tunnelPort, this.tunnelPort + 1];
   }
 
@@ -459,7 +462,13 @@ export class ManagedIosRuntime implements IosRuntime {
       });
       await this.assertNoWda(signal);
       checkCancelled(signal);
-      const port = await availableTunnelPort(this.config.tunnelPort, reservePortPair, this.options.occupiedTunnelPorts?.());
+      const port = this.options.allocateTunnelPort
+        ? await this.options.allocateTunnelPort(this.config.tunnelPort, signal)
+        : await availableTunnelPort(
+            this.config.tunnelPort,
+            this.options.portProber ?? reservePortPair,
+            this.options.occupiedTunnelPorts?.(),
+          );
       this.tunnelPort = port;
       const pairs = join(this.config.stateDirectory, "pairing", this.udid);
       const images = join(this.config.stateDirectory, "devimages");
@@ -595,6 +604,7 @@ export class ManagedIosRuntime implements IosRuntime {
         throw runtimeFailure("IOS_RUNTIME_CLEANUP_FAILED", this.mutated || this.installed);
       }
       this.tunnelPort = 0;
+      this.options.releaseTunnelPort?.();
       this.proxy = undefined;
       this.nativeUsb = undefined;
       this.tunnel = undefined;
@@ -608,13 +618,15 @@ export class ManagedIosRuntimePool implements IosRuntime {
   onLost: (event?: IosRuntimeLostEvent) => void = () => {};
   private readonly runtimes = new Map<string, ManagedIosRuntime>();
   private readonly tokenToUdid = new Map<string, string>();
+  private readonly reservedTunnelPorts = new Map<string, readonly [number, number]>();
+  private portAllocationQueue: Promise<void> = Promise.resolve();
   private readonly resolveConfig: () => RuntimeConfig;
 
   constructor(
     configOrResolver: RuntimeConfig | (() => RuntimeConfig),
     private readonly usb: UsbBackend = new AppleUsbBackend(),
     private readonly commands: RuntimeCommands = runtimeCommands,
-    private readonly options: Omit<ManagedIosRuntimeOptions, "occupiedTunnelPorts"> = {},
+    private readonly options: Omit<ManagedIosRuntimeOptions, "occupiedTunnelPorts" | "allocateTunnelPort" | "releaseTunnelPort"> = {},
   ) {
     this.resolveConfig = typeof configOrResolver === "function" ? configOrResolver : () => configOrResolver;
   }
@@ -625,11 +637,55 @@ export class ManagedIosRuntimePool implements IosRuntime {
 
   private occupiedTunnelPorts(excludingUdid?: string): ReadonlySet<number> {
     const ports = new Set<number>();
+    for (const [udid, pair] of this.reservedTunnelPorts) {
+      if (udid === excludingUdid) continue;
+      ports.add(pair[0]);
+      ports.add(pair[1]);
+    }
     for (const [udid, runtime] of this.runtimes) {
       if (udid === excludingUdid) continue;
       for (const port of runtime.activeTunnelPorts) ports.add(port);
     }
     return ports;
+  }
+
+  private allocateTunnelPort(udid: string, requestedPort: number, signal?: AbortSignal): Promise<number> {
+    const run = this.portAllocationQueue.then(async () => {
+      checkCancelled(signal);
+      const occupied = this.occupiedTunnelPorts(udid);
+      const held: Server[] = [];
+      const reserveWithHold = async (port: number): Promise<number> => {
+        if (this.options.portProber) return this.options.portProber(port);
+        if (port !== 0 || occupied.size === 0) return reservePortPair(port);
+        const primary = createServer((socket) => socket.destroy());
+        const adjacent = createServer((socket) => socket.destroy());
+        try {
+          const candidate = await listenPort(primary, 0);
+          if (occupied.has(candidate) || occupied.has(candidate + 1)) {
+            held.push(primary);
+            return candidate;
+          }
+          if (candidate <= maxTunnelPort) await listenPort(adjacent, candidate + 1);
+          return candidate;
+        } finally {
+          const toClose = [primary, adjacent].filter((server) => server.listening && !held.includes(server));
+          await Promise.all(toClose.map((server) =>
+            new Promise<void>((resolve, reject) => server.close((error) => error ? reject(runtimeFailure("IOS_RUNTIME_FAILED")) : resolve()))));
+        }
+      };
+      let port: number;
+      try {
+        port = await availableTunnelPort(requestedPort, reserveWithHold, occupied);
+      } finally {
+        await Promise.all(held.filter((server) => server.listening).map((server) =>
+          new Promise<void>((resolve) => server.close(() => resolve()))));
+      }
+      checkCancelled(signal);
+      this.reservedTunnelPorts.set(udid, [port, port + 1]);
+      return port;
+    });
+    this.portAllocationQueue = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   private getOrCreateRuntime(udid: string, config: RuntimeConfig): ManagedIosRuntime {
@@ -638,6 +694,10 @@ export class ManagedIosRuntimePool implements IosRuntime {
       runtime = new ManagedIosRuntime(config, this.usb, this.commands, {
         ...this.options,
         occupiedTunnelPorts: () => this.occupiedTunnelPorts(udid),
+        allocateTunnelPort: (requestedPort, signal) => this.allocateTunnelPort(udid, requestedPort, signal),
+        releaseTunnelPort: () => {
+          this.reservedTunnelPorts.delete(udid);
+        },
       });
       runtime.onLost = (event) => this.onLost({ udid, ...event });
       this.runtimes.set(udid, runtime);
@@ -776,7 +836,7 @@ export class ManagedIosRuntimePool implements IosRuntime {
       if (!udid) throw wdaFailure("INVALID_INPUT");
       if (config.tunnelPort !== 0) {
         for (const [otherUdid, other] of this.runtimes) {
-          if (otherUdid !== udid && !["idle", "stopped", "failed"].includes(other.status().state)) {
+          if (otherUdid !== udid && (!["idle", "stopped"].includes(other.status().state) || this.reservedTunnelPorts.has(otherUdid))) {
             throw runtimeFailure("IOS_RUNTIME_CONFLICT");
           }
         }

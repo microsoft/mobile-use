@@ -52139,6 +52139,7 @@ var MobileUseService = class {
   targets = /* @__PURE__ */ new Map();
   retiredTokens = /* @__PURE__ */ new Map();
   hostQueue = Promise.resolve();
+  hostBarriers = /* @__PURE__ */ new Set();
   stopped = false;
   hostLost = false;
   lifetime = new AbortController();
@@ -52165,7 +52166,14 @@ var MobileUseService = class {
     this.hostQueue = next.then(() => void 0, () => void 0);
     return next;
   }
-  serializeTarget(targetToken, operation, signal) {
+  async serializeTarget(targetToken, operation, signal) {
+    while (this.hostBarriers.size > 0) {
+      if (this.stopped) throw new MobileUseError("SERVER_STOPPED", "The server is stopped.", "Start a new plugin session.");
+      await awaitTargetQueue(
+        Promise.all([...this.hostBarriers]).then(() => void 0),
+        signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal
+      );
+    }
     const session = this.targets.get(targetToken);
     const previous = session?.queue ?? Promise.resolve();
     const next = previous.then(async () => {
@@ -52253,7 +52261,22 @@ var MobileUseService = class {
     }, signal);
   }
   startAdbServer(signal) {
+    if (this.stopped || signal?.aborted) {
+      return this.serializeHost(async () => this.adb.startServer(signal), signal);
+    }
+    let releaseBarrier;
+    const barrier = new Promise((resolve) => {
+      releaseBarrier = resolve;
+    });
+    this.hostBarriers.add(barrier);
     return this.serializeHost(async () => {
+      const drainSignal = signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal;
+      const activeQueues = [...this.targets.values()].map((session) => session.queue);
+      if (activeQueues.length > 0) {
+        await awaitTargetQueue(Promise.all(activeQueues).then(() => void 0), drainSignal);
+      }
+      if (this.stopped) throw new MobileUseError("SERVER_STOPPED", "The server is stopped.", "Start a new plugin session.");
+      checkCancelled(signal);
       let result2;
       try {
         result2 = await this.adb.startServer(signal);
@@ -52275,7 +52298,10 @@ var MobileUseService = class {
         }
       }
       return result2;
-    }, signal);
+    }, signal).finally(() => {
+      this.hostBarriers.delete(barrier);
+      releaseBarrier();
+    });
   }
   listDevices(signal) {
     return this.serializeHost(async () => {
@@ -52291,6 +52317,8 @@ var MobileUseService = class {
   selectDevice(endpointId, signal) {
     return this.serializeHost(async () => {
       const inventory = await this.inventory(signal);
+      checkCancelled(signal);
+      if (this.stopped) throw new MobileUseError("SERVER_STOPPED", "The server is stopped.", "Start a new plugin session.");
       for (const existing of [...this.targets.values()]) {
         if (existing.endpoint.endpointId === endpointId && !sameEndpoint(inventory, existing.endpoint)) {
           this.retire(existing.token, "lost");
@@ -52302,11 +52330,20 @@ var MobileUseService = class {
         const code = endpoint.state === "unauthorized" ? "DEVICE_UNAUTHORIZED" : endpoint.state === "offline" ? "DEVICE_OFFLINE" : "DEVICE_UNSUPPORTED";
         throw new MobileUseError(code, "This endpoint cannot be selected.", endpoint.reason ?? "Choose a supported authorized physical device.");
       }
-      for (const existing of [...this.targets.values()]) {
-        if (existing.endpoint.endpointId === endpoint.endpointId || sameEndpoint([endpoint], existing.endpoint)) {
-          await awaitTargetQueue(existing.queue, signal);
-          this.retire(existing.token, "stale");
-        }
+      const sameEndpointSessions = [...this.targets.values()].filter(
+        (existing) => existing.endpoint.endpointId === endpoint.endpointId || sameEndpoint([endpoint], existing.endpoint)
+      );
+      for (const existing of sameEndpointSessions) {
+        let settled;
+        do {
+          settled = existing.queue;
+          await awaitTargetQueue(settled, signal);
+        } while (existing.queue !== settled);
+      }
+      checkCancelled(signal);
+      if (this.stopped) throw new MobileUseError("SERVER_STOPPED", "The server is stopped.", "Start a new plugin session.");
+      for (const existing of sameEndpointSessions) {
+        this.retire(existing.token, "stale");
       }
       const controller = new AbortController();
       const monitorSignal = AbortSignal.any([controller.signal, this.lifetime.signal]);
@@ -52342,12 +52379,26 @@ var MobileUseService = class {
         const identity = await backend.identity(signal);
         checkCancelled(signal);
         if (this.stopped) throw new MobileUseError("SERVER_STOPPED", "The server is stopped.", "Start a new plugin session.");
-        if (lost) throw new MobileUseError("TRANSPORT_LOST", "The selected transport was interrupted.", "Rediscover and reselect.");
-        for (const existing of [...this.targets.values()]) {
-          if (existing.endpoint.endpointId === endpoint.endpointId || sameEndpoint([endpoint], existing.endpoint) || identity.hardwareSerial !== null && existing.identity?.hardwareSerial === identity.hardwareSerial) {
-            await awaitTargetQueue(existing.queue, signal);
-            this.retire(existing.token, "stale");
-          }
+        if (lost || monitorSignal.aborted) {
+          throw new MobileUseError("TRANSPORT_LOST", "The selected transport was interrupted.", "Rediscover and reselect.");
+        }
+        const matchingSessions = [...this.targets.values()].filter(
+          (existing) => existing.endpoint.endpointId === endpoint.endpointId || sameEndpoint([endpoint], existing.endpoint) || identity.hardwareSerial !== null && existing.identity?.hardwareSerial === identity.hardwareSerial
+        );
+        for (const existing of matchingSessions) {
+          let settled;
+          do {
+            settled = existing.queue;
+            await awaitTargetQueue(settled, signal);
+          } while (existing.queue !== settled);
+        }
+        checkCancelled(signal);
+        if (this.stopped) throw new MobileUseError("SERVER_STOPPED", "The server is stopped.", "Start a new plugin session.");
+        if (lost || monitorSignal.aborted) {
+          throw new MobileUseError("TRANSPORT_LOST", "The selected transport was interrupted.", "Rediscover and reselect.");
+        }
+        for (const existing of matchingSessions) {
+          this.retire(existing.token, "stale");
         }
         session = {
           token,
@@ -54468,7 +54519,7 @@ var ManagedIosRuntime = class {
   retiring = false;
   priorCleanupFailed = false;
   get activeTunnelPorts() {
-    if (!this.tunnelPort || ["idle", "stopped", "failed", "cleanup-failed"].includes(this.state)) return [];
+    if (!this.tunnelPort) return [];
     return [this.tunnelPort, this.tunnelPort + 1];
   }
   status(filter) {
@@ -54731,7 +54782,11 @@ var ManagedIosRuntime = class {
       });
       await this.assertNoWda(signal);
       checkCancelled(signal);
-      const port = await availableTunnelPort(this.config.tunnelPort, reservePortPair, this.options.occupiedTunnelPorts?.());
+      const port = this.options.allocateTunnelPort ? await this.options.allocateTunnelPort(this.config.tunnelPort, signal) : await availableTunnelPort(
+        this.config.tunnelPort,
+        this.options.portProber ?? reservePortPair,
+        this.options.occupiedTunnelPorts?.()
+      );
       this.tunnelPort = port;
       const pairs = join(this.config.stateDirectory, "pairing", this.udid);
       const images = join(this.config.stateDirectory, "devimages");
@@ -54932,6 +54987,7 @@ var ManagedIosRuntime = class {
         throw runtimeFailure("IOS_RUNTIME_CLEANUP_FAILED", this.mutated || this.installed);
       }
       this.tunnelPort = 0;
+      this.options.releaseTunnelPort?.();
       this.proxy = void 0;
       this.nativeUsb = void 0;
       this.tunnel = void 0;
@@ -54954,6 +55010,8 @@ var ManagedIosRuntimePool = class {
   };
   runtimes = /* @__PURE__ */ new Map();
   tokenToUdid = /* @__PURE__ */ new Map();
+  reservedTunnelPorts = /* @__PURE__ */ new Map();
+  portAllocationQueue = Promise.resolve();
   resolveConfig;
   tryConfig() {
     try {
@@ -54964,18 +55022,63 @@ var ManagedIosRuntimePool = class {
   }
   occupiedTunnelPorts(excludingUdid) {
     const ports = /* @__PURE__ */ new Set();
+    for (const [udid, pair] of this.reservedTunnelPorts) {
+      if (udid === excludingUdid) continue;
+      ports.add(pair[0]);
+      ports.add(pair[1]);
+    }
     for (const [udid, runtime] of this.runtimes) {
       if (udid === excludingUdid) continue;
       for (const port of runtime.activeTunnelPorts) ports.add(port);
     }
     return ports;
   }
+  allocateTunnelPort(udid, requestedPort, signal) {
+    const run = this.portAllocationQueue.then(async () => {
+      checkCancelled(signal);
+      const occupied = this.occupiedTunnelPorts(udid);
+      const held = [];
+      const reserveWithHold = async (port2) => {
+        if (this.options.portProber) return this.options.portProber(port2);
+        if (port2 !== 0 || occupied.size === 0) return reservePortPair(port2);
+        const primary = createServer3((socket) => socket.destroy());
+        const adjacent = createServer3((socket) => socket.destroy());
+        try {
+          const candidate = await listenPort(primary, 0);
+          if (occupied.has(candidate) || occupied.has(candidate + 1)) {
+            held.push(primary);
+            return candidate;
+          }
+          if (candidate <= maxTunnelPort) await listenPort(adjacent, candidate + 1);
+          return candidate;
+        } finally {
+          const toClose = [primary, adjacent].filter((server) => server.listening && !held.includes(server));
+          await Promise.all(toClose.map((server) => new Promise((resolve, reject) => server.close((error62) => error62 ? reject(runtimeFailure("IOS_RUNTIME_FAILED")) : resolve()))));
+        }
+      };
+      let port;
+      try {
+        port = await availableTunnelPort(requestedPort, reserveWithHold, occupied);
+      } finally {
+        await Promise.all(held.filter((server) => server.listening).map((server) => new Promise((resolve) => server.close(() => resolve()))));
+      }
+      checkCancelled(signal);
+      this.reservedTunnelPorts.set(udid, [port, port + 1]);
+      return port;
+    });
+    this.portAllocationQueue = run.then(() => void 0, () => void 0);
+    return run;
+  }
   getOrCreateRuntime(udid, config2) {
     let runtime = this.runtimes.get(udid);
     if (!runtime) {
       runtime = new ManagedIosRuntime(config2, this.usb, this.commands, {
         ...this.options,
-        occupiedTunnelPorts: () => this.occupiedTunnelPorts(udid)
+        occupiedTunnelPorts: () => this.occupiedTunnelPorts(udid),
+        allocateTunnelPort: (requestedPort, signal) => this.allocateTunnelPort(udid, requestedPort, signal),
+        releaseTunnelPort: () => {
+          this.reservedTunnelPorts.delete(udid);
+        }
       });
       runtime.onLost = (event) => this.onLost({ udid, ...event });
       this.runtimes.set(udid, runtime);
@@ -55103,7 +55206,7 @@ var ManagedIosRuntimePool = class {
       if (!udid) throw wdaFailure("INVALID_INPUT");
       if (config2.tunnelPort !== 0) {
         for (const [otherUdid, other] of this.runtimes) {
-          if (otherUdid !== udid && !["idle", "stopped", "failed"].includes(other.status().state)) {
+          if (otherUdid !== udid && (!["idle", "stopped"].includes(other.status().state) || this.reservedTunnelPorts.has(otherUdid))) {
             throw runtimeFailure("IOS_RUNTIME_CONFLICT");
           }
         }
@@ -55381,8 +55484,8 @@ var IosMobileUseService = class {
   }
   doctor(signal) {
     return this.serializeHost(async () => {
+      const goIosVersion = this.runtime ? await this.runtime.prerequisites(signal) : void 0;
       if (this.runtime && this.configuredUrl === void 0) {
-        const goIosVersion = await this.runtime.prerequisites(signal);
         const ready2 = this.readyRuntimeBindings();
         if (ready2.length === 0) {
           return {
@@ -55409,56 +55512,138 @@ var IosMobileUseService = class {
       const ready = this.readyRuntimeBindings();
       if (this.runtime && ready[0]) await this.runtime.verify(ready[0].token, signal);
       const probe = await client.probe(signal);
-      let runtimeStatus;
-      if (this.runtime) {
-        try {
-          runtimeStatus = this.runtime.status();
-        } catch {
-          runtimeStatus = void 0;
-        }
-      }
       return {
         status: "ready",
         platform: "ios",
         wdaUrl: client.url,
         iosVersion: probe.iosVersion,
         model: probe.model,
-        ...runtimeStatus ? { runtime: runtimeStatus } : {}
+        ...this.runtime ? { runtime: this.runtime.status() } : {}
       };
     }, signal);
+  }
+  isCancellationOrShutdown(error62, signal) {
+    if (this.stopped || signal?.aborted) return true;
+    return error62 instanceof MobileUseError && (error62.code === "CANCELLED" || error62.code === "SERVER_STOPPED");
   }
   listDevices(signal) {
     return this.serializeHost(async () => {
       const results = [];
+      let usbDiscoveryError;
       if (this.runtime) {
-        const usbDevices = await this.runtime.devices(signal);
-        const connectedEndpoints = new Set(usbDevices.map((entry) => entry.endpointId));
-        for (const session of [...this.targets.values()]) {
-          if (session.udid && !connectedEndpoints.has(session.endpointId)) {
-            this.retireTarget(session.token, "lost", true);
+        let usbDevices;
+        try {
+          usbDevices = await this.runtime.devices(signal);
+        } catch (error62) {
+          if (this.isCancellationOrShutdown(error62, signal)) throw error62;
+          for (const session of [...this.targets.values()]) {
+            if (session.udid) this.retireTarget(session.token, "lost", true);
           }
+          if (this.configuredUrl === void 0) throw error62;
+          usbDiscoveryError = error62;
         }
-        const bindingsByEndpoint = new Map(
-          this.readyRuntimeBindings().map((binding) => [`ios:usb:${binding.udid}`, binding])
-        );
-        for (const entry of usbDevices) {
-          const binding = bindingsByEndpoint.get(entry.endpointId);
-          if (!binding) {
-            results.push(entry);
-            continue;
+        if (usbDevices) {
+          const connectedEndpoints = new Set(usbDevices.map((entry) => entry.endpointId));
+          for (const session of [...this.targets.values()]) {
+            if (session.udid && !connectedEndpoints.has(session.endpointId)) {
+              this.retireTarget(session.token, "lost", true);
+            }
           }
-          const client = this.clientForUrl(binding.url);
-          const probe = await client.probe(signal);
-          this.reconcileTargetProbe(entry.endpointId, probe);
-          results.push(this.buildEndpoint(probe, client.url, binding));
+          const bindingsByEndpoint = new Map(
+            this.readyRuntimeBindings().map((binding) => [`ios:usb:${binding.udid}`, binding])
+          );
+          for (const entry of usbDevices) {
+            const binding = bindingsByEndpoint.get(entry.endpointId);
+            if (!binding) {
+              results.push(entry);
+              continue;
+            }
+            try {
+              await this.runtime.verify(binding.token, signal);
+              const client = this.clientForUrl(binding.url);
+              const probe = await client.probe(signal);
+              this.reconcileTargetProbe(entry.endpointId, probe);
+              results.push(this.buildEndpoint(probe, client.url, binding));
+            } catch (error62) {
+              if (this.isCancellationOrShutdown(error62, signal)) throw error62;
+              for (const session of [...this.targets.values()]) {
+                if (session.endpointId === entry.endpointId) {
+                  this.retireTarget(session.token, "lost", true);
+                }
+              }
+              results.push({
+                ...entry,
+                state: "offline",
+                model: null,
+                selectable: false,
+                reason: publicError(error62).message
+              });
+            }
+          }
         }
       }
-      if (!this.runtime || this.configuredUrl !== void 0) {
+      if (!this.runtime) {
         const client = this.externalClient();
         const endpointId = `ios:${new URL(client.url).host}`;
-        const probe = await client.probe(signal);
-        this.reconcileTargetProbe(endpointId, probe);
-        results.push(this.buildEndpoint(probe, client.url));
+        try {
+          const probe = await client.probe(signal);
+          this.reconcileTargetProbe(endpointId, probe);
+          results.push(this.buildEndpoint(probe, client.url));
+        } catch (error62) {
+          if (!this.isCancellationOrShutdown(error62, signal)) {
+            for (const session of [...this.targets.values()]) {
+              if (session.endpointId === endpointId) {
+                this.retireTarget(session.token, "lost", true);
+              }
+            }
+          }
+          throw error62;
+        }
+      } else if (this.configuredUrl !== void 0) {
+        let client;
+        try {
+          client = this.externalClient();
+        } catch (error62) {
+          if (this.isCancellationOrShutdown(error62, signal) || usbDiscoveryError !== void 0 || results.length === 0) {
+            throw error62;
+          }
+          results.push({
+            platform: "ios",
+            endpointId: "ios:external",
+            transportId: null,
+            kind: "unknown",
+            state: "offline",
+            model: null,
+            selectable: false,
+            reason: publicError(error62).message
+          });
+        }
+        if (client) {
+          const endpointId = `ios:${new URL(client.url).host}`;
+          try {
+            const probe = await client.probe(signal);
+            this.reconcileTargetProbe(endpointId, probe);
+            results.push(this.buildEndpoint(probe, client.url));
+          } catch (error62) {
+            if (this.isCancellationOrShutdown(error62, signal)) throw error62;
+            for (const session of [...this.targets.values()]) {
+              if (session.endpointId === endpointId) {
+                this.retireTarget(session.token, "lost", true);
+              }
+            }
+            if (usbDiscoveryError !== void 0) throw error62;
+            results.push({
+              platform: "ios",
+              endpointId,
+              transportId: null,
+              kind: "unknown",
+              state: "offline",
+              model: null,
+              selectable: false,
+              reason: publicError(error62).message
+            });
+          }
+        }
       }
       return results;
     }, signal);
@@ -55908,8 +56093,28 @@ var IosMobileUseService = class {
     }
     return this.serializeHost(async () => {
       if (action.kind === "stop") {
-        const stopTokens = new Set(matchingStopTargets.map((session) => session.token));
-        await Promise.all(matchingStopTargets.map((session) => session.queue));
+        const stopTargets = new Map(
+          matchingStopTargets.map((session) => [session.token, session])
+        );
+        for (const session of this.targets.values()) {
+          if (session.runtimeToken === action.runtimeToken) {
+            stopTargets.set(session.token, session);
+          }
+        }
+        for (const session of stopTargets.values()) {
+          this.targets.delete(session.token);
+          this.retiredTokens.delete(session.token);
+          session.snapshot = void 0;
+          session.controller.abort();
+        }
+        for (const session of stopTargets.values()) {
+          let settled;
+          do {
+            settled = session.queue;
+            await settled;
+          } while (session.queue !== settled);
+          this.retiredTokens.delete(session.token);
+        }
         const errors = [];
         for (const owned of [...this.ownedSessions.values()]) {
           if (owned.runtimeToken !== action.runtimeToken) continue;
@@ -55925,7 +56130,7 @@ var IosMobileUseService = class {
         } catch (error62) {
           errors.push(error62);
         }
-        for (const token of stopTokens) {
+        for (const token of stopTargets.keys()) {
           const session = this.targets.get(token);
           if (session) {
             this.targets.delete(token);
@@ -55954,21 +56159,24 @@ var IosMobileUseService = class {
       session.snapshot = void 0;
     }
     this.closing ??= (async () => {
-      await Promise.all([this.hostQueue, ...[...this.targets.values()].map((session) => session.queue)]);
+      await this.hostQueue;
+      for (const session of this.targets.values()) {
+        session.controller.abort();
+        session.snapshot = void 0;
+      }
+      await Promise.all([...this.targets.values()].map((session) => session.queue));
       this.targets.clear();
       const errors = [];
       const failedRuntimeTokens = /* @__PURE__ */ new Set();
-      let nonRuntimeReleaseFailed = false;
       for (const owned of [...this.ownedSessions.values()]) {
         try {
           await this.releaseOwnedSessionEntry(owned);
         } catch (error62) {
           errors.push(error62);
           if (owned.runtimeToken) failedRuntimeTokens.add(owned.runtimeToken);
-          else nonRuntimeReleaseFailed = true;
         }
       }
-      const priorCleanupFailed = nonRuntimeReleaseFailed ? true : failedRuntimeTokens.size > 0 ? failedRuntimeTokens : false;
+      const priorCleanupFailed = failedRuntimeTokens.size > 0 ? failedRuntimeTokens : false;
       try {
         await this.runtime?.close(priorCleanupFailed);
       } catch (error62) {

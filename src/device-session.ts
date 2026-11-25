@@ -124,6 +124,7 @@ export class MobileUseService implements MobileService {
   private readonly targets = new Map<string, AndroidTargetSession>();
   private readonly retiredTokens = new Map<string, "stale" | "lost">();
   private hostQueue: Promise<void> = Promise.resolve();
+  private readonly hostBarriers = new Set<Promise<void>>();
   private stopped = false;
   private hostLost = false;
   private readonly lifetime = new AbortController();
@@ -160,7 +161,14 @@ export class MobileUseService implements MobileService {
     return next;
   }
 
-  private serializeTarget<T>(targetToken: string, operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  private async serializeTarget<T>(targetToken: string, operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    while (this.hostBarriers.size > 0) {
+      if (this.stopped) throw new MobileUseError("SERVER_STOPPED", "The server is stopped.", "Start a new plugin session.");
+      await awaitTargetQueue(
+        Promise.all([...this.hostBarriers]).then(() => undefined),
+        signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal,
+      );
+    }
     const session = this.targets.get(targetToken);
     const previous = session?.queue ?? Promise.resolve();
     const next = previous.then(async () => {
@@ -257,7 +265,22 @@ export class MobileUseService implements MobileService {
   }
 
   startAdbServer(signal?: AbortSignal): Promise<AdbServerResult> {
+    if (this.stopped || signal?.aborted) {
+      return this.serializeHost(async () => this.adb.startServer(signal), signal);
+    }
+    let releaseBarrier!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      releaseBarrier = resolve;
+    });
+    this.hostBarriers.add(barrier);
     return this.serializeHost(async () => {
+      const drainSignal = signal ? AbortSignal.any([signal, this.lifetime.signal]) : this.lifetime.signal;
+      const activeQueues = [...this.targets.values()].map((session) => session.queue);
+      if (activeQueues.length > 0) {
+        await awaitTargetQueue(Promise.all(activeQueues).then(() => undefined), drainSignal);
+      }
+      if (this.stopped) throw new MobileUseError("SERVER_STOPPED", "The server is stopped.", "Start a new plugin session.");
+      checkCancelled(signal);
       let result: AdbServerResult;
       try {
         result = await this.adb.startServer(signal);
@@ -279,7 +302,10 @@ export class MobileUseService implements MobileService {
         }
       }
       return result;
-    }, signal);
+    }, signal).finally(() => {
+      this.hostBarriers.delete(barrier);
+      releaseBarrier();
+    });
   }
 
   listDevices(signal?: AbortSignal): Promise<DeviceEndpoint[]> {
@@ -297,6 +323,8 @@ export class MobileUseService implements MobileService {
   selectDevice(endpointId: string, signal?: AbortSignal): Promise<SelectedTarget> {
     return this.serializeHost(async () => {
       const inventory = await this.inventory(signal);
+      checkCancelled(signal);
+      if (this.stopped) throw new MobileUseError("SERVER_STOPPED", "The server is stopped.", "Start a new plugin session.");
       for (const existing of [...this.targets.values()]) {
         if (existing.endpoint.endpointId === endpointId && !sameEndpoint(inventory, existing.endpoint)) {
           this.retire(existing.token, "lost");
@@ -309,11 +337,20 @@ export class MobileUseService implements MobileService {
           : endpoint.state === "offline" ? "DEVICE_OFFLINE" : "DEVICE_UNSUPPORTED";
         throw new MobileUseError(code, "This endpoint cannot be selected.", endpoint.reason ?? "Choose a supported authorized physical device.");
       }
-      for (const existing of [...this.targets.values()]) {
-        if (existing.endpoint.endpointId === endpoint.endpointId || sameEndpoint([endpoint], existing.endpoint)) {
-          await awaitTargetQueue(existing.queue, signal);
-          this.retire(existing.token, "stale");
-        }
+      const sameEndpointSessions = [...this.targets.values()].filter((existing) =>
+        existing.endpoint.endpointId === endpoint.endpointId || sameEndpoint([endpoint], existing.endpoint),
+      );
+      for (const existing of sameEndpointSessions) {
+        let settled: Promise<void>;
+        do {
+          settled = existing.queue;
+          await awaitTargetQueue(settled, signal);
+        } while (existing.queue !== settled);
+      }
+      checkCancelled(signal);
+      if (this.stopped) throw new MobileUseError("SERVER_STOPPED", "The server is stopped.", "Start a new plugin session.");
+      for (const existing of sameEndpointSessions) {
+        this.retire(existing.token, "stale");
       }
       const controller = new AbortController();
       const monitorSignal = AbortSignal.any([controller.signal, this.lifetime.signal]);
@@ -349,16 +386,28 @@ export class MobileUseService implements MobileService {
         const identity = await backend.identity(signal);
         checkCancelled(signal);
         if (this.stopped) throw new MobileUseError("SERVER_STOPPED", "The server is stopped.", "Start a new plugin session.");
-        if (lost) throw new MobileUseError("TRANSPORT_LOST", "The selected transport was interrupted.", "Rediscover and reselect.");
-        for (const existing of [...this.targets.values()]) {
-          if (
-            existing.endpoint.endpointId === endpoint.endpointId ||
-            sameEndpoint([endpoint], existing.endpoint) ||
-            (identity.hardwareSerial !== null && existing.identity?.hardwareSerial === identity.hardwareSerial)
-          ) {
-            await awaitTargetQueue(existing.queue, signal);
-            this.retire(existing.token, "stale");
-          }
+        if (lost || monitorSignal.aborted) {
+          throw new MobileUseError("TRANSPORT_LOST", "The selected transport was interrupted.", "Rediscover and reselect.");
+        }
+        const matchingSessions = [...this.targets.values()].filter((existing) =>
+          existing.endpoint.endpointId === endpoint.endpointId ||
+          sameEndpoint([endpoint], existing.endpoint) ||
+          (identity.hardwareSerial !== null && existing.identity?.hardwareSerial === identity.hardwareSerial),
+        );
+        for (const existing of matchingSessions) {
+          let settled: Promise<void>;
+          do {
+            settled = existing.queue;
+            await awaitTargetQueue(settled, signal);
+          } while (existing.queue !== settled);
+        }
+        checkCancelled(signal);
+        if (this.stopped) throw new MobileUseError("SERVER_STOPPED", "The server is stopped.", "Start a new plugin session.");
+        if (lost || monitorSignal.aborted) {
+          throw new MobileUseError("TRANSPORT_LOST", "The selected transport was interrupted.", "Rediscover and reselect.");
+        }
+        for (const existing of matchingSessions) {
+          this.retire(existing.token, "stale");
         }
         session = {
           token,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
@@ -726,3 +726,408 @@ test("ManagedIosRuntimePool runs multiple USB UDIDs with ephemeral tunnel ports 
   await service.stop();
   assert.equal(wdaExt.state.sessionId, null);
 });
+
+test("pool tunnel-port allocation is atomic across concurrent starts and retains claims until cleanup succeeds", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "mobile-use-ios-port-claims-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const thirdUdid = "00008120-001C25D40C0A0099";
+  const otherEndpoint = `ios:usb:${IOS_OTHER_UDID}`;
+  const thirdEndpoint = `ios:usb:${thirdUdid}`;
+  const [wda1, wda2, wda3] = await Promise.all([createIosFixture(), createIosFixture(), createIosFixture()]);
+  t.after(async () => { await Promise.all([wda1.close(), wda2.close(), wda3.close()]); });
+
+  const connected = new Set<string>([IOS_UDID, IOS_OTHER_UDID, thirdUdid]);
+  const running = new Set<string>();
+  const mounted = new Set<string>();
+  const failTunnelStop = new Set<string>();
+  const assignedPorts: Array<{ udid: string; port: number }> = [];
+  const wdaUrls = new Map<string, string>([
+    [IOS_UDID, wda1.url],
+    [IOS_OTHER_UDID, wda2.url],
+    [thirdUdid, wda3.url],
+  ]);
+
+  const usb: UsbBackend = {
+    async readBuid() { return "fixture-host-buid"; },
+    async readPairRecord(udid) { return Buffer.from(`pair-${udid}`); },
+    async list() { return [...connected].map((udid, index) => ({ udid, deviceId: index + 1 })); },
+    async connect(udid, _port, signal) {
+      if (!connected.has(udid)) throw usbFailure("DEVICE_NOT_FOUND");
+      if (!running.has(udid)) throw usbFailure("WDA_UNAVAILABLE");
+      const targetUrl = wdaUrls.get(udid);
+      assert.ok(targetUrl);
+      return new Promise((resolve, reject) => {
+        const socket = createConnection({
+          host: "127.0.0.1",
+          port: Number(new URL(targetUrl).port),
+          ...(signal ? { signal } : {}),
+        });
+        socket.once("error", reject);
+        socket.once("connect", () => resolve(socket));
+      });
+    },
+  };
+
+  const commands: RuntimeCommands = {
+    async run(_file, args) {
+      if (args[0] === "version") return JSON.stringify({ version: "v1.3.2" });
+      const udid = args[1] ?? "";
+      if (args.includes("info")) return JSON.stringify({ UniqueDeviceID: udid, ProductVersion: "18.5" });
+      if (args.includes("image") && args.includes("list")) {
+        return JSON.stringify(mounted.has(udid)
+          ? { level: "INFO", msg: "image signature", signature: "aabbccdd" }
+          : { level: "INFO", msg: "none" });
+      }
+      if (args.includes("image")) mounted.add(udid);
+      return "";
+    },
+    async start(_file, args) {
+      const udid = args[1] ?? "";
+      const portIndex = args.indexOf("--tunnel-info-port");
+      if (portIndex >= 0 && !args.includes("runwda")) {
+        assignedPorts.push({ udid, port: Number(args[portIndex + 1]) });
+      }
+      const isWda = args.includes("runwda");
+      if (isWda) running.add(udid);
+      let stopped = false;
+      let resolveExited: (() => void) | undefined;
+      const exited = new Promise<void>((resolve) => { resolveExited = resolve; });
+      return {
+        exited,
+        assertRunning() { if (stopped) throw runtimeFailure("IOS_RUNTIME_FAILED"); },
+        async stop() {
+          if (!isWda && failTunnelStop.has(udid)) throw runtimeFailure("IOS_RUNTIME_CLEANUP_FAILED");
+          stopped = true;
+          if (isWda) running.delete(udid);
+          resolveExited?.();
+        },
+      };
+    },
+  };
+
+  // Deliberately return colliding primary & adjacent candidate ports across concurrent starts and failed/cleanup-failed states.
+  const probeSequence = [
+    52000, // Runtime 1 gets [52000, 52001]
+    52000, // Runtime 2 collides with Runtime 1 primary -> rejected
+    52001, // Runtime 2 collides with Runtime 1 derived listener -> rejected
+    51999, // Runtime 2 derived listener (52000) collides with Runtime 1 primary -> rejected
+    52002, // Runtime 2 gets [52002, 52003]
+    52000, // Runtime 3 while Runtime 1 is "failed" (unstopped) -> still rejected!
+    52002, // Runtime 3 while Runtime 2 is "cleanup-failed" -> still rejected!
+    52004, // Runtime 3 gets [52004, 52005]
+    52002, // Restarting Runtime 1 while Runtime 2 is still "cleanup-failed" -> still rejected!
+    52000, // Restarting Runtime 1 after its own clean stop -> now accepted!
+  ];
+  const pool = new ManagedIosRuntimePool(
+    {
+      executable: "fixture-go-ios",
+      bundleId: "example.runner.xctrunner",
+      stateDirectory: directory,
+      devicePort: 8100,
+      tunnelPort: 0,
+    },
+    usb,
+    commands,
+    {
+      platform: "win32",
+      tunnelCheck: async () => {},
+      readinessTimeoutMs: 1000,
+      pollMs: 5,
+      stopTimeoutMs: 50,
+      portProber: async () => {
+        const next = probeSequence.shift();
+        assert.ok(next !== undefined, "unexpected extra port probe");
+        return next;
+      },
+    },
+  );
+
+  const [start1, start2] = await Promise.all([
+    pool.control({ kind: "start", endpointId: IOS_ENDPOINT, installRunner: false }),
+    pool.control({ kind: "start", endpointId: otherEndpoint, installRunner: false }),
+  ]);
+  assert.ok(start1.runtimeToken && start2.runtimeToken);
+
+  for (const endpointId of [IOS_ENDPOINT, otherEndpoint]) {
+    for (let i = 0; i < 200; i++) {
+      if (pool.status({ endpointId }).state === "awaiting-developer-trust") break;
+      await delay(5);
+    }
+  }
+  assert.equal(assignedPorts.find((entry) => entry.udid === IOS_UDID)?.port, 52000);
+  assert.equal(assignedPorts.find((entry) => entry.udid === IOS_OTHER_UDID)?.port, 52002);
+
+  await pool.control({ kind: "confirm_trust", runtimeToken: start1.runtimeToken });
+  for (let i = 0; i < 200; i++) {
+    if (pool.status({ endpointId: IOS_ENDPOINT }).state === "ready") break;
+    await delay(5);
+  }
+
+  // Transition Runtime 1 to "failed" via USB disconnect (before cleanup runs) and Runtime 2 to "cleanup-failed".
+  connected.delete(IOS_UDID);
+  await pool.devices();
+  assert.equal(pool.status({ endpointId: IOS_ENDPOINT }).state, "failed");
+
+  failTunnelStop.add(IOS_OTHER_UDID);
+  await assert.rejects(pool.control({ kind: "stop", runtimeToken: start2.runtimeToken }), { code: "IOS_RUNTIME_CLEANUP_FAILED" });
+  assert.equal(pool.status({ endpointId: otherEndpoint }).state, "cleanup-failed");
+
+  // Starting Runtime 3 must still reject both [52000, 52001] (failed, not yet cleaned) and [52002, 52003] (cleanup-failed).
+  const start3 = await pool.control({ kind: "start", endpointId: thirdEndpoint, installRunner: false });
+  assert.ok(start3.runtimeToken);
+  for (let i = 0; i < 200; i++) {
+    if (pool.status({ endpointId: thirdEndpoint }).state === "awaiting-developer-trust") break;
+    await delay(5);
+  }
+  assert.equal(assignedPorts.find((entry) => entry.udid === thirdUdid)?.port, 52004);
+
+  // Cleanly stop Runtime 1 (releasing [52000, 52001]), reconnect USB 1, and confirm [52000, 52001] can now be reused while [52002, 52003] stays claimed.
+  connected.add(IOS_UDID);
+  await pool.control({ kind: "stop", runtimeToken: start1.runtimeToken });
+  assert.equal(pool.status({ endpointId: IOS_ENDPOINT }).state, "stopped");
+
+  assignedPorts.length = 0;
+  const restart1 = await pool.control({ kind: "start", endpointId: IOS_ENDPOINT, installRunner: false });
+  assert.ok(restart1.runtimeToken);
+  for (let i = 0; i < 200; i++) {
+    if (pool.status({ endpointId: IOS_ENDPOINT }).state === "awaiting-developer-trust") break;
+    await delay(5);
+  }
+  assert.equal(assignedPorts.find((entry) => entry.udid === IOS_UDID)?.port, 52000);
+  assert.equal(probeSequence.length, 0);
+
+  failTunnelStop.clear();
+  await pool.control({ kind: "stop", runtimeToken: restart1.runtimeToken });
+  await pool.control({ kind: "stop", runtimeToken: start3.runtimeToken });
+});
+
+test("runtime stop aborts and drains active and newly published targets and leaves them TARGET_NOT_SELECTED", async (t) => {
+  const f = await runtimeFixture(t);
+  const readyStatus = await f.ready();
+  assert.ok(readyStatus.runtimeToken);
+
+  // Part 1: Drain an already in-flight target operation before DELETE /session runs.
+  const activeSelected = await f.service.selectDevice(IOS_ENDPOINT);
+  let notifySource: (() => void) | undefined;
+  const sourceEntered = new Promise<void>((resolve) => { notifySource = resolve; });
+  let releaseSource: (() => void) | undefined;
+  const sourceGate = new Promise<void>((resolve) => { releaseSource = resolve; });
+  f.http.state.sourceHook = async () => {
+    notifySource?.();
+    await sourceGate;
+  };
+
+  let deleteSentBeforeObserveSettled = true;
+  const activeObserve = f.service.observe(activeSelected.targetToken, undefined, false).catch((error: unknown) => {
+    deleteSentBeforeObserveSettled = f.http.calls.some((call) => call.method === "DELETE");
+    throw error;
+  });
+  await sourceEntered;
+  assert.ok(f.service.iosRuntime);
+  const firstStop = f.service.iosRuntime({ kind: "stop", runtimeToken: readyStatus.runtimeToken });
+  await assert.rejects(activeObserve, (error: unknown) =>
+    error instanceof MobileUseError && ["CANCELLED", "TRANSPORT_LOST"].includes(error.code));
+  assert.equal(deleteSentBeforeObserveSettled, false, "DELETE /session must wait for in-flight target work to settle");
+  f.http.state.sourceHook = undefined;
+  releaseSource?.();
+  assert.equal((await firstStop).state, "stopped");
+  assert.equal(f.http.calls.some((call) => call.method === "DELETE"), true);
+  assert.equal(f.http.state.sessionId, null);
+  await assert.rejects(f.service.observe(activeSelected.targetToken, undefined, false), { code: "TARGET_NOT_SELECTED" });
+
+  // Part 2: Recollect and clean up a target published by an in-flight selectDevice queued ahead of stop on hostQueue.
+  const restarted = await f.ready();
+  assert.ok(restarted.runtimeToken);
+  let notifyCreate: (() => void) | undefined;
+  const createEntered = new Promise<void>((resolve) => { notifyCreate = resolve; });
+  let releaseCreate: (() => void) | undefined;
+  const createGate = new Promise<void>((resolve) => { releaseCreate = resolve; });
+  f.http.state.sessionCreateHook = async () => {
+    notifyCreate?.();
+    await createGate;
+  };
+
+  const selectPromise = f.service.selectDevice(IOS_ENDPOINT);
+  await createEntered;
+
+  // Queue stop while selectDevice is still in flight on hostQueue (before any target is in targets).
+  const stopPromise = f.service.iosRuntime({ kind: "stop", runtimeToken: restarted.runtimeToken });
+
+  let inFlightObserve: Promise<unknown> | undefined;
+  const selectedPromise = selectPromise.then((selected) => {
+    inFlightObserve = f.service.observe(selected.targetToken, undefined, false);
+    return selected;
+  });
+
+  f.http.state.sessionCreateHook = undefined;
+  releaseCreate?.();
+  const selected = await selectedPromise;
+
+  await assert.rejects(inFlightObserve!, (error: unknown) =>
+    error instanceof MobileUseError && ["CANCELLED", "TRANSPORT_LOST", "TARGET_NOT_SELECTED"].includes(error.code));
+  const stopped = await stopPromise;
+  assert.equal(stopped.state, "stopped");
+  assert.equal(f.http.state.sessionId, null);
+  await assert.rejects(f.service.observe(selected.targetToken, undefined, false), { code: "TARGET_NOT_SELECTED" });
+});
+
+test("coexistence mode validates managed prerequisites in doctor, isolates listDevices failures, and scopes shutdown cleanup errors", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "mobile-use-ios-coexistence-isolation-"));
+  const [wdaUsb, wdaExt] = await Promise.all([createIosFixture(), createIosFixture()]);
+  wdaUsb.state.uuid = "11111111-1111-4111-8111-111111111111";
+  wdaExt.state.uuid = "33333333-3333-4333-8333-333333333333";
+  const extEndpoint = `ios:${new URL(wdaExt.url).host}`;
+
+  t.after(async () => {
+    await Promise.all([wdaUsb.close(), wdaExt.close()]);
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  // 1. Coexistence doctor() still fails with IOS_RUNTIME_CONFIG_INVALID when Runner bundle ID is missing even if external WDA is reachable.
+  const unconfiguredCoexisting = createMobileService({
+    MOBILE_USE_PLATFORM: "ios",
+    MOBILE_USE_IOS_RUNTIME: "managed",
+    MOBILE_USE_WDA_URL: wdaExt.url,
+  });
+  await assert.rejects(unconfiguredCoexisting.doctor(), { code: "IOS_RUNTIME_CONFIG_INVALID" });
+
+  let usbListFails = false;
+  let goIosInvalid = false;
+  const connected = new Set<string>([IOS_UDID]);
+  const running = new Set<string>();
+  const mounted = new Set<string>();
+
+  const usb: UsbBackend = {
+    async readBuid() { return "fixture-host-buid"; },
+    async readPairRecord(udid) { return Buffer.from(`pair-${udid}`); },
+    async list() {
+      if (usbListFails) throw usbFailure("IOS_USB_UNAVAILABLE");
+      return [...connected].map((udid, index) => ({ udid, deviceId: index + 1 }));
+    },
+    async connect(udid, _port, signal) {
+      if (!connected.has(udid)) throw usbFailure("DEVICE_NOT_FOUND");
+      if (!running.has(udid)) throw usbFailure("WDA_UNAVAILABLE");
+      return new Promise((resolve, reject) => {
+        const socket = createConnection({
+          host: "127.0.0.1",
+          port: Number(new URL(wdaUsb.url).port),
+          ...(signal ? { signal } : {}),
+        });
+        socket.once("error", reject);
+        socket.once("connect", () => resolve(socket));
+      });
+    },
+  };
+
+  const commands: RuntimeCommands = {
+    async run(_file, args) {
+      if (args[0] === "version") {
+        return JSON.stringify({ version: goIosInvalid ? "v1.0.0" : "v1.3.2" });
+      }
+      const udid = args[1] ?? "";
+      if (args.includes("info")) return JSON.stringify({ UniqueDeviceID: udid, ProductVersion: "18.5" });
+      if (args.includes("image") && args.includes("list")) {
+        return JSON.stringify(mounted.has(udid)
+          ? { level: "INFO", msg: "image signature", signature: "aabbccdd" }
+          : { level: "INFO", msg: "none" });
+      }
+      if (args.includes("image")) mounted.add(udid);
+      return "";
+    },
+    async start(_file, args) {
+      const udid = args[1] ?? "";
+      const isWda = args.includes("runwda");
+      if (isWda) running.add(udid);
+      let stopped = false;
+      let resolveExited: (() => void) | undefined;
+      const exited = new Promise<void>((resolve) => { resolveExited = resolve; });
+      return {
+        exited,
+        assertRunning() { if (stopped) throw runtimeFailure("IOS_RUNTIME_FAILED"); },
+        async stop() {
+          stopped = true;
+          if (isWda) running.delete(udid);
+          resolveExited?.();
+        },
+      };
+    },
+  };
+
+  const pool = new ManagedIosRuntimePool(
+    {
+      executable: "fixture-go-ios",
+      bundleId: "example.runner.xctrunner",
+      stateDirectory: directory,
+      devicePort: 8100,
+      tunnelPort: 0,
+    },
+    usb,
+    commands,
+    { platform: "win32", tunnelCheck: async () => {}, readinessTimeoutMs: 1000, pollMs: 5, stopTimeoutMs: 50 },
+  );
+  const service = new IosMobileUseService(wdaExt.url, Date.now, pool);
+
+  // Unsupported go-ios fails doctor() even when external WDA is healthy.
+  goIosInvalid = true;
+  await assert.rejects(service.doctor(), { code: "IOS_RUNTIME_CONFIG_INVALID" });
+  goIosInvalid = false;
+  const healthyDoctor = await service.doctor();
+  assert.equal(healthyDoctor.status, "ready");
+
+  assert.ok(service.iosRuntime);
+  const prep = await service.iosRuntime({ kind: "start", endpointId: IOS_ENDPOINT, installRunner: false });
+  assert.ok(prep.runtimeToken);
+  for (let i = 0; i < 200; i++) {
+    if ((await service.iosRuntime({ kind: "status", endpointId: IOS_ENDPOINT })).state === "awaiting-developer-trust") break;
+    await delay(5);
+  }
+  await service.iosRuntime({ kind: "confirm_trust", runtimeToken: prep.runtimeToken });
+  for (let i = 0; i < 200; i++) {
+    if ((await service.iosRuntime({ kind: "status", endpointId: IOS_ENDPOINT })).state === "ready") break;
+    await delay(5);
+  }
+
+  // 2a. External WDA probe failure does not discard healthy USB endpoints in listDevices().
+  wdaExt.state.simulator = true;
+  const withFailedExt = await service.listDevices();
+  assert.deepEqual(
+    withFailedExt.map((entry) => ({ id: entry.endpointId, selectable: entry.selectable, state: entry.state })),
+    [
+      { id: IOS_ENDPOINT, selectable: true, state: "device" },
+      { id: extEndpoint, selectable: false, state: "offline" },
+    ],
+  );
+  wdaExt.state.simulator = false;
+
+  // 2b. Managed USB endpoint probe failure or USB enumeration failure does not block healthy external WDA discovery.
+  wdaUsb.state.simulator = true;
+  const withFailedUsbProbe = await service.listDevices();
+  assert.deepEqual(
+    withFailedUsbProbe.map((entry) => ({ id: entry.endpointId, selectable: entry.selectable, state: entry.state })),
+    [
+      { id: IOS_ENDPOINT, selectable: false, state: "offline" },
+      { id: extEndpoint, selectable: true, state: "device" },
+    ],
+  );
+  wdaUsb.state.simulator = false;
+
+  usbListFails = true;
+  const withFailedUsbList = await service.listDevices();
+  assert.deepEqual(
+    withFailedUsbList.map((entry) => ({ id: entry.endpointId, selectable: entry.selectable })),
+    [{ id: extEndpoint, selectable: true }],
+  );
+  usbListFails = false;
+
+  // 3. Selecting both USB and external WDA, then failing ONLY external WDA session DELETE on stop(), still cleanly stops USB and removes its UDID lock.
+  await service.selectDevice(IOS_ENDPOINT);
+  await service.selectDevice(extEndpoint);
+  const lockFile = join(directory, "locks", `${IOS_UDID}.lock`);
+  await stat(lockFile);
+
+  wdaExt.state.failSessionDelete = true;
+  await assert.rejects(service.stop(), { code: "WDA_COMMAND_FAILED" });
+  assert.equal(pool.status({ endpointId: IOS_ENDPOINT }).state, "stopped");
+  await assert.rejects(stat(lockFile), { code: "ENOENT" });
+});
+

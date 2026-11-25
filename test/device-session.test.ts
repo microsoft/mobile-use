@@ -1376,3 +1376,117 @@ test("physical-device deduplication retires only a re-selected phone across USB 
   await service.startAdbServer();
   await assert.rejects(service.observe(selectedB.targetToken), hasCode("TRANSPORT_LOST"));
 });
+
+test("startAdbServer drains in-flight target operations and fences concurrent target calls across daemon startup", async (t) => {
+  const { adb, service } = harness(t);
+  const { selected, screen } = await ready(service);
+
+  let enteredKeyevent = false;
+  let notifyEnteredKeyevent: (() => void) | undefined;
+  const keyeventEntered = new Promise<void>((resolve) => {
+    notifyEnteredKeyevent = resolve;
+  });
+  let releaseKeyevent: (() => void) | undefined;
+  const keyeventGate = new Promise<void>((resolve) => {
+    releaseKeyevent = resolve;
+  });
+
+  adb.handler = async (call) => {
+    if (call.args.includes("keyevent")) {
+      enteredKeyevent = true;
+      notifyEnteredKeyevent?.();
+      await keyeventGate;
+    }
+    return undefined;
+  };
+
+  const actPromise = service.act(selected.targetToken, screen.observation.observationId, { kind: "key", key: "HOME" });
+  await keyeventEntered;
+  assert.equal(enteredKeyevent, true);
+
+  adb.startupAttempted = true;
+  const startupPromise = service.startAdbServer();
+  const fencedObserve = service.observe(selected.targetToken);
+  await Promise.resolve();
+  assert.equal(adb.startServerCalls, 0, "ADB server startup must wait for in-flight target work to drain");
+
+  let callsAtDaemonStart = -1;
+  adb.startServerHandler = async () => {
+    callsAtDaemonStart = adb.calls.length;
+    return {
+      status: "ready",
+      serverAddress: "127.0.0.1:5037",
+      startupAttempted: true,
+      devices: [],
+    };
+  };
+
+  const callsBeforeRelease = adb.calls.length;
+  releaseKeyevent?.();
+  const actResult = await actPromise;
+  assert.equal(actResult.dispatchStatus, "dispatched");
+  const startupResult = await startupPromise;
+  assert.equal(startupResult.startupAttempted, true);
+  assert.equal(adb.startServerCalls, 1);
+
+  await assert.rejects(fencedObserve, hasCode("TRANSPORT_LOST"));
+  // In-flight act's post-dispatch verification capture finished BEFORE startServer ran; fencedObserve ran zero ADB calls after.
+  assert.ok(callsAtDaemonStart > callsBeforeRelease);
+  assert.equal(adb.calls.length, callsAtDaemonStart);
+});
+
+test("USB-to-Wi-Fi reselection preserves the healthy USB session if Wi-Fi disconnects while draining the USB queue", async (t) => {
+  const { adb, monitors, service } = harness(t);
+  const selectedUsb = await service.selectDevice(USB);
+  const usbMonitor = monitors.sessions[0]!;
+
+  let notifyUsbObserve: (() => void) | undefined;
+  const usbObserveEntered = new Promise<void>((resolve) => {
+    notifyUsbObserve = resolve;
+  });
+  let releaseUsbObserve: (() => void) | undefined;
+  const usbObserveGate = new Promise<void>((resolve) => {
+    releaseUsbObserve = resolve;
+  });
+
+  let notifyWifiIdentity: (() => void) | undefined;
+  const wifiIdentityDone = new Promise<void>((resolve) => {
+    notifyWifiIdentity = resolve;
+  });
+
+  adb.handler = async (call) => {
+    if (call.args[0] === "-t" && call.args[1] === "7" && call.args.includes("screencap") && notifyUsbObserve) {
+      const notify = notifyUsbObserve;
+      notifyUsbObserve = undefined;
+      notify();
+      await usbObserveGate;
+    }
+    if (call.args[0] === "-t" && call.args[1] === "12" && call.args.includes("persist.adb.tls_server.enable")) {
+      setImmediate(() => notifyWifiIdentity?.());
+    }
+    return undefined;
+  };
+
+  const inFlightUsbObserve = service.observe(selectedUsb.targetToken);
+  await usbObserveEntered;
+
+  const wifiSelection = service.selectDevice(WIFI);
+  await wifiIdentityDone;
+  assert.equal(monitors.sessions.length, 2);
+  const wifiMonitor = monitors.sessions[1]!;
+
+  // Wi-Fi drops while selectDevice(WIFI) is waiting on the healthy USB session's queue.
+  adb.inventory = `List of devices attached\n${USB_LINE}\n`;
+  wifiMonitor.onInventory([]);
+
+  releaseUsbObserve?.();
+  const usbScreen = await inFlightUsbObserve;
+  assert.equal(usbScreen.observation.targetToken, selectedUsb.targetToken);
+  await assert.rejects(wifiSelection, hasCode("TRANSPORT_LOST"));
+  assert.equal(wifiMonitor.closed, true);
+  assert.equal(usbMonitor.closed, false, "failed Wi-Fi reselection must not retire the healthy USB session");
+
+  const nextUsbScreen = await service.observe(selectedUsb.targetToken);
+  assert.equal(nextUsbScreen.observation.targetToken, selectedUsb.targetToken);
+});
+

@@ -286,14 +286,14 @@ export class IosMobileUseService implements MobileService {
 
   doctor(signal?: AbortSignal): Promise<IosDoctor> {
     return this.serializeHost(async () => {
+      const goIosVersion = this.runtime ? await this.runtime.prerequisites(signal) : undefined;
       if (this.runtime && this.configuredUrl === undefined) {
-        const goIosVersion = await this.runtime.prerequisites(signal);
         const ready = this.readyRuntimeBindings();
         if (ready.length === 0) {
           return {
             status: "runtime-not-ready" as const,
             platform: "ios" as const,
-            goIosVersion,
+            goIosVersion: goIosVersion!,
             runtime: this.runtime.status(),
           };
         }
@@ -314,56 +314,143 @@ export class IosMobileUseService implements MobileService {
       const ready = this.readyRuntimeBindings();
       if (this.runtime && ready[0]) await this.runtime.verify(ready[0].token, signal);
       const probe = await client.probe(signal);
-      let runtimeStatus: IosRuntimeStatus | undefined;
-      if (this.runtime) {
-        try { runtimeStatus = this.runtime.status(); } catch { runtimeStatus = undefined; }
-      }
       return {
         status: "ready" as const,
         platform: "ios" as const,
         wdaUrl: client.url,
         iosVersion: probe.iosVersion,
         model: probe.model,
-        ...(runtimeStatus ? { runtime: runtimeStatus } : {}),
+        ...(this.runtime ? { runtime: this.runtime.status() } : {}),
       };
     }, signal);
+  }
+
+  private isCancellationOrShutdown(error: unknown, signal?: AbortSignal): boolean {
+    if (this.stopped || signal?.aborted) return true;
+    return error instanceof MobileUseError && (error.code === "CANCELLED" || error.code === "SERVER_STOPPED");
   }
 
   listDevices(signal?: AbortSignal): Promise<DeviceEndpoint[]> {
     return this.serializeHost(async () => {
       const results: DeviceEndpoint[] = [];
+      let usbDiscoveryError: unknown;
       if (this.runtime) {
-        const usbDevices = await this.runtime.devices(signal);
-        const connectedEndpoints = new Set(usbDevices.map((entry) => entry.endpointId));
-        for (const session of [...this.targets.values()]) {
-          if (session.udid && !connectedEndpoints.has(session.endpointId)) {
-            this.retireTarget(session.token, "lost", true);
+        let usbDevices: DeviceEndpoint[] | undefined;
+        try {
+          usbDevices = await this.runtime.devices(signal);
+        } catch (error) {
+          if (this.isCancellationOrShutdown(error, signal)) throw error;
+          for (const session of [...this.targets.values()]) {
+            if (session.udid) this.retireTarget(session.token, "lost", true);
           }
+          if (this.configuredUrl === undefined) throw error;
+          usbDiscoveryError = error;
         }
-        const bindingsByEndpoint = new Map<string, RuntimeBinding>(
-          this.readyRuntimeBindings().map((binding) => [`ios:usb:${binding.udid}`, binding] as const),
-        );
-        for (const entry of usbDevices) {
-          const binding = bindingsByEndpoint.get(entry.endpointId);
-          if (!binding) {
-            results.push(entry);
-            continue;
+        if (usbDevices) {
+          const connectedEndpoints = new Set(usbDevices.map((entry) => entry.endpointId));
+          for (const session of [...this.targets.values()]) {
+            if (session.udid && !connectedEndpoints.has(session.endpointId)) {
+              this.retireTarget(session.token, "lost", true);
+            }
           }
-          const client = this.clientForUrl(binding.url);
-          const probe = await client.probe(signal);
-          this.reconcileTargetProbe(entry.endpointId, probe);
-          results.push(this.buildEndpoint(probe, client.url, binding));
+          const bindingsByEndpoint = new Map<string, RuntimeBinding>(
+            this.readyRuntimeBindings().map((binding) => [`ios:usb:${binding.udid}`, binding] as const),
+          );
+          for (const entry of usbDevices) {
+            const binding = bindingsByEndpoint.get(entry.endpointId);
+            if (!binding) {
+              results.push(entry);
+              continue;
+            }
+            try {
+              await this.runtime.verify(binding.token, signal);
+              const client = this.clientForUrl(binding.url);
+              const probe = await client.probe(signal);
+              this.reconcileTargetProbe(entry.endpointId, probe);
+              results.push(this.buildEndpoint(probe, client.url, binding));
+            } catch (error) {
+              if (this.isCancellationOrShutdown(error, signal)) throw error;
+              for (const session of [...this.targets.values()]) {
+                if (session.endpointId === entry.endpointId) {
+                  this.retireTarget(session.token, "lost", true);
+                }
+              }
+              results.push({
+                ...entry,
+                state: "offline",
+                model: null,
+                selectable: false,
+                reason: publicError(error).message,
+              });
+            }
+          }
         }
       }
-      if (!this.runtime || this.configuredUrl !== undefined) {
+      if (!this.runtime) {
         const client = this.externalClient();
         const endpointId = `ios:${new URL(client.url).host}`;
-        const probe = await client.probe(signal);
-        this.reconcileTargetProbe(endpointId, probe);
-        results.push(this.buildEndpoint(probe, client.url));
+        try {
+          const probe = await client.probe(signal);
+          this.reconcileTargetProbe(endpointId, probe);
+          results.push(this.buildEndpoint(probe, client.url));
+        } catch (error) {
+          if (!this.isCancellationOrShutdown(error, signal)) {
+            for (const session of [...this.targets.values()]) {
+              if (session.endpointId === endpointId) {
+                this.retireTarget(session.token, "lost", true);
+              }
+            }
+          }
+          throw error;
+        }
+      } else if (this.configuredUrl !== undefined) {
+        let client: WdaClient | undefined;
+        try {
+          client = this.externalClient();
+        } catch (error) {
+          if (this.isCancellationOrShutdown(error, signal) || usbDiscoveryError !== undefined || results.length === 0) {
+            throw error;
+          }
+          results.push({
+            platform: "ios",
+            endpointId: "ios:external",
+            transportId: null,
+            kind: "unknown",
+            state: "offline",
+            model: null,
+            selectable: false,
+            reason: publicError(error).message,
+          });
+        }
+        if (client) {
+          const endpointId = `ios:${new URL(client.url).host}`;
+          try {
+            const probe = await client.probe(signal);
+            this.reconcileTargetProbe(endpointId, probe);
+            results.push(this.buildEndpoint(probe, client.url));
+          } catch (error) {
+            if (this.isCancellationOrShutdown(error, signal)) throw error;
+            for (const session of [...this.targets.values()]) {
+              if (session.endpointId === endpointId) {
+                this.retireTarget(session.token, "lost", true);
+              }
+            }
+            if (usbDiscoveryError !== undefined) throw error;
+            results.push({
+              platform: "ios",
+              endpointId,
+              transportId: null,
+              kind: "unknown",
+              state: "offline",
+              model: null,
+              selectable: false,
+              reason: publicError(error).message,
+            });
+          }
+        }
       }
       return results;
-     }, signal);
+    }, signal);
   }
 
   selectDevice(endpointId: string, request?: AbortSignal): Promise<IosSelectedTarget> {
@@ -795,8 +882,28 @@ export class IosMobileUseService implements MobileService {
     }
     return this.serializeHost(async () => {
       if (action.kind === "stop") {
-        const stopTokens = new Set(matchingStopTargets.map((session) => session.token));
-        await Promise.all(matchingStopTargets.map((session) => session.queue));
+        const stopTargets = new Map<string, IosTargetSession>(
+          matchingStopTargets.map((session) => [session.token, session]),
+        );
+        for (const session of this.targets.values()) {
+          if (session.runtimeToken === action.runtimeToken) {
+            stopTargets.set(session.token, session);
+          }
+        }
+        for (const session of stopTargets.values()) {
+          this.targets.delete(session.token);
+          this.retiredTokens.delete(session.token);
+          session.snapshot = undefined;
+          session.controller.abort();
+        }
+        for (const session of stopTargets.values()) {
+          let settled: Promise<void>;
+          do {
+            settled = session.queue;
+            await settled;
+          } while (session.queue !== settled);
+          this.retiredTokens.delete(session.token);
+        }
         const errors: unknown[] = [];
         for (const owned of [...this.ownedSessions.values()]) {
           if (owned.runtimeToken !== action.runtimeToken) continue;
@@ -805,7 +912,7 @@ export class IosMobileUseService implements MobileService {
         let status: IosRuntimeStatus | undefined;
         // Once stop invalidates the target, finish cleanup even if the request is cancelled.
         try { status = await runtime.control(action, undefined, errors.length > 0); } catch (error) { errors.push(error); }
-        for (const token of stopTokens) {
+        for (const token of stopTargets.keys()) {
           const session = this.targets.get(token);
           if (session) {
             this.targets.delete(token);
@@ -835,23 +942,24 @@ export class IosMobileUseService implements MobileService {
       session.snapshot = undefined;
     }
     this.closing ??= (async () => {
-      await Promise.all([this.hostQueue, ...[...this.targets.values()].map((session) => session.queue)]);
+      await this.hostQueue;
+      for (const session of this.targets.values()) {
+        session.controller.abort();
+        session.snapshot = undefined;
+      }
+      await Promise.all([...this.targets.values()].map((session) => session.queue));
       this.targets.clear();
       const errors: unknown[] = [];
       const failedRuntimeTokens = new Set<string>();
-      let nonRuntimeReleaseFailed = false;
       for (const owned of [...this.ownedSessions.values()]) {
         try {
           await this.releaseOwnedSessionEntry(owned);
         } catch (error) {
           errors.push(error);
           if (owned.runtimeToken) failedRuntimeTokens.add(owned.runtimeToken);
-          else nonRuntimeReleaseFailed = true;
         }
       }
-      const priorCleanupFailed: boolean | ReadonlySet<string> = nonRuntimeReleaseFailed
-        ? true
-        : (failedRuntimeTokens.size > 0 ? failedRuntimeTokens : false);
+      const priorCleanupFailed: boolean | ReadonlySet<string> = failedRuntimeTokens.size > 0 ? failedRuntimeTokens : false;
       try { await this.runtime?.close(priorCleanupFailed); } catch (error) { errors.push(error); }
       this.clients.clear();
       if (errors.length) throw publicError(errors[errors.length - 1]);
