@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createConnection, createServer } from "node:net";
 import type { Socket } from "node:net";
 import path from "node:path";
 import test from "node:test";
 import type { TestContext } from "node:test";
-import { AdbClient, AdbTrackParser, createTransportMonitor, executeCommand, parseDeviceList, resolveAdbExecutable } from "../src/adb.js";
-import type { CommandOptions, TransportMonitor } from "../src/adb.js";
+import { AdbClient, adbEnvironment, AdbTrackParser, createTransportMonitor, executeCommand, parseDeviceList, resolveAdbExecutable } from "../src/adb.js";
+import type { AdbFileSystem, CommandOptions, TransportMonitor } from "../src/adb.js";
 import { LocalAdbServer } from "../src/adb-server.js";
 import { MobileUseError } from "../src/errors.js";
 import type { DeviceEndpoint } from "../src/types.js";
@@ -80,42 +80,464 @@ async function executableFixture(t: TestContext) {
   await mkdir(base, { recursive: true });
   const directory = await mkdtemp(path.join(base, "adb lookup "));
   t.after(() => rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }));
+  const binaryName = process.platform === "win32" ? "adb.exe" : "adb";
   const sdk = path.join(directory, "Android SDK");
   const tools = path.join(sdk, "platform-tools");
   await mkdir(tools, { recursive: true });
-  const executable = path.join(tools, "adb.exe");
-  await writeFile(executable, "not executable; lookup fixture only");
-  return { directory, sdk, tools, executable };
+  const executable = path.join(tools, binaryName);
+  await writeFile(executable, "not executable; lookup fixture only", { mode: 0o755 });
+  if (process.platform !== "win32") await chmod(executable, 0o755);
+  return { directory, sdk, tools, executable, binaryName };
 }
 
-test("Windows executable lookup respects explicit, SDK, and quoted PATH entries without cwd fallback", async (t) => {
-  const { directory, sdk, tools, executable } = await executableFixture(t);
-  assert.equal(resolveAdbExecutable({ MOBILE_USE_ADB_PATH: executable }, "win32"), executable);
-  assert.equal(resolveAdbExecutable({ ANDROID_HOME: sdk }, "win32"), executable);
-  assert.equal(resolveAdbExecutable({ ANDROID_SDK_ROOT: sdk }, "win32"), executable);
-  assert.equal(resolveAdbExecutable({ LOCALAPPDATA: directory, ANDROID_HOME: sdk }, "win32"), executable);
-  assert.equal(resolveAdbExecutable({ PATH: `"${tools}"` }, "win32"), executable);
-  assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: ".\\adb.exe" }, "win32"), hasCode("ADB_CONFIG_UNSUPPORTED"));
-  assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: path.join(directory, "adb.cmd") }, "win32"), hasCode("ADB_CONFIG_UNSUPPORTED"));
-  assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: path.join(directory, "missing.exe") }, "win32"), hasCode("ADB_NOT_FOUND"));
-  assert.throws(() => resolveAdbExecutable({ PATH: "." }, "win32"), hasCode("ADB_NOT_FOUND"));
-  assert.throws(() => resolveAdbExecutable({ ANDROID_HOME: ".", ANDROID_SDK_ROOT: "." }, "win32"), hasCode("ADB_NOT_FOUND"));
-  assert.throws(() => resolveAdbExecutable({}, "linux"), hasCode("UNSUPPORTED_HOST"));
+function studioSdkXml(sdkPath: string, optionName = "androidSdkAbsolutePath"): string {
+  const escaped = sdkPath.replaceAll("&", "&amp;").replaceAll("\"", "&quot;").replaceAll("<", "&lt;");
+  return `<application>\n  <component name="AndroidSdkPathStore">\n    <option name="${optionName}" value="${escaped}" />\n  </component>\n</application>\n`;
+}
+
+function virtualWindowsFs(entries: {
+  files?: Record<string, string>;
+  directories?: readonly string[];
+}): AdbFileSystem {
+  const winKey = (targetPath: string): string => {
+    const normalized = path.win32.normalize(targetPath).toLowerCase();
+    return /^[a-z]:\\$/.test(normalized) ? normalized : normalized.replace(/\\+$/, "");
+  };
+  const files = new Map<string, string>();
+  const directories = new Set<string>();
+  const children = new Map<string, Map<string, string>>();
+  const addDirectory = (directoryPath: string): void => {
+    let current = path.win32.normalize(directoryPath);
+    if (!/^[A-Za-z]:\\$/.test(current)) current = current.replace(/\\+$/, "");
+    while (current) {
+      directories.add(winKey(current));
+      const parent = path.win32.dirname(current);
+      if (parent === current) break;
+      const base = path.win32.basename(current);
+      const parentKey = winKey(parent);
+      let map = children.get(parentKey);
+      if (!map) {
+        map = new Map<string, string>();
+        children.set(parentKey, map);
+      }
+      if (!map.has(base.toLowerCase())) map.set(base.toLowerCase(), base);
+      current = parent;
+    }
+  };
+  for (const directoryPath of entries.directories ?? []) addDirectory(directoryPath);
+  for (const [filePath, content] of Object.entries(entries.files ?? {})) {
+    files.set(winKey(filePath), content);
+    addDirectory(path.win32.dirname(filePath));
+  }
+  return {
+    exists: (targetPath) => files.has(winKey(targetPath)) || directories.has(winKey(targetPath)),
+    isFile: (targetPath) => files.has(winKey(targetPath)),
+    isExecutable: (targetPath) => files.has(winKey(targetPath)),
+    listDirectories: (directoryPath) => [...(children.get(winKey(directoryPath))?.values() ?? [])],
+    readTextFile: (filePath, maxBytes) => {
+      const content = files.get(winKey(filePath));
+      if (content === undefined || content.length < 1 || Buffer.byteLength(content) > maxBytes) return undefined;
+      return content;
+    },
+  };
+}
+
+function virtualPosixFs(entries: {
+  files?: Record<string, string>;
+  nonExecutableFiles?: Record<string, string>;
+  directories?: Record<string, readonly string[]>;
+  brokenEntries?: readonly string[];
+}): AdbFileSystem {
+  const executableFiles = new Map(Object.entries(entries.files ?? {}));
+  const nonExecutable = new Map(Object.entries(entries.nonExecutableFiles ?? {}));
+  const directories = new Map(Object.entries(entries.directories ?? {}));
+  const broken = new Set(entries.brokenEntries ?? []);
+  return {
+    exists: (targetPath) =>
+      executableFiles.has(targetPath) || nonExecutable.has(targetPath) ||
+      broken.has(targetPath) || directories.has(targetPath),
+    isFile: (targetPath) => executableFiles.has(targetPath) || nonExecutable.has(targetPath),
+    isExecutable: (targetPath) => executableFiles.has(targetPath),
+    listDirectories: (directoryPath) => [...(directories.get(directoryPath) ?? [])],
+    readTextFile: (filePath, maxBytes) => {
+      const content = executableFiles.get(filePath) ?? nonExecutable.get(filePath);
+      if (content === undefined || content.length < 1 || Buffer.byteLength(content) > maxBytes) return undefined;
+      return content;
+    },
+  };
+}
+
+test("Windows executable lookup respects explicit, SDK, and quoted PATH entries without cwd fallback", () => {
+  const directory = "C:\\Users\\alice\\fixture";
+  const sdk = "C:\\Users\\alice\\fixture\\Android SDK";
+  const tools = "C:\\Users\\alice\\fixture\\Android SDK\\platform-tools";
+  const executable = "C:\\Users\\alice\\fixture\\Android SDK\\platform-tools\\adb.exe";
+  const fs = virtualWindowsFs({ files: { [executable]: "pe" } });
+  assert.equal(resolveAdbExecutable({ MOBILE_USE_ADB_PATH: executable }, "win32", fs), executable);
+  assert.equal(resolveAdbExecutable({ ANDROID_HOME: sdk }, "win32", fs), executable);
+  assert.equal(resolveAdbExecutable({ ANDROID_SDK_ROOT: sdk }, "win32", fs), executable);
+  assert.equal(resolveAdbExecutable({ LOCALAPPDATA: directory, ANDROID_HOME: sdk }, "win32", fs), executable);
+  assert.equal(resolveAdbExecutable({ PATH: `"${tools}"` }, "win32", fs), executable);
+  assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: ".\\adb.exe" }, "win32", fs), hasCode("ADB_CONFIG_UNSUPPORTED"));
+  assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: "\\platform-tools\\adb.exe" }, "win32", fs), hasCode("ADB_CONFIG_UNSUPPORTED"));
+  assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: "/platform-tools/adb.exe" }, "win32", fs), hasCode("ADB_CONFIG_UNSUPPORTED"));
+  assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: `${directory}\\adb.cmd` }, "win32", fs), hasCode("ADB_CONFIG_UNSUPPORTED"));
+  assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: `${directory}\\missing.exe` }, "win32", fs), hasCode("ADB_NOT_FOUND"));
+  assert.throws(() => resolveAdbExecutable({ PATH: "." }, "win32", fs), hasCode("ADB_NOT_FOUND"));
+  assert.throws(() => resolveAdbExecutable({ ANDROID_HOME: ".", ANDROID_SDK_ROOT: "." }, "win32", fs), hasCode("ADB_NOT_FOUND"));
+  const driveRelativeFs = virtualWindowsFs({ files: { "\\sdk\\platform-tools\\adb.exe": "pe" } });
+  assert.throws(() => resolveAdbExecutable({
+    ANDROID_SDK_ROOT: "\\sdk", ANDROID_HOME: "/sdk", LOCALAPPDATA: "\\local", PATH: "\\sdk\\platform-tools",
+  }, "win32", driveRelativeFs), hasCode("ADB_NOT_FOUND"));
+  for (const unsupported of ["freebsd", "openbsd", "sunos", "aix"] as const) {
+    assert.throws(() => resolveAdbExecutable({}, unsupported, fs), hasCode("UNSUPPORTED_HOST"));
+  }
 });
 
-test("Windows SDK lookup supports per-user defaults and skips non-executable directories", async (t) => {
-  const { directory } = await executableFixture(t);
-  const local = path.join(directory, "AppData", "Local");
-  const sdk = path.join(local, "Android", "Sdk");
-  const tools = path.join(sdk, "platform-tools");
-  await mkdir(tools, { recursive: true });
-  const executable = path.join(tools, "adb.exe");
-  await writeFile(executable, "not executable; lookup fixture only");
-  assert.equal(resolveAdbExecutable({ LOCALAPPDATA: local }, "win32"), executable);
-  assert.equal(resolveAdbExecutable({ USERPROFILE: directory }, "win32"), executable);
+test("Windows Android Studio custom SDK discovery respects tier priority and handles stale, malformed, and ambiguous configs", () => {
+  const root = "C:\\Users\\alice\\workspace";
+  const makeSdk = (name: string) => {
+    const sdk = `${root}\\${name}`;
+    const tools = `${sdk}\\platform-tools`;
+    const adb = `${tools}\\adb.exe`;
+    return { sdk, tools, adb };
+  };
+  const explicitSdk = makeSdk("explicit-sdk");
+  const sdkRoot = makeSdk("sdk-root");
+  const androidHome = makeSdk("android-home");
+  const studioCustom = makeSdk("studio & custom");
+  const studioOther = makeSdk("studio-other");
+  const defaultLocalAppData = `${root}\\LocalAppData`;
+  const defaultAdb = `${defaultLocalAppData}\\Android\\Sdk\\platform-tools\\adb.exe`;
+  const pathSdk = makeSdk("path-sdk");
+  const appData = `${root}\\RoamingAppData`;
+  const profileHome = "C:\\Users\\bob";
+  const homeCustomAdb = `${profileHome}\\Custom\\Sdk\\platform-tools\\adb.exe`;
+
+  const baseFiles: Record<string, string> = {
+    [explicitSdk.adb]: "pe",
+    [sdkRoot.adb]: "pe",
+    [androidHome.adb]: "pe",
+    [studioCustom.adb]: "pe",
+    [studioOther.adb]: "pe",
+    [defaultAdb]: "pe",
+    [pathSdk.adb]: "pe",
+    [homeCustomAdb]: "pe",
+    ["C:\\Users\\outside-sdk\\platform-tools\\adb.exe"]: "pe",
+    ["\\sdk\\platform-tools\\adb.exe"]: "pe",
+    [`${profileHome}\\AppData\\Roaming\\Google\\AndroidStudio2025.2\\options\\android.sdk.path.xml`]:
+      studioSdkXml("$USER_HOME$/Custom/Sdk"),
+  };
+  const fsWithStudio = (profiles: Record<string, string>, extraDirs: readonly string[] = []) => {
+    const files = { ...baseFiles };
+    for (const [profile, xml] of Object.entries(profiles)) {
+      files[`${appData}\\Google\\${profile}\\options\\android.sdk.path.xml`] = xml;
+    }
+    return virtualWindowsFs({ files, directories: extraDirs });
+  };
+
+  const singleProfileFs = fsWithStudio({
+    "AndroidStudio2025.1": studioSdkXml(studioCustom.sdk.replaceAll("\\", "/")),
+  });
+  const fullEnv: NodeJS.ProcessEnv = {
+    MOBILE_USE_ADB_PATH: explicitSdk.adb,
+    ANDROID_SDK_ROOT: sdkRoot.sdk,
+    ANDROID_HOME: androidHome.sdk,
+    APPDATA: appData,
+    LOCALAPPDATA: defaultLocalAppData,
+    PATH: pathSdk.tools,
+  };
+  // Explicit and environment SDK tiers resolve before scanning Android Studio profiles.
+  const noStudioScanFs: AdbFileSystem = {
+    ...singleProfileFs,
+    listDirectories: () => assert.fail("Android Studio config directories must not be scanned when an earlier tier resolves"),
+    readTextFile: () => assert.fail("Android Studio XML must not be read when an earlier tier resolves"),
+  };
+  assert.equal(resolveAdbExecutable(fullEnv, "win32", noStudioScanFs), explicitSdk.adb);
+  const { MOBILE_USE_ADB_PATH: _1, ...withoutExplicit } = fullEnv;
+  assert.equal(resolveAdbExecutable(withoutExplicit, "win32", noStudioScanFs), sdkRoot.adb);
+  const { ANDROID_SDK_ROOT: _2, ...withoutSdkRoot } = withoutExplicit;
+  assert.equal(resolveAdbExecutable(withoutSdkRoot, "win32", noStudioScanFs), androidHome.adb);
+  const { ANDROID_HOME: _3, ...withoutEnvSdks } = withoutSdkRoot;
+  assert.equal(resolveAdbExecutable(withoutEnvSdks, "win32", singleProfileFs), studioCustom.adb);
+
+  // Agreeing profiles (including case/slash/trailing-separator differences and unset profiles) remain unambiguous.
+  const agreeingFs = fsWithStudio({
+    "AndroidStudio2025.1": studioSdkXml(`${studioCustom.sdk.replaceAll("\\", "/")}/`),
+    "AndroidStudio2024.3": studioSdkXml(studioCustom.sdk.toUpperCase()),
+    "AndroidStudio2024.2": studioSdkXml(`${studioCustom.sdk}\\`),
+    "AndroidStudio2024.1": "<application>\n  <component name=\"AndroidSdkPathStore\" />\n</application>\n",
+  }, [`${appData}\\Google\\AndroidStudio2023.3`]);
+  assert.equal(resolveAdbExecutable(withoutEnvSdks, "win32", agreeingFs), studioCustom.adb);
+
+  // $USER_HOME$ macro expansion works via USERPROFILE when APPDATA is omitted.
+  assert.equal(resolveAdbExecutable({ USERPROFILE: profileHome }, "win32", agreeingFs), homeCustomAdb);
+
+  // Conflicting SDK paths across AndroidStudio* profiles never guess; fall through to default SDK and PATH.
+  const conflictingFs = fsWithStudio({
+    "AndroidStudio2025.1": studioSdkXml(studioCustom.sdk),
+    "AndroidStudio2025.2": studioSdkXml(studioOther.sdk),
+  });
+  assert.equal(resolveAdbExecutable(withoutEnvSdks, "win32", conflictingFs), defaultAdb);
+  assert.throws(() => resolveAdbExecutable({ APPDATA: appData }, "win32", conflictingFs), hasCode("ADB_NOT_FOUND"));
+
+  // Stale, drive-relative, macro-traversal, and malformed Android Studio configs fall through cleanly without crashing.
+  for (const invalidXml of [
+    studioSdkXml(`${root}\\removed-sdk`),
+    "<application><broken",
+    `<!DOCTYPE application [<!ENTITY x "y">]>${studioSdkXml(studioCustom.sdk)}`,
+    studioSdkXml("relative\\sdk"),
+    studioSdkXml("\\sdk"),
+    studioSdkXml("/sdk"),
+    studioSdkXml("$PROJECT_DIR$/sdk"),
+    studioSdkXml("$USER_HOME$/../outside-sdk"),
+    studioSdkXml("$USER_HOME$\\..\\outside-sdk"),
+    studioSdkXml("$USER_HOME$/./Custom/Sdk"),
+    studioSdkXml(`${studioCustom.sdk}\\..\\studio-other`),
+  ]) {
+    const invalidFs = fsWithStudio({ "AndroidStudio2025.1": invalidXml });
+    assert.equal(resolveAdbExecutable({
+      APPDATA: appData, USERPROFILE: "C:\\Users\\alice", LOCALAPPDATA: defaultLocalAppData,
+    }, "win32", invalidFs), defaultAdb);
+    assert.equal(resolveAdbExecutable({
+      APPDATA: appData, USERPROFILE: "C:\\Users\\alice", PATH: pathSdk.tools,
+    }, "win32", invalidFs), pathSdk.adb);
+    assert.throws(() => resolveAdbExecutable({
+      APPDATA: appData, USERPROFILE: "C:\\Users\\alice",
+    }, "win32", invalidFs), hasCode("ADB_NOT_FOUND"));
+  }
+});
+
+test("macOS and Linux executable lookup resolves explicit, env SDK, Android Studio XML, default SDK, and colon PATH while requiring X_OK", () => {
+  const macHome = "/Users/alice";
+  const macGoogle = `${macHome}/Library/Application Support/Google`;
+  const macXml = `${macGoogle}/AndroidStudio2025.1/options/android.sdk.path.xml`;
+  const macCustomAdb = "/Volumes/Dev/Android/sdk/platform-tools/adb";
+  const macDefaultAdb = `${macHome}/Library/Android/sdk/platform-tools/adb`;
+  const macPathAdb = "/opt/homebrew/bin/adb";
+  const macExplicitAdb = "/usr/local/android/adb";
+  const macEnvAdb = "/Users/alice/env-sdk/platform-tools/adb";
+  const macFs = virtualPosixFs({
+    directories: { [macGoogle]: ["AndroidStudio2025.1"] },
+    files: {
+      [macXml]: studioSdkXml("/Volumes/Dev/Android/sdk"),
+      [macCustomAdb]: "elf",
+      [macDefaultAdb]: "elf",
+      [macPathAdb]: "elf",
+      [macExplicitAdb]: "elf",
+      [macEnvAdb]: "elf",
+    },
+  });
+
+  assert.equal(resolveAdbExecutable({
+    MOBILE_USE_ADB_PATH: macExplicitAdb, ANDROID_SDK_ROOT: "/Users/alice/env-sdk", HOME: macHome, PATH: "/usr/bin:/opt/homebrew/bin",
+  }, "darwin", macFs), macExplicitAdb);
+  assert.equal(resolveAdbExecutable({
+    ANDROID_SDK_ROOT: "/Users/alice/env-sdk", HOME: macHome, PATH: "/usr/bin:/opt/homebrew/bin",
+  }, "darwin", macFs), macEnvAdb);
+  assert.equal(resolveAdbExecutable({ HOME: macHome, PATH: "/usr/bin:/opt/homebrew/bin" }, "darwin", macFs), macCustomAdb);
+
+  const macNoCustomFs = virtualPosixFs({ files: { [macDefaultAdb]: "elf", [macPathAdb]: "elf" } });
+  assert.equal(resolveAdbExecutable({ HOME: macHome, PATH: "/usr/bin:/opt/homebrew/bin" }, "darwin", macNoCustomFs), macDefaultAdb);
+  assert.equal(resolveAdbExecutable({ PATH: `"/usr/bin":"/opt/homebrew/bin"` }, "darwin", macNoCustomFs), macPathAdb);
+
+  // Non-executable (e.g. 0644) SDK adb candidates are skipped rather than masking a working PATH executable,
+  // and an explicit MOBILE_USE_ADB_PATH override pointing to a non-executable binary fails with ADB_CONFIG_UNSUPPORTED.
+  const macNonExecSdkFs = virtualPosixFs({
+    directories: { [macGoogle]: ["AndroidStudio2025.1"] },
+    files: {
+      [macXml]: studioSdkXml("/Volumes/Dev/Android/sdk"),
+      [macPathAdb]: "elf",
+    },
+    nonExecutableFiles: {
+      [macEnvAdb]: "0644-elf",
+      [macCustomAdb]: "0644-elf",
+      [macDefaultAdb]: "0644-elf",
+    },
+  });
+  assert.equal(resolveAdbExecutable({
+    ANDROID_SDK_ROOT: "/Users/alice/env-sdk", HOME: macHome, PATH: "/usr/bin:/opt/homebrew/bin",
+  }, "darwin", macNonExecSdkFs), macPathAdb);
+  assert.throws(() => resolveAdbExecutable({
+    ANDROID_SDK_ROOT: "/Users/alice/env-sdk", HOME: macHome,
+  }, "darwin", macNonExecSdkFs), hasCode("ADB_NOT_FOUND"));
+  assert.throws(() => resolveAdbExecutable({
+    MOBILE_USE_ADB_PATH: macDefaultAdb,
+  }, "darwin", macNonExecSdkFs), hasCode("ADB_CONFIG_UNSUPPORTED"));
+
+  for (const badOverride of ["./adb", "adb", "C:\\Android\\Sdk\\platform-tools\\adb.exe", "/opt/adb.sh", "/opt/adb/", "/"]) {
+    assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: badOverride }, "darwin", macFs), hasCode("ADB_CONFIG_UNSUPPORTED"));
+  }
+  assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: "/opt/missing-adb" }, "darwin", macFs), hasCode("ADB_NOT_FOUND"));
+
+  const linuxHome = "/home/alice";
+  const linuxGoogle = `${linuxHome}/.config/Google`;
+  const linuxXmlOne = `${linuxGoogle}/AndroidStudio2024.3/options/android.sdk.path.xml`;
+  const linuxXmlTwo = `${linuxGoogle}/AndroidStudio2025.1/options/android.sdk.path.xml`;
+  const linuxCustomAdb = `${linuxHome}/CustomSdk/platform-tools/adb`;
+  const linuxDefaultAdb = `${linuxHome}/Android/Sdk/platform-tools/adb`;
+  const linuxPathAdb = "/usr/bin/adb";
+
+  const linuxUnambiguousFs = virtualPosixFs({
+    directories: { [linuxGoogle]: ["AndroidStudio2024.3", "AndroidStudio2025.1"] },
+    files: {
+      [linuxXmlOne]: studioSdkXml("$USER_HOME$/CustomSdk/"),
+      [linuxXmlTwo]: studioSdkXml("$USER_HOME$/CustomSdk"),
+      [linuxCustomAdb]: "elf",
+      [linuxDefaultAdb]: "elf",
+    },
+  });
+  assert.equal(resolveAdbExecutable({ HOME: linuxHome }, "linux", linuxUnambiguousFs), linuxCustomAdb);
+
+  // Agreeing /opt/android-sdk and /opt/android-sdk/ profiles canonicalize to the same SDK, and root "/" is preserved.
+  const linuxTrailingSlashFs = virtualPosixFs({
+    directories: { [linuxGoogle]: ["AndroidStudio2024.3", "AndroidStudio2025.1"] },
+    files: {
+      [linuxXmlOne]: studioSdkXml("/opt/android-sdk"),
+      [linuxXmlTwo]: studioSdkXml("/opt/android-sdk/"),
+      "/opt/android-sdk/platform-tools/adb": "elf",
+    },
+  });
+  assert.equal(resolveAdbExecutable({ HOME: linuxHome }, "linux", linuxTrailingSlashFs), "/opt/android-sdk/platform-tools/adb");
+
+  const linuxRootSdkFs = virtualPosixFs({
+    directories: { [linuxGoogle]: ["AndroidStudio2025.1"] },
+    files: {
+      [linuxXmlTwo]: studioSdkXml("/"),
+      "/platform-tools/adb": "elf",
+    },
+  });
+  assert.equal(resolveAdbExecutable({ HOME: linuxHome }, "linux", linuxRootSdkFs), "/platform-tools/adb");
+
+  // $USER_HOME$ macro traversal is rejected before path joining, even if the traversed SDK path exists.
+  const linuxMacroTraversalFs = virtualPosixFs({
+    directories: { [linuxGoogle]: ["AndroidStudio2025.1"] },
+    files: {
+      [linuxXmlTwo]: studioSdkXml("$USER_HOME$/../outside-sdk"),
+      "/home/outside-sdk/platform-tools/adb": "elf",
+      [linuxPathAdb]: "elf",
+    },
+  });
+  assert.throws(() => resolveAdbExecutable({ HOME: linuxHome }, "linux", linuxMacroTraversalFs), hasCode("ADB_NOT_FOUND"));
+  assert.equal(resolveAdbExecutable({ HOME: linuxHome, PATH: "/usr/bin" }, "linux", linuxMacroTraversalFs), linuxPathAdb);
+
+  // Environment SDKs short-circuit before scanning Android Studio directories on POSIX too.
+  const linuxNoStudioScanFs: AdbFileSystem = {
+    ...linuxTrailingSlashFs,
+    listDirectories: () => assert.fail("POSIX Studio directories must not be scanned when ANDROID_SDK_ROOT/ANDROID_HOME resolves"),
+    readTextFile: () => assert.fail("POSIX Studio XML must not be read when ANDROID_SDK_ROOT/ANDROID_HOME resolves"),
+  };
+  assert.equal(resolveAdbExecutable({
+    ANDROID_SDK_ROOT: "/opt/android-sdk", HOME: linuxHome,
+  }, "linux", linuxNoStudioScanFs), "/opt/android-sdk/platform-tools/adb");
+  assert.equal(resolveAdbExecutable({
+    ANDROID_HOME: "/opt/android-sdk", HOME: linuxHome,
+  }, "linux", linuxNoStudioScanFs), "/opt/android-sdk/platform-tools/adb");
+
+  const linuxNonExecFs = virtualPosixFs({
+    files: { [linuxPathAdb]: "elf" },
+    nonExecutableFiles: { [linuxDefaultAdb]: "0644-elf" },
+  });
+  assert.equal(resolveAdbExecutable({ HOME: linuxHome, PATH: "/bin:/usr/bin" }, "linux", linuxNonExecFs), linuxPathAdb);
+  assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: linuxDefaultAdb }, "linux", linuxNonExecFs), hasCode("ADB_CONFIG_UNSUPPORTED"));
+
+  const linuxAmbiguousFs = virtualPosixFs({
+    directories: { [linuxGoogle]: ["AndroidStudio2024.3", "AndroidStudio2025.1"] },
+    files: {
+      [linuxXmlOne]: studioSdkXml("/opt/sdk-one"),
+      [linuxXmlTwo]: studioSdkXml("/opt/sdk-two"),
+      "/opt/sdk-one/platform-tools/adb": "elf",
+      "/opt/sdk-two/platform-tools/adb": "elf",
+      [linuxPathAdb]: "elf",
+    },
+  });
+  assert.equal(resolveAdbExecutable({ HOME: linuxHome, PATH: "/bin:/usr/bin" }, "linux", linuxAmbiguousFs), linuxPathAdb);
+  assert.throws(() => resolveAdbExecutable({ HOME: linuxHome }, "linux", linuxAmbiguousFs), hasCode("ADB_NOT_FOUND"));
+});
+
+test("adbEnvironment preserves required Windows and POSIX host variables without leaking secrets or ADB overrides", () => {
+  const sanitized = adbEnvironment({
+    PATH: "/usr/bin:/bin",
+    HOME: "/home/alice",
+    USER: "alice",
+    LOGNAME: "alice",
+    TMPDIR: "/tmp/user-1000",
+    XDG_CONFIG_HOME: "/home/alice/.config",
+    XDG_CACHE_HOME: "/home/alice/.cache",
+    XDG_RUNTIME_DIR: "/run/user/1000",
+    LANG: "en_US.UTF-8",
+    SystemRoot: "C:\\Windows",
+    USERPROFILE: "C:\\Users\\alice",
+    PRIVATE_TEST_SECRET: "secret",
+    ANDROID_SERIAL: "ABC123",
+    ADB_SERVER_SOCKET: "tcp:127.0.0.1:5037",
+    ADB_VENDOR_KEYS: "/tmp/private-key",
+    MOBILE_USE_ADB_PATH: "/usr/bin/adb",
+  });
+  assert.equal(sanitized.PATH, "/usr/bin:/bin");
+  assert.equal(sanitized.HOME, "/home/alice");
+  assert.equal(sanitized.USER, "alice");
+  assert.equal(sanitized.LOGNAME, "alice");
+  assert.equal(sanitized.TMPDIR, "/tmp/user-1000");
+  assert.equal(sanitized.XDG_CONFIG_HOME, "/home/alice/.config");
+  assert.equal(sanitized.XDG_CACHE_HOME, "/home/alice/.cache");
+  assert.equal(sanitized.XDG_RUNTIME_DIR, "/run/user/1000");
+  assert.equal(sanitized.LANG, "en_US.UTF-8");
+  assert.equal(sanitized.PRIVATE_TEST_SECRET, undefined);
+  assert.equal(sanitized.ANDROID_SERIAL, undefined);
+  assert.equal(sanitized.ADB_SERVER_SOCKET, undefined);
+  assert.equal(sanitized.ADB_VENDOR_KEYS, undefined);
+  assert.equal(sanitized.MOBILE_USE_ADB_PATH, undefined);
+});
+
+test("Windows SDK lookup supports per-user defaults and skips non-executable directories", () => {
+  const userProfile = "C:\\Users\\alice";
+  const local = "C:\\Users\\alice\\AppData\\Local";
+  const tools = "C:\\Users\\alice\\AppData\\Local\\Android\\Sdk\\platform-tools";
+  const executable = "C:\\Users\\alice\\AppData\\Local\\Android\\Sdk\\platform-tools\\adb.exe";
+  const unavailableSdk = "C:\\Users\\alice\\directory-not-an-executable";
+  const fs = virtualWindowsFs({
+    files: { [executable]: "pe" },
+    directories: [`${unavailableSdk}\\platform-tools\\adb.exe`],
+  });
+  assert.equal(resolveAdbExecutable({ LOCALAPPDATA: local }, "win32", fs), executable);
+  assert.equal(resolveAdbExecutable({ USERPROFILE: userProfile }, "win32", fs), executable);
+  assert.equal(resolveAdbExecutable({ ANDROID_HOME: unavailableSdk, PATH: tools }, "win32", fs), executable);
+});
+
+test("host filesystem lookup verifies real files, Android Studio XML, directory guards, and POSIX execute permissions", async (t) => {
+  const { directory, sdk, tools, executable, binaryName } = await executableFixture(t);
+  assert.equal(resolveAdbExecutable({ MOBILE_USE_ADB_PATH: executable }), executable);
+  assert.equal(resolveAdbExecutable({ ANDROID_SDK_ROOT: sdk }), executable);
+  assert.equal(resolveAdbExecutable({ PATH: `"${tools}"` }), executable);
+
   const unavailableSdk = path.join(directory, "directory-not-an-executable");
-  await mkdir(path.join(unavailableSdk, "platform-tools", "adb.exe"), { recursive: true });
-  assert.equal(resolveAdbExecutable({ ANDROID_HOME: unavailableSdk, PATH: tools }, "win32"), executable);
+  await mkdir(path.join(unavailableSdk, "platform-tools", binaryName), { recursive: true });
+  assert.equal(resolveAdbExecutable({ ANDROID_HOME: unavailableSdk, PATH: tools }), executable);
+
+  const studioHome = path.join(directory, "studio-home");
+  const studioOptions = process.platform === "win32"
+    ? path.join(studioHome, "AppData", "Roaming", "Google", "AndroidStudio2025.1", "options")
+    : process.platform === "darwin"
+      ? path.join(studioHome, "Library", "Application Support", "Google", "AndroidStudio2025.1", "options")
+      : path.join(studioHome, ".config", "Google", "AndroidStudio2025.1", "options");
+  await mkdir(studioOptions, { recursive: true });
+  await writeFile(path.join(studioOptions, "android.sdk.path.xml"), studioSdkXml(sdk));
+  const studioEnv: NodeJS.ProcessEnv = process.platform === "win32"
+    ? { USERPROFILE: studioHome }
+    : { HOME: studioHome };
+  assert.equal(resolveAdbExecutable(studioEnv), executable);
+
+  if (process.platform !== "win32") {
+    const nonExecSdk = path.join(directory, "non-exec-sdk");
+    const nonExecTools = path.join(nonExecSdk, "platform-tools");
+    await mkdir(nonExecTools, { recursive: true });
+    const nonExecAdb = path.join(nonExecTools, "adb");
+    await writeFile(nonExecAdb, "non-executable fixture", { mode: 0o644 });
+    await chmod(nonExecAdb, 0o644);
+    assert.equal(resolveAdbExecutable({ ANDROID_SDK_ROOT: nonExecSdk, PATH: tools }), executable);
+    assert.throws(() => resolveAdbExecutable({ MOBILE_USE_ADB_PATH: nonExecAdb }), hasCode("ADB_CONFIG_UNSUPPORTED"));
+  }
 });
 
 test("ADB commands pin the local server and exclude unrelated credentials and implicit targets", async (t) => {
@@ -132,7 +554,7 @@ test("ADB commands pin the local server and exclude unrelated credentials and im
     environment = options.env;
     request = options;
     return Buffer.from([0, 255, 13, 10]);
-  }, "win32");
+  }, process.platform);
   assert.deepEqual(await client.run(["-t", "7", "exec-out", "screencap", "-p"]), Buffer.from([0, 255, 13, 10]));
   assert.deepEqual(routed, ["-H", "127.0.0.1", "-P", "5037", "-t", "7", "exec-out", "screencap", "-p"]);
   assert.equal(environment.PRIVATE_TEST_SECRET, undefined);
@@ -153,7 +575,7 @@ test("remote or non-default ADB server overrides fail before starting a command"
   ]) {
     const client = new AdbClient({ MOBILE_USE_ADB_PATH: executable, ...extra }, async () => {
       assert.fail("unsupported configuration must not run adb");
-    }, "win32");
+    }, process.platform);
     await assert.rejects(client.run(["devices", "-l"]), hasCode("ADB_CONFIG_UNSUPPORTED"));
     await assert.rejects(client.startServer(), hasCode("ADB_CONFIG_UNSUPPORTED"));
     client.stop();
@@ -304,7 +726,7 @@ test("local startup pins the executable, sanitizes the daemon environment, and p
   }, async (_exe, args) => {
     calls.push([...args]);
     return Buffer.from("Android Debug Bridge version 1.0.41\nVersion 36.0.0-12345\n");
-  }, "win32", server);
+  }, process.platform, server);
   t.after(() => client.stop());
   const result = await client.startServer();
   assert.equal(result.status, "ready");
@@ -330,7 +752,7 @@ test("ordinary inventory uses read-only protocol discovery and never launches an
     return Buffer.from(`${USB_LINE}\n`);
   };
   const client = new AdbClient({ MOBILE_USE_ADB_PATH: executable }, async () =>
-    assert.fail("inventory must not invoke a client with automatic daemon startup/replacement"), "win32", server);
+    assert.fail("inventory must not invoke a client with automatic daemon startup/replacement"), process.platform, server);
   t.after(() => client.stop());
   assert.equal((await client.run(["devices", "-l"])).toString(), `List of devices attached\n${USB_LINE}\n`);
   assert.equal(queries, 1);
@@ -341,7 +763,7 @@ test("malformed post-start inventory is an error with startup uncertainty, not a
   const server = new LocalAdbServer();
   server.ensureRunning = async () => ({ startupAttempted: true, inventory: Buffer.from("malformed\n") });
   const client = new AdbClient({ MOBILE_USE_ADB_PATH: executable }, async () =>
-    Buffer.from("Android Debug Bridge version 1.0.41\nVersion 36.0.0\n"), "win32", server);
+    Buffer.from("Android Debug Bridge version 1.0.41\nVersion 36.0.0\n"), process.platform, server);
   t.after(() => client.stop());
   await assert.rejects(client.startServer(), (error: unknown) => {
     hasCode("INVALID_DEVICE_LIST")(error);

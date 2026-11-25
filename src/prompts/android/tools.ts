@@ -6,7 +6,7 @@ export const androidToolPrompts: Readonly<Record<CoreToolName, ToolPrompt>> = {
   mobile_doctor: {
     title: "Check mobile setup",
     description: joinPrompt([
-      "Start here on first use: diagnose Windows/ADB prerequisites and return step-by-step setup guidance.",
+      "Start here on first use: diagnose host ADB prerequisites and return step-by-step setup guidance.",
       "Ready means host Platform-Tools only; then call mobile_list_devices before guiding missing phone setup.",
       "Guide Platform-Tools installation, Developer options, and USB/Wireless debugging only as needed.",
       "Never installs software, pairs, changes settings, lists, or controls devices.",
@@ -123,11 +123,11 @@ export const androidToolPrompts: Readonly<Record<CoreToolName, ToolPrompt>> = {
       "action.kind: capabilities reads native help without capture, returning unlimitedSupported, maxTimeLimitSeconds and nativeDefaultTimeLimitSeconds (source: device-help). Check it before requesting recording approval; Android version alone is not authoritative.",
       "AOSP Android 11-13 allow only 1-180 seconds; Android 14-16 allow longer durations and unlimited. OEM builds/backports can differ.",
       "start rechecks capabilities before mutation; unsupported duration is RECORDING_DURATION_UNSUPPORTED (actionMayHaveRun: false), unknown help is RECORDING_CAPABILITIES_UNAVAILABLE. Ask for approval of a supported duration; never silently shorten, segment or replay.",
-      "start requires an explicit absolute local Windows .mp4 filePath; optional timeLimitSeconds is a positive integer (maximum 4294967295, additionally restricted by device capabilities). Omit timeLimitSeconds for unlimited recording until stopped where supported; never substitute Android's native 180-second default.",
+      "start requires an explicit absolute local .mp4 filePath; optional timeLimitSeconds is a positive integer (maximum 4294967295, additionally restricted by device capabilities). Omit timeLimitSeconds for unlimited recording until stopped where supported; never substitute Android's native 180-second default.",
       "start returns starting with recordingId after dispatch, without waiting for readiness. status returns idle/starting/recording/completed/saved, timeLimitSeconds: null for unlimited; each request checks startup once while starting.",
       "stop requires recordingId, sends one signal to the exact owned recorder, waits up to ten seconds for native completion, saves to the approved path without overwriting, and removes only its temporary device files.",
       "No startup/exit polling, automatic retries or race reconciliation: the caller handles timing, status checks and recovery decisions. Command errors are not replaced with inferred success.",
-      "Obtain explicit consent for device, non-sensitive content, duration/unlimited capture and destination. Choose a restricted Windows destination; staging/final files inherit folder permissions. Screenshot-free observation consent never authorizes recording.",
+      "Obtain explicit consent for device, non-sensitive content, duration/unlimited capture and destination. Choose a restricted local destination; staging/final files inherit folder permissions. Screenshot-free observation consent never authorizes recording.",
       "Start only awake/unlocked; never record authentication or bypass protected capture.",
       "Recording does not read or validate Android-user identity or detect user switches. Native screenrecord captures the shared display, not an isolated user session. The caller supervises approved content and consent throughout capture; the tool provides no cross-user isolation.",
       "Unlimited capture can fill storage. The native ADB recorder is not the phone's Quick Settings recorder: no audio, helper install or streaming. One active/unsaved recording per selection. Timed completion still needs stop to export.",
@@ -138,7 +138,7 @@ export const androidToolPrompts: Readonly<Record<CoreToolName, ToolPrompt>> = {
     title: "App management",
     description: joinPrompt([
       "Manage apps on the selected device for the current Android user, without screenshots or observationId.",
-      "action.kind: list returns installed package names (including system apps, not labels); foreground returns package/activity/user or null only for explicitly absent resumed activity; launch verifies a requested installed package is foreground; terminate force-stops its activities/services and verifies stopped state (may lose unsaved work); install accepts one existing local Windows .apk filePath (1 byte to 512 MiB, 120-second limit); uninstall deletes package and current-user app data and verifies removal.",
+      "action.kind: list returns installed package names (including system apps, not labels); foreground returns package/activity/user or null only for explicitly absent resumed activity; launch verifies a requested installed package is foreground; terminate force-stops its activities/services and verifies stopped state (may lose unsaved work); install accepts one existing absolute local .apk filePath (1 byte to 512 MiB, 120-second limit); uninstall deletes package and current-user app data and verifies removal.",
       "launch/terminate/uninstall require packageName. App metadata can be sensitive.",
       "Termination requires specific authorization or matching scoped session consent for that package/device/user.",
       "Each install/uninstall requires explicit one-action approval naming the APK/package and device, including app-data deletion for uninstall; never offer blanket session approval for them. Reuse an already explicit exact authorization rather than asking twice.",

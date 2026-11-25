@@ -14,8 +14,8 @@ export const deviceSelectionInstructions = joinPrompt([
 export const platformToolsSetup: AndroidSetupGuidance = {
   stage: "platform-tools",
   steps: [
-    "Download Android SDK Platform-Tools for Windows from https://developer.android.com/tools/releases/platform-tools and review Google's download terms yourself. Only Platform-Tools (adb.exe) is needed; Android Studio and the full SDK are not required.",
-    "Extract the platform-tools folder under %LOCALAPPDATA%\\Android\\Sdk so adb.exe is at %LOCALAPPDATA%\\Android\\Sdk\\platform-tools\\adb.exe, or add its folder to PATH / set MOBILE_USE_ADB_PATH to its absolute adb.exe path. Correct a stale explicit override if one is already set.",
+    "If Android Studio is installed, open Android Studio > Tools > SDK Manager > SDK Tools, select Android SDK Platform-Tools, and apply the install or update yourself. Otherwise, download standalone Android SDK Platform-Tools from https://developer.android.com/tools/releases/platform-tools and review Google's download terms yourself; Android Studio and the full SDK are not required.",
+    "mobile-use checks MOBILE_USE_ADB_PATH, ANDROID_SDK_ROOT / ANDROID_HOME, an unambiguous Android Studio custom SDK location, the standard SDK folder (%LOCALAPPDATA%\\Android\\Sdk\\platform-tools\\adb.exe on Windows, ~/Library/Android/sdk/platform-tools/adb on macOS, or ~/Android/Sdk/platform-tools/adb on Linux), and PATH. For a standalone download outside those locations, add platform-tools to PATH or set MOBILE_USE_ADB_PATH to the absolute adb.exe / adb path, and correct any stale override.",
     "Fully quit and reopen Copilot after changing its environment, then rerun mobile_doctor. Do not continue to device control while this check fails.",
   ],
 };
@@ -44,7 +44,7 @@ export const phoneSetup: AndroidSetupGuidance = {
     "On the phone, open Settings > About phone and locate Build number (some brands use Software information or an OS-version entry). Tap it seven times to enable Developer options. Menu names vary: ask for the model if the path is unclear. Enter any phone PIN only on the phone; never send it to Copilot. Official guide: https://developer.android.com/studio/debug/dev-options",
     "For USB, enable USB debugging in Developer options yourself, connect a data-capable cable, unlock the phone, and accept only the intended computer's RSA debugging prompt. Developer options alone is not enough. Do not enable OEM unlocking or unrelated security options.",
     "For modern wireless instead, enable Wireless debugging, then pair/connect from your own terminal following https://developer.android.com/tools/adb#connect-to-a-device-over-wi-fi. Enter pairing codes only into adb's local prompt, never into Copilot; pairing and connection ports differ. Do not use legacy adb tcpip.",
-    "Rerun mobile_list_devices. If USB inventory remains empty, check the cable/USB port and the manufacturer's Windows USB-driver guidance at https://developer.android.com/studio/run/oem-usb. Do not install drivers automatically or bypass managed-device restrictions.",
+    "Rerun mobile_list_devices. If USB inventory remains empty, check the cable/USB port; on Windows, check the manufacturer's USB-driver guidance at https://developer.android.com/studio/run/oem-usb, and on Linux, check udev device permissions if needed. Do not install drivers or change host rules automatically, or bypass managed-device restrictions.",
   ],
 };
 

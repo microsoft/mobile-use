@@ -171,7 +171,8 @@ test("local APK validation handles spaces and rejects unsupported formats, locat
   assert.equal(await localApkFile(filePath), filePath);
   for (const invalid of [
     ".\\demo.apk", "C:demo.apk", "https://example.invalid/demo.apk", "\\\\server\\share\\demo.apk",
-    "\\\\?\\C:\\demo.apk", "C:\\file:stream.apk", filePath + "\n",
+    "\\\\?\\C:\\demo.apk", "C:\\file:stream.apk", "C:\\NUL.apk",
+    `${directory}\\..\\demo.apk`, filePath + "\n",
     path.join(directory, "missing.apk"), directory,
   ]) await assert.rejects(localApkFile(invalid), hasCode("INVALID_APP_FILE"));
   for (const extension of [".ipa", ".app", ".zip", ".apks"]) {
@@ -192,6 +193,74 @@ test("local APK validation handles spaces and rejects unsupported formats, locat
   const controller = new AbortController();
   controller.abort();
   await assert.rejects(localApkFile(filePath, controller.signal), hasCode("CANCELLED"));
+});
+
+test("POSIX local APK validation supports macOS/Linux absolute paths and preserves symlink, special-file, and traversal guards", async () => {
+  for (const platform of ["darwin", "linux"] as const) {
+    const canonicalApk = "/private/var/folders/ab/tmp/demo app & sample.apk";
+    const aliasedParentApk = "/var/folders/ab/tmp/demo app & sample.apk";
+    const leafSymlinkApk = "/Users/alice/Downloads/symlink.apk";
+    const specialFifoApk = "/Users/alice/Downloads/fifo.apk";
+    const devSymlinkApk = "/Users/alice/devlink/demo.apk";
+    const unreadableApk = "/Users/alice/Downloads/unreadable.apk";
+    const oversizedApk = "/Users/alice/Downloads/oversized.apk";
+    const emptyApk = "/Users/alice/Downloads/empty.apk";
+
+    const entries = new Map<string, { file: boolean; size: number; real: string; readable: boolean }>([
+      [canonicalApk, { file: true, size: 4096, real: canonicalApk, readable: true }],
+      [aliasedParentApk, { file: true, size: 4096, real: canonicalApk, readable: true }],
+      [leafSymlinkApk, { file: false, size: 32, real: canonicalApk, readable: true }],
+      [specialFifoApk, { file: false, size: 0, real: specialFifoApk, readable: true }],
+      [devSymlinkApk, { file: true, size: 128, real: "/dev/shm/demo.apk", readable: true }],
+      [unreadableApk, { file: true, size: 128, real: unreadableApk, readable: false }],
+      [oversizedApk, { file: true, size: 512 * 1024 * 1024 + 1, real: oversizedApk, readable: true }],
+      [emptyApk, { file: true, size: 0, real: emptyApk, readable: true }],
+    ]);
+
+    const fs = {
+      async lstat(targetPath: string) {
+        const entry = entries.get(targetPath);
+        if (!entry) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        return { isFile: () => entry.file, size: entry.size };
+      },
+      async realpath(targetPath: string) {
+        const entry = entries.get(targetPath);
+        if (!entry) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        return entry.real;
+      },
+      async accessReadable(targetPath: string) {
+        const entry = entries.get(targetPath);
+        if (!entry?.readable) throw Object.assign(new Error("EACCES"), { code: "EACCES" });
+      },
+    };
+
+    assert.equal(await localApkFile(aliasedParentApk, undefined, { platform, fs }), canonicalApk);
+    for (const invalid of [
+      "relative.apk",
+      "./demo.apk",
+      "C:\\Packages\\demo.apk",
+      "//server/share/demo.apk",
+      "/Users/alice//demo.apk",
+      "/Users/alice/../bob/demo.apk",
+      "/Users/alice/./demo.apk",
+      "/dev/demo.apk",
+      "/proc/self/demo.apk",
+      "/sys/demo.apk",
+      "/Users/alice/Downloads/demo.ipa",
+      "/Users/alice/Downloads/demo.zip",
+      "/Users/alice/Downloads/.apk",
+      `${canonicalApk}\n`,
+      leafSymlinkApk,
+      specialFifoApk,
+      devSymlinkApk,
+      unreadableApk,
+      oversizedApk,
+      emptyApk,
+      "/Users/alice/Downloads/missing.apk",
+    ]) {
+      await assert.rejects(localApkFile(invalid, undefined, { platform, fs }), hasCode("INVALID_APP_FILE"));
+    }
+  }
 });
 
 test("app reads and mutations pin the exact wireless transport and current Android user", async () => {
