@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { decodePng } from "../android.js";
+import { OBSERVATION_MAX_AGE_MS } from "../device-session.js";
 import { checkCancelled, MobileUseError, publicError } from "../errors.js";
 import type { MobileService, IosAppOperationResult, IosDoctor, IosForegroundApp, IosSelectedTarget } from "../mobile-service.js";
 import { compareScreens, containsPoint, interactionRegion, intersects } from "../screen-guard.js";
@@ -780,7 +781,7 @@ export class IosMobileUseService implements MobileService {
       target.snapshot = undefined;
       const age = previous ? this.now() - previous.createdAt : -1;
       if (!previous || previous.screen.observation.observationId !== observationId ||
-        previous.screen.observation.targetToken !== token || age < 0 || age > 30_000) throw wdaFailure("STALE_OBSERVATION");
+        previous.screen.observation.targetToken !== token || age < 0 || age > OBSERVATION_MAX_AGE_MS) throw wdaFailure("STALE_OBSERVATION");
       if ((action.kind === "key" && action.key !== "HOME") || action.kind === "launch_app") throw wdaFailure("UNSUPPORTED_OPERATION");
       if (action.kind === "type_text" && /[\u0000-\u001f\u007f-\u009f]/.test(action.text)) {
         throw new MobileUseError("TEXT_INPUT_UNSUPPORTED", "iOS text input cannot contain control characters or line breaks.",

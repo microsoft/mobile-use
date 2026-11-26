@@ -219,12 +219,17 @@ test("secure focus and control-character input are rejected without dispatch", a
   assert.equal(mutations(f).length, 0);
 });
 
-test("observations expire and are consumed once even on a rejected target", async (t) => {
+test("observations expire at the 120-second boundary and are consumed once even on a rejected target", async (t) => {
   let now = 100;
   const f = await fixture(t, () => now);
   const token = await select(f);
   let screen = await f.service.observe(token, undefined, false);
-  now += 30_001;
+  now += 120_000;
+  const allowed = await f.service.act(token, screen.observation.observationId, { kind: "tap", target: { elementRef: ref(screen, "button") } });
+  assert.equal(allowed.dispatchStatus, "dispatched");
+  assert.equal(mutations(f).length, 1);
+  screen = allowed.after!;
+  now += 120_001;
   await assert.rejects(f.service.act(token, screen.observation.observationId, { kind: "tap", target: { elementRef: ref(screen, "button") } }),
     (error: unknown) => error instanceof MobileUseError && error.code === "STALE_OBSERVATION");
   screen = await f.service.observe(token, undefined, false);
@@ -232,7 +237,7 @@ test("observations expire and are consumed once even on a rejected target", asyn
   await assert.rejects(f.service.act(token, screen.observation.observationId, action));
   await assert.rejects(f.service.act(token, screen.observation.observationId, action),
     (error: unknown) => error instanceof MobileUseError && error.code === "STALE_OBSERVATION");
-  assert.equal(mutations(f).length, 0);
+  assert.equal(mutations(f).length, 1);
 });
 
 test("App/rotation/window changes block old references and do not dispatch", async (t) => {
