@@ -54542,6 +54542,13 @@ var ManagedIosRuntime = class {
     if (!this.tunnelPort) return [];
     return [this.tunnelPort, this.tunnelPort + 1];
   }
+  async awaitInFlightCleanup() {
+    if (!this.cleaning) return;
+    try {
+      await this.cleaning;
+    } catch {
+    }
+  }
   status(filter) {
     if (filter?.endpointId !== void 0) {
       const udid = parseUsbEndpointUdid(filter.endpointId);
@@ -55206,7 +55213,14 @@ var ManagedIosRuntimePool = class {
       if (!udid) throw wdaFailure("INVALID_INPUT");
       if (config2.tunnelPort !== 0) {
         for (const [otherUdid, other] of this.runtimes) {
-          if (otherUdid !== udid && (!["idle", "stopped"].includes(other.status().state) || this.reservedTunnelPorts.has(otherUdid))) {
+          if (otherUdid === udid) continue;
+          if (other.status().state === "failed") {
+            await other.awaitInFlightCleanup();
+          }
+          const otherState = other.status().state;
+          const hasPortClaim = other.activeTunnelPorts.length > 0 || this.reservedTunnelPorts.has(otherUdid);
+          const cleaned = otherState === "idle" || otherState === "stopped" || otherState === "failed" && !hasPortClaim;
+          if (!cleaned || hasPortClaim) {
             throw runtimeFailure("IOS_RUNTIME_CONFLICT");
           }
         }
@@ -55474,6 +55488,14 @@ var IosMobileUseService = class {
       reason: conflict2 ? "A foreign WDA session is active. Use a dedicated Runner; never replace another controller's session." : binding ? "Managed WDA bound to the verified USB UDID." : "User-managed local WDA forwarding; its physical USB/network transport is not independently verified."
     };
   }
+  retireEndpointSessions(endpointId) {
+    for (const session of [...this.targets.values()]) {
+      if (session.endpointId === endpointId) {
+        this.retireTarget(session.token, "lost", true);
+      }
+    }
+    this.ownedSessions.delete(endpointId);
+  }
   reconcileTargetProbe(endpointId, probe) {
     for (const session of [...this.targets.values()]) {
       if (session.endpointId !== endpointId) continue;
@@ -55484,7 +55506,22 @@ var IosMobileUseService = class {
   }
   doctor(signal) {
     return this.serializeHost(async () => {
-      const goIosVersion = this.runtime ? await this.runtime.prerequisites(signal) : void 0;
+      let goIosVersion;
+      if (this.runtime) {
+        try {
+          goIosVersion = await this.runtime.prerequisites(signal);
+        } catch (error62) {
+          if (error62 instanceof MobileUseError && invalidatingCodes2.has(error62.code)) {
+            for (const session of [...this.targets.values()]) {
+              if (session.udid) this.retireTarget(session.token, "lost", true);
+            }
+            for (const [endpointId, owned] of [...this.ownedSessions.entries()]) {
+              if (owned.udid) this.ownedSessions.delete(endpointId);
+            }
+          }
+          throw error62;
+        }
+      }
       if (this.runtime && this.configuredUrl === void 0) {
         const ready2 = this.readyRuntimeBindings();
         if (ready2.length === 0) {
@@ -55496,30 +55533,57 @@ var IosMobileUseService = class {
           };
         }
         const primary = ready2[0];
-        await this.runtime.verify(primary.token, signal);
-        const client2 = this.clientForUrl(primary.url);
-        const probe2 = await client2.probe(signal);
-        return {
-          status: "ready",
-          platform: "ios",
-          wdaUrl: client2.url,
-          iosVersion: probe2.iosVersion,
-          model: probe2.model,
-          runtime: this.runtime.status()
-        };
+        const endpointId = `ios:usb:${primary.udid}`;
+        try {
+          await this.runtime.verify(primary.token, signal);
+          const client2 = this.clientForUrl(primary.url);
+          const probe = await client2.probe(signal);
+          return {
+            status: "ready",
+            platform: "ios",
+            wdaUrl: client2.url,
+            iosVersion: probe.iosVersion,
+            model: probe.model,
+            runtime: this.runtime.status()
+          };
+        } catch (error62) {
+          if (error62 instanceof MobileUseError && invalidatingCodes2.has(error62.code)) {
+            this.retireEndpointSessions(endpointId);
+          }
+          throw error62;
+        }
       }
       const client = this.externalClient();
       const ready = this.readyRuntimeBindings();
-      if (this.runtime && ready[0]) await this.runtime.verify(ready[0].token, signal);
-      const probe = await client.probe(signal);
-      return {
-        status: "ready",
-        platform: "ios",
-        wdaUrl: client.url,
-        iosVersion: probe.iosVersion,
-        model: probe.model,
-        ...this.runtime ? { runtime: this.runtime.status() } : {}
-      };
+      if (this.runtime && ready[0]) {
+        const primary = ready[0];
+        const managedEndpointId = `ios:usb:${primary.udid}`;
+        try {
+          await this.runtime.verify(primary.token, signal);
+        } catch (error62) {
+          if (error62 instanceof MobileUseError && invalidatingCodes2.has(error62.code)) {
+            this.retireEndpointSessions(managedEndpointId);
+          }
+          throw error62;
+        }
+      }
+      const externalEndpointId = `ios:${new URL(client.url).host}`;
+      try {
+        const probe = await client.probe(signal);
+        return {
+          status: "ready",
+          platform: "ios",
+          wdaUrl: client.url,
+          iosVersion: probe.iosVersion,
+          model: probe.model,
+          ...this.runtime ? { runtime: this.runtime.status() } : {}
+        };
+      } catch (error62) {
+        if (error62 instanceof MobileUseError && invalidatingCodes2.has(error62.code)) {
+          this.retireEndpointSessions(externalEndpointId);
+        }
+        throw error62;
+      }
     }, signal);
   }
   isCancellationOrShutdown(error62, signal) {
@@ -55655,16 +55719,23 @@ var IosMobileUseService = class {
       let client;
       if (this.runtime && endpointId.startsWith("ios:usb:")) {
         try {
-          binding = this.runtime.binding(endpointId);
+          try {
+            binding = this.runtime.binding(endpointId);
+          } catch (error62) {
+            if (error62 instanceof MobileUseError && error62.code === "IOS_RUNTIME_NOT_READY" && this.readyRuntimeBindings().length > 0) {
+              const usbDevices = await this.runtime.devices(signal);
+              if (!usbDevices.some((entry) => entry.endpointId === endpointId)) throw wdaFailure("DEVICE_NOT_FOUND");
+            }
+            throw error62;
+          }
+          await this.runtime.verify(binding.token, signal);
+          client = this.clientForUrl(binding.url);
         } catch (error62) {
-          if (error62 instanceof MobileUseError && error62.code === "IOS_RUNTIME_NOT_READY" && this.readyRuntimeBindings().length > 0) {
-            const usbDevices = await this.runtime.devices(signal);
-            if (!usbDevices.some((entry) => entry.endpointId === endpointId)) throw wdaFailure("DEVICE_NOT_FOUND");
+          if (error62 instanceof MobileUseError && invalidatingCodes2.has(error62.code)) {
+            this.retireEndpointSessions(endpointId);
           }
           throw error62;
         }
-        await this.runtime.verify(binding.token, signal);
-        client = this.clientForUrl(binding.url);
       } else if (!this.runtime || this.configuredUrl !== void 0) {
         client = this.externalClient();
       } else {
@@ -55680,6 +55751,7 @@ var IosMobileUseService = class {
         } while (existing.queue !== settled);
         this.retireTarget(existing.token, "stale", false);
       }
+      let createdTarget;
       try {
         const probe = await client.probe(signal);
         const resolvedEndpoint = this.buildEndpoint(probe, client.url, binding);
@@ -55721,9 +55793,10 @@ var IosMobileUseService = class {
           lost: false,
           queue: Promise.resolve()
         };
+        createdTarget = target;
         this.targets.set(target.token, target);
-        this.hostLost = false;
         await this.ensure(target, signal);
+        this.hostLost = false;
         return {
           targetToken: target.token,
           endpoint: this.buildEndpoint({ ...before, sessionId }, client.url, binding),
@@ -55738,7 +55811,16 @@ var IosMobileUseService = class {
         };
       } catch (error62) {
         if (error62 instanceof MobileUseError && invalidatingCodes2.has(error62.code)) {
+          const probedEndpointId = binding ? `ios:usb:${binding.udid}` : `ios:${new URL(client.url).host}`;
+          if (createdTarget) {
+            this.retireTarget(createdTarget.token, "lost", true);
+          }
+          this.retireEndpointSessions(probedEndpointId);
           for (const existing of matchingActive) this.recordRetiredToken(existing.token, "lost");
+        } else if (createdTarget) {
+          this.targets.delete(createdTarget.token);
+          createdTarget.snapshot = void 0;
+          createdTarget.controller.abort();
         }
         throw error62;
       }

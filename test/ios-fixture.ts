@@ -14,6 +14,7 @@ export async function createIosFixture() {
     overlay: false,
     prettySource: true, screenshot: undefined as string | undefined,
     failAction: false, failAfterAction: false, corruptSource: false, failSessionDelete: false,
+    statusHook: undefined as (() => void | Promise<void>) | undefined,
     sourceHook: undefined as (() => void | Promise<void>) | undefined,
     sessionCreateHook: undefined as (() => Promise<void>) | undefined,
     actionHook: undefined as (() => Promise<void>) | undefined,
@@ -69,6 +70,7 @@ export async function createIosFixture() {
         response.end(JSON.stringify({ sessionId: state.sessionId, value }));
       };
       if (path === "/status") {
+        await state.statusHook?.();
         reply({ ready: true, os: { name: "iOS", version: state.iosVersion },
           ios: {}, build: { time: state.build, productBundleIdentifier: "example.runner" } });
         return;

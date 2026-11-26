@@ -264,6 +264,11 @@ export class ManagedIosRuntime implements IosRuntime {
     return [this.tunnelPort, this.tunnelPort + 1];
   }
 
+  async awaitInFlightCleanup(): Promise<void> {
+    if (!this.cleaning) return;
+    try { await this.cleaning; } catch { /* Recorded in runtime status. */ }
+  }
+
   status(filter?: IosRuntimeStatusFilter): IosRuntimeStatus {
     if (filter?.endpointId !== undefined) {
       const udid = parseUsbEndpointUdid(filter.endpointId);
@@ -846,7 +851,14 @@ export class ManagedIosRuntimePool implements IosRuntime {
       if (!udid) throw wdaFailure("INVALID_INPUT");
       if (config.tunnelPort !== 0) {
         for (const [otherUdid, other] of this.runtimes) {
-          if (otherUdid !== udid && (!["idle", "stopped"].includes(other.status().state) || this.reservedTunnelPorts.has(otherUdid))) {
+          if (otherUdid === udid) continue;
+          if (other.status().state === "failed") {
+            await other.awaitInFlightCleanup();
+          }
+          const otherState = other.status().state;
+          const hasPortClaim = other.activeTunnelPorts.length > 0 || this.reservedTunnelPorts.has(otherUdid);
+          const cleaned = otherState === "idle" || otherState === "stopped" || (otherState === "failed" && !hasPortClaim);
+          if (!cleaned || hasPortClaim) {
             throw runtimeFailure("IOS_RUNTIME_CONFLICT");
           }
         }
