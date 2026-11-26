@@ -13,7 +13,7 @@ import type {
   ObservedScreen, PreparedGestures, PreparedTextInput, ReadStatus, RecordingAction, RecordingResult, Rect, ScreenElement, ScreenWindow, SelectedTarget, WakeResult,
 } from "./types.js";
 
-const OBSERVATION_MAX_AGE_MS = 30_000;
+export const OBSERVATION_MAX_AGE_MS = 120_000;
 const invalidatingCodes = new Set([
   "DEVICE_UNAUTHORIZED", "DEVICE_OFFLINE", "TRANSPORT_LOST", "ADB_SERVER_UNAVAILABLE",
   "ADB_SERVER_CONFLICT", "ADB_SERVER_START_FAILED",

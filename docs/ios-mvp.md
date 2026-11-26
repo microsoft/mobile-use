@@ -178,7 +178,7 @@ screenshots**. Ordinary text and screenshots can still expose private content.
 converts to iOS points at dispatch using WDA's reported scale; never manually
 mix screenshot pixels with native point coordinates.
 
-Actions use the latest `observationId`, at most 30 seconds old and consumed on
+Actions use the latest `observationId`, at most 120 seconds old and consumed on
 attempt, including failed target validation. Each successful action returns a
 new observation for review, not proof of business success. Old refs never map
 to new elements. WDA metadata/hittability checks cannot prove durable page

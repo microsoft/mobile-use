@@ -55,21 +55,21 @@ export const multiPlatformToolPrompts: Readonly<Record<CoreToolName | "mobile_io
     title: "Taps",
     description: joinPrompt([
       "Tap, long_press, or double_tap one observed control or guarded coordinate on the targetToken's device (plus Android-only action.kind=prepare for the double-tap DEX helper).",
-      "Input actions consume the latest action.observationId (<= 30s old) for that targetToken, enforce metadata-first target/window guards or explicit complete target.bounds local visual fallback, preserve screenshot-free mode, and return a fresh observation.",
+      "Input actions consume the latest action.observationId (<= 120s old) for that targetToken, enforce metadata-first target/window guards or explicit complete target.bounds local visual fallback, preserve screenshot-free mode, and return a fresh observation.",
       "Android double_tap requires explicit user/session-approved prepare; iOS executes double_tap natively via W3C touch actions and rejects prepare. Never substitute long_press for tap automatically or replay uncertain input.",
     ]),
   },
   mobile_swipe: {
     title: "Swipes",
     description: joinPrompt([
-      "Perform one bounded swipe on the targetToken's device using its latest observationId (<= 30s old, consumed on attempt), screenshot-pixel from/to points, and optional durationMs (100-2000, default 400).",
+      "Perform one bounded swipe on the targetToken's device using its latest observationId (<= 120s old, consumed on attempt), screenshot-pixel from/to points, and optional durationMs (100-2000, default 400).",
       "Requires both endpoints within an unchanged enabled scrollable elementRef/surface, or explicit full-surface bounds for local visual fallback. Rejected in screenshot-free mode without capturing an image. Never replay uncertain swipes.",
     ]),
   },
   mobile_press_key: {
     title: "Press hardware / navigation key",
     description: joinPrompt([
-      "Press one key on the targetToken's device using its latest observationId (<= 30s old, consumed on attempt) and return the next observation in the same screenshot mode.",
+      "Press one key on the targetToken's device using its latest observationId (<= 120s old, consumed on attempt) and return the next observation in the same screenshot mode.",
       "Android supports BACK, HOME, and ENTER (require specific authorization before consequential ENTER submissions). iOS supports HOME (and hardware volume keys where enabled) and rejects BACK/ENTER; never substitute a guessed swipe for BACK.",
     ]),
   },
@@ -77,7 +77,7 @@ export const multiPlatformToolPrompts: Readonly<Record<CoreToolName | "mobile_io
     title: "Input text",
     description: joinPrompt([
       "Enter 1-256 UTF-16 code units into one unchanged, enabled, focused non-password native editor on the targetToken's device (plus Android-only action.kind=prepare for the Unicode/punctuation DEX helper).",
-      "Consumes latest action.observationId (<= 30s old), preserves screenshot-free mode, and never clears, submits, or uses clipboard.",
+      "Consumes latest action.observationId (<= 120s old), preserves screenshot-free mode, and never clears, submits, or uses clipboard.",
       "Android requires the active focused application window (background floating-window focus is rejected) and appends at field end when using the explicitly approved text helper; iOS types Unicode natively at the current cursor without prepare and rejects control characters/line breaks. Never replay uncertain input.",
     ]),
   },

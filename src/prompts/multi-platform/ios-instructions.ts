@@ -26,7 +26,7 @@ const managedRuntimePrelude = joinPrompt([
 
 const iosInteractionInstructions = joinPrompt([
   "Coordinates and bounds are screenshot pixels; the adapter converts them to iOS points.",
-  "Actions consume the latest observationId, at most 30 seconds old, even on a failed attempt.",
+  "Actions consume the latest observationId, at most 120 seconds old, even on a failed attempt.",
   "Use eligible elementRef targets; coordinate taps/swipes require screenshot-enabled observations.",
   "Custom-drawn targets need explicit complete bounds; metadata changes or disabled/ambiguous targets cannot fall back to pixels.",
   "includeScreenshot:false never captures images during input revalidation or results.",
