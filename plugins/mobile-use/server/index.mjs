@@ -39220,7 +39220,7 @@ var require_fast_uri = /* @__PURE__ */ __commonJSMin(((exports2, module) => {
       query: void 0,
       fragment: void 0
     };
-    let isIP2 = false;
+    let isIP3 = false;
     if (options.reference === "suffix") if (options.scheme) uri = options.scheme + ":" + uri;
     else uri = "//" + uri;
     const matches = uri.match(URI_PARSE);
@@ -39236,8 +39236,8 @@ var require_fast_uri = /* @__PURE__ */ __commonJSMin(((exports2, module) => {
       if (parsed.host) if (isIPv4(parsed.host) === false) {
         const ipv6result = normalizeIPv6(parsed.host);
         parsed.host = ipv6result.host.toLowerCase();
-        isIP2 = ipv6result.isIPV6;
-      } else isIP2 = true;
+        isIP3 = ipv6result.isIPV6;
+      } else isIP3 = true;
       if (parsed.scheme === void 0 && parsed.userinfo === void 0 && parsed.host === void 0 && parsed.port === void 0 && parsed.query === void 0 && !parsed.path) parsed.reference = "same-document";
       else if (parsed.scheme === void 0) parsed.reference = "relative";
       else if (parsed.fragment === void 0) parsed.reference = "absolute";
@@ -39245,7 +39245,7 @@ var require_fast_uri = /* @__PURE__ */ __commonJSMin(((exports2, module) => {
       if (options.reference && options.reference !== "suffix" && options.reference !== parsed.reference) parsed.error = parsed.error || "URI is not a " + options.reference + " reference.";
       const schemeHandler = getSchemeHandler(options.scheme || parsed.scheme);
       if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport)) {
-        if (parsed.host && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP2 === false && nonSimpleDomain(parsed.host)) try {
+        if (parsed.host && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP3 === false && nonSimpleDomain(parsed.host)) try {
           parsed.host = URL.domainToASCII(parsed.host.toLowerCase());
         } catch (e) {
           parsed.error = parsed.error || "Host's domain name can not be converted to ASCII: " + e;
@@ -45200,6 +45200,7 @@ function checkCancelled(signal) {
 import { execFile } from "node:child_process";
 import { accessSync, constants, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createConnection as createConnection2, isIP } from "node:net";
+import { networkInterfaces } from "node:os";
 import path from "node:path";
 
 // node_modules/fast-xml-parser/src/util.js
@@ -50047,6 +50048,52 @@ function parseDeviceList(output2, requireHeader = true) {
   }
   return devices;
 }
+function parseIpv6Zone(rawZone) {
+  if (!rawZone || rawZone.length > 64 || /[\u0000-\u0020\u007f%[\]/\\:]/.test(rawZone)) {
+    return null;
+  }
+  if (/^\d+$/.test(rawZone)) {
+    if (!/^[1-9]\d{0,9}$/.test(rawZone) || Number(rawZone) > 4294967295) return null;
+  }
+  return rawZone;
+}
+function readInterfaceIpv6Scopes(interfaces = networkInterfaces()) {
+  const scopes = /* @__PURE__ */ new Map();
+  const ambiguous = /* @__PURE__ */ new Set();
+  for (const [name, entries] of Object.entries(interfaces)) {
+    if (!name || !entries) continue;
+    for (const entry of entries) {
+      if (entry.family !== "IPv6") continue;
+      const scopeId = entry.scopeid;
+      if (!Number.isSafeInteger(scopeId) || scopeId <= 0 || scopeId > 4294967295) continue;
+      const prior = scopes.get(name);
+      if (prior !== void 0 && prior !== scopeId) {
+        scopes.delete(name);
+        ambiguous.add(name);
+        break;
+      }
+      if (!ambiguous.has(name)) {
+        scopes.set(name, scopeId);
+      }
+    }
+  }
+  return scopes;
+}
+function resolveIpv6ZoneIndex(zone, scopes) {
+  if (/^[1-9]\d{0,9}$/.test(zone)) return Number(zone);
+  return scopes.get(zone) ?? null;
+}
+function compareNetworkZones(first, second, scopes = /* @__PURE__ */ new Map()) {
+  if (first === null && second === null) return "same";
+  if (first === null || second === null) return "unknown";
+  if (first === second) return "same";
+  const firstIndex = resolveIpv6ZoneIndex(first, scopes);
+  const secondIndex = resolveIpv6ZoneIndex(second, scopes);
+  if (firstIndex !== null && secondIndex !== null) {
+    return firstIndex === secondIndex ? "same" : "different";
+  }
+  return "unknown";
+}
 function parseNetworkAddress(value) {
   if (!value || value.length > 512 || /[\u0000-\u0020\u007f]/.test(value)) return null;
   const portMatch = /:([1-9]\d{0,4})$/.exec(value);
@@ -50060,23 +50107,23 @@ function parseNetworkAddress(value) {
     const bracketed = rawHost.slice(1, -1);
     const zoneSep = bracketed.indexOf("%");
     const ipPart = zoneSep === -1 ? bracketed : bracketed.slice(0, zoneSep);
-    const zonePart = zoneSep === -1 ? "0" : bracketed.slice(zoneSep + 1);
-    if (!zonePart || zonePart.includes("%") || isIP(ipPart) !== 6) return null;
-    return { host: new URL(`http://[${ipPart}]`).hostname, port };
+    const zone = zoneSep === -1 ? null : parseIpv6Zone(bracketed.slice(zoneSep + 1));
+    if (zoneSep !== -1 && zone === null || isIP(ipPart) !== 6) return null;
+    return { host: new URL(`http://[${ipPart}]`).hostname, port, zone };
   }
   if (rawHost.includes(":")) {
     const zoneSep = rawHost.indexOf("%");
     const ipPart = zoneSep === -1 ? rawHost : rawHost.slice(0, zoneSep);
-    const zonePart = zoneSep === -1 ? "0" : rawHost.slice(zoneSep + 1);
-    if (!zonePart || zonePart.includes("%") || isIP(ipPart) !== 6) return null;
-    return { host: new URL(`http://[${ipPart}]`).hostname, port };
+    const zone = zoneSep === -1 ? null : parseIpv6Zone(rawHost.slice(zoneSep + 1));
+    if (zoneSep !== -1 && zone === null || isIP(ipPart) !== 6) return null;
+    return { host: new URL(`http://[${ipPart}]`).hostname, port, zone };
   }
   if (isIP(rawHost) === 4) {
     if (!/^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(rawHost)) return null;
-    return { host: rawHost, port };
+    return { host: rawHost, port, zone: null };
   }
   if (!/^[A-Za-z0-9.-]+$/.test(rawHost) || /^\d+(?:\.\d+)*$/.test(rawHost)) return null;
-  return { host: rawHost.toLowerCase(), port };
+  return { host: rawHost.toLowerCase(), port, zone: null };
 }
 function parseMdnsServices(output2, requireHeader = true) {
   const unverified = () => new MobileUseError(
@@ -50104,7 +50151,7 @@ function parseMdnsServices(output2, requireHeader = true) {
     }
     const parsed = parseNetworkAddress(rawAddress);
     if (!parsed) continue;
-    services.push({ instance, host: parsed.host, port: parsed.port });
+    services.push({ instance, host: parsed.host, port: parsed.port, zone: parsed.zone });
   }
   return services;
 }
@@ -50209,6 +50256,7 @@ var startTransportMonitor = createTransportMonitor(
 import { randomUUID as randomUUID3 } from "node:crypto";
 
 // src/android.ts
+import { isIP as isIP2 } from "node:net";
 import { crc32, inflateSync } from "node:zlib";
 import { setTimeout as setTimeout2 } from "node:timers/promises";
 
@@ -51708,17 +51756,97 @@ function parseHierarchy(output2) {
   windows.sort((a, b) => b.layer - a.layer || a.id - b.id);
   return { rotation, elements, windows, scope: "interactive-windows" };
 }
+function unverifiedWirelessError() {
+  return new MobileUseError(
+    "TRANSPORT_UNVERIFIED",
+    "This endpoint could not be qualified as modern paired Wireless debugging.",
+    "The user must pair/connect using Android Wireless debugging's connection address. Legacy TCP and unverifiable endpoints are not supported."
+  );
+}
+function parseProcNetEndpoint(raw) {
+  const match = /^([0-9A-Fa-f]{8}|[0-9A-Fa-f]{32}):([0-9A-Fa-f]{4})$/.exec(raw);
+  if (!match?.[1] || !match[2]) return null;
+  const ipHex = match[1];
+  const port = Number.parseInt(match[2], 16);
+  if (ipHex.length === 8) {
+    const b0 = Number.parseInt(ipHex.slice(6, 8), 16);
+    const b1 = Number.parseInt(ipHex.slice(4, 6), 16);
+    const b2 = Number.parseInt(ipHex.slice(2, 4), 16);
+    const b3 = Number.parseInt(ipHex.slice(0, 2), 16);
+    return { host: `${b0}.${b1}.${b2}.${b3}`, altHost: null, port, loopback: b0 === 127 };
+  }
+  const bytes = [];
+  for (let word = 0; word < 4; word++) {
+    const chunk = ipHex.slice(word * 8, word * 8 + 8);
+    bytes.push(
+      Number.parseInt(chunk.slice(6, 8), 16),
+      Number.parseInt(chunk.slice(4, 6), 16),
+      Number.parseInt(chunk.slice(2, 4), 16),
+      Number.parseInt(chunk.slice(0, 2), 16)
+    );
+  }
+  const groups = Array.from(
+    { length: 8 },
+    (_, index) => (bytes[index * 2] << 8 | bytes[index * 2 + 1]).toString(16)
+  );
+  const ipv6Host = new URL(`http://[${groups.join(":")}]`).hostname;
+  const v4Mapped = bytes.slice(0, 10).every((byte) => byte === 0) && bytes[10] === 255 && bytes[11] === 255;
+  if (v4Mapped) {
+    return {
+      host: `${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`,
+      altHost: ipv6Host,
+      port,
+      loopback: bytes[12] === 127
+    };
+  }
+  const v6Loopback = bytes.slice(0, 15).every((byte) => byte === 0) && bytes[15] === 1;
+  return { host: ipv6Host, altHost: null, port, loopback: v6Loopback };
+}
+function parseAdbdTcpSockets(output2) {
+  if (Buffer.byteLength(output2) > 1024 * 1024 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(output2)) {
+    throw unverifiedWirelessError();
+  }
+  const lines = output2.replaceAll("\r\n", "\n").split("\n").map((line) => line.trim()).filter(Boolean);
+  if (lines.length > 8192) throw unverifiedWirelessError();
+  let headers = 0;
+  const listenPorts = /* @__PURE__ */ new Set();
+  const established = [];
+  for (const line of lines) {
+    if (/^sl\s+local_address\s+rem(?:ote)?_address\s+st\b/.test(line)) {
+      headers++;
+      continue;
+    }
+    const [slot, rawLocal, rawRemote, rawState, , , , rawUid] = line.split(/\s+/);
+    if (!slot || !/^\d+:$/.test(slot) || !rawLocal || !rawRemote || !rawState || !/^[0-9A-Fa-f]{2}$/.test(rawState) || !rawUid || !/^\d+$/.test(rawUid)) {
+      throw unverifiedWirelessError();
+    }
+    if (rawUid !== "2000") continue;
+    const local = parseProcNetEndpoint(rawLocal);
+    const remote = parseProcNetEndpoint(rawRemote);
+    if (!local || !remote) throw unverifiedWirelessError();
+    const state = rawState.toUpperCase();
+    if (state === "0A" && !local.loopback) {
+      listenPorts.add(local.port);
+    } else if (state === "01" && !local.loopback && !remote.loopback) {
+      established.push(local);
+    }
+  }
+  if (headers === 0) throw unverifiedWirelessError();
+  return { listenPorts, established };
+}
 var AndroidBackend = class {
-  constructor(adb, endpoint, targetSignal, assertCurrent) {
+  constructor(adb, endpoint, targetSignal, assertCurrent, interfaceScopes = readInterfaceIpv6Scopes) {
     this.adb = adb;
     this.endpoint = endpoint;
     this.targetSignal = targetSignal;
     this.assertCurrent = assertCurrent;
+    this.interfaceScopes = interfaceScopes;
   }
   adb;
   endpoint;
   targetSignal;
   assertCurrent;
+  interfaceScopes;
   gestureHelperPath;
   textHelperPath;
   recorder = new ScreenRecorder((args, options) => this.command(args, options));
@@ -51739,11 +51867,7 @@ var AndroidBackend = class {
     return value;
   }
   unverifiedWireless() {
-    return new MobileUseError(
-      "TRANSPORT_UNVERIFIED",
-      "This endpoint could not be qualified as modern paired Wireless debugging.",
-      "The user must pair/connect using Android Wireless debugging's connection address. Legacy TCP and unverifiable endpoints are not supported."
-    );
+    return unverifiedWirelessError();
   }
   async globalSetting(name, signal) {
     let output2;
@@ -51761,18 +51885,60 @@ var AndroidBackend = class {
     }
     return value;
   }
+  async adbdTcpSockets(signal) {
+    let output2;
+    try {
+      output2 = await this.command(["shell", "cat", "/proc/net/tcp", "/proc/net/tcp6"], signal ? { signal } : {});
+    } catch (error62) {
+      if (error62 instanceof MobileUseError && error62.code === "ADB_FAILED") {
+        throw this.unverifiedWireless();
+      }
+      throw error62;
+    }
+    return parseAdbdTcpSockets(output2.toString("utf8"));
+  }
   async verifyRetailWirelessTls(hardwareSerial, signal) {
     if (!hardwareSerial) throw this.unverifiedWireless();
-    const [debuggable, wifiEnabled] = await Promise.all([
+    const prefix = `adb-${hardwareSerial}-`;
+    const matchesDeviceInstance = (instance) => instance.startsWith(prefix) && /^[A-Za-z0-9]+$/.test(instance.slice(prefix.length));
+    const endpointAddress = this.endpoint.kind === "network" ? parseNetworkAddress(this.endpoint.endpointId) : null;
+    if (this.endpoint.kind === "network" && !endpointAddress) {
+      throw this.unverifiedWireless();
+    }
+    const suffix = "._adb-tls-connect._tcp";
+    const expectedInstance = this.endpoint.kind === "paired-wireless" && this.endpoint.endpointId.endsWith(suffix) ? this.endpoint.endpointId.slice(0, -suffix.length) : null;
+    if (this.endpoint.kind === "paired-wireless" && (!expectedInstance || !matchesDeviceInstance(expectedInstance))) {
+      throw this.unverifiedWireless();
+    }
+    const [debuggable, serviceTcpPort, persistTcpPort, wifiEnabled, sockets] = await Promise.all([
       this.property("ro.debuggable", signal),
-      this.globalSetting("adb_wifi_enabled", signal)
+      this.property("service.adb.tcp.port", signal),
+      this.property("persist.adb.tcp.port", signal),
+      this.globalSetting("adb_wifi_enabled", signal),
+      this.adbdTcpSockets(signal)
     ]);
-    if (debuggable !== "0" || wifiEnabled !== "1") {
+    if (debuggable !== "0" || wifiEnabled !== "1" || !/^(?:|0|-1)$/.test(serviceTcpPort) || !/^(?:|0|-1)$/.test(persistTcpPort)) {
+      throw this.unverifiedWireless();
+    }
+    if (sockets.listenPorts.size !== 1) {
+      throw this.unverifiedWireless();
+    }
+    const [tlsPort] = sockets.listenPorts;
+    if (!tlsPort || tlsPort < 1 || tlsPort > 65535 || tlsPort === 5555 || sockets.established.some((entry) => entry.port === 5555)) {
+      throw this.unverifiedWireless();
+    }
+    if (endpointAddress) {
+      if (endpointAddress.port !== String(tlsPort)) {
+        throw this.unverifiedWireless();
+      }
+      const isIpHost = isIP2(endpointAddress.host) === 4 || endpointAddress.host.startsWith("[");
+      if (!sockets.established.some((entry) => entry.port === tlsPort && (!isIpHost || entry.host === endpointAddress.host || entry.altHost === endpointAddress.host))) {
+        throw this.unverifiedWireless();
+      }
+    } else if (!sockets.established.some((entry) => entry.port === tlsPort)) {
       throw this.unverifiedWireless();
     }
     const combined = signal ? AbortSignal.any([this.targetSignal, signal]) : this.targetSignal;
-    const prefix = `adb-${hardwareSerial}-`;
-    const matchesDeviceInstance = (instance) => instance.startsWith(prefix) && /^[A-Za-z0-9]+$/.test(instance.slice(prefix.length));
     for (let attempt = 0; attempt < 2; attempt++) {
       this.assertCurrent();
       checkCancelled(signal);
@@ -51789,13 +51955,17 @@ var AndroidBackend = class {
       this.assertCurrent();
       const services = parseMdnsServices(rawMdns.toString("utf8"));
       const deviceServices = services.filter((entry) => matchesDeviceInstance(entry.instance));
-      if (this.endpoint.kind === "network") {
-        const endpointAddress = parseNetworkAddress(this.endpoint.endpointId);
-        if (!endpointAddress) throw this.unverifiedWireless();
-        const matched2 = deviceServices.filter(
-          (entry) => entry.host === endpointAddress.host && entry.port === endpointAddress.port
+      const singleInstance = new Set(deviceServices.map((entry) => entry.instance)).size === 1;
+      const allMatchTlsPort = deviceServices.length > 0 && deviceServices.every((entry) => entry.port === String(tlsPort));
+      if (endpointAddress) {
+        const scopes = this.interfaceScopes();
+        if (services.some((entry) => !matchesDeviceInstance(entry.instance) && entry.host === endpointAddress.host && entry.port === endpointAddress.port && compareNetworkZones(endpointAddress.zone, entry.zone, scopes) !== "different")) {
+          throw this.unverifiedWireless();
+        }
+        const matched = singleInstance && allMatchTlsPort && deviceServices.some(
+          (entry) => entry.host === endpointAddress.host && entry.port === endpointAddress.port && compareNetworkZones(endpointAddress.zone, entry.zone, scopes) === "same"
         );
-        if (matched2.length === 0) {
+        if (!matched) {
           if (attempt === 0) {
             await setTimeout2(150, void 0, { signal: combined }).catch((error62) => {
               if (this.targetSignal.aborted && !signal?.aborted) this.assertCurrent();
@@ -51806,21 +51976,9 @@ var AndroidBackend = class {
           }
           throw this.unverifiedWireless();
         }
-        if (services.some((entry) => entry.host === endpointAddress.host && entry.port === endpointAddress.port && !matchesDeviceInstance(entry.instance))) {
-          throw this.unverifiedWireless();
-        }
-        const matchedInstances = new Set(matched2.map((entry) => entry.instance));
-        if (services.some((entry) => matchedInstances.has(entry.instance) && entry.port !== endpointAddress.port)) {
-          throw this.unverifiedWireless();
-        }
         return;
       }
-      const suffix = "._adb-tls-connect._tcp";
-      if (!this.endpoint.endpointId.endsWith(suffix)) throw this.unverifiedWireless();
-      const expectedInstance = this.endpoint.endpointId.slice(0, -suffix.length);
-      if (!matchesDeviceInstance(expectedInstance)) throw this.unverifiedWireless();
-      const matched = deviceServices.filter((entry) => entry.instance === expectedInstance);
-      if (matched.length === 0) {
+      if (!singleInstance || !allMatchTlsPort || deviceServices[0]?.instance !== expectedInstance) {
         if (attempt === 0) {
           await setTimeout2(150, void 0, { signal: combined }).catch((error62) => {
             if (this.targetSignal.aborted && !signal?.aborted) this.assertCurrent();
@@ -51829,9 +51987,6 @@ var AndroidBackend = class {
           });
           continue;
         }
-        throw this.unverifiedWireless();
-      }
-      if (new Set(matched.map((entry) => entry.port)).size !== 1) {
         throw this.unverifiedWireless();
       }
       return;

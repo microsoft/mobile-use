@@ -1,8 +1,9 @@
+import { isIP } from "node:net";
 import { crc32, inflateSync } from "node:zlib";
 import { setTimeout } from "node:timers/promises";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
-import { parseMdnsServices, parseNetworkAddress } from "./adb.js";
-import type { AdbConnection, RunOptions } from "./adb.js";
+import { compareNetworkZones, parseMdnsServices, parseNetworkAddress, readInterfaceIpv6Scopes } from "./adb.js";
+import type { AdbConnection, InterfaceScopeMap, RunOptions } from "./adb.js";
 import { localApkFile, parseAndroidUser, parseForegroundApp, parseInstalledApps, parsePackageStopped, validatePackageName } from "./apps.js";
 import { checkCancelled, isRecord, MobileUseError, publicError } from "./errors.js";
 import { doubleTap, prepareGestures } from "./gestures.js";
@@ -446,6 +447,100 @@ export function parseHierarchy(output: string): Hierarchy {
   return { rotation, elements, windows, scope: "interactive-windows" };
 }
 
+interface ProcNetEndpoint {
+  host: string;
+  altHost: string | null;
+  port: number;
+  loopback: boolean;
+}
+
+interface AdbdTcpSocketSummary {
+  listenPorts: ReadonlySet<number>;
+  established: readonly ProcNetEndpoint[];
+}
+
+function unverifiedWirelessError(): MobileUseError {
+  return new MobileUseError(
+    "TRANSPORT_UNVERIFIED",
+    "This endpoint could not be qualified as modern paired Wireless debugging.",
+    "The user must pair/connect using Android Wireless debugging's connection address. Legacy TCP and unverifiable endpoints are not supported.",
+  );
+}
+
+function parseProcNetEndpoint(raw: string): ProcNetEndpoint | null {
+  const match = /^([0-9A-Fa-f]{8}|[0-9A-Fa-f]{32}):([0-9A-Fa-f]{4})$/.exec(raw);
+  if (!match?.[1] || !match[2]) return null;
+  const ipHex = match[1];
+  const port = Number.parseInt(match[2], 16);
+  if (ipHex.length === 8) {
+    const b0 = Number.parseInt(ipHex.slice(6, 8), 16);
+    const b1 = Number.parseInt(ipHex.slice(4, 6), 16);
+    const b2 = Number.parseInt(ipHex.slice(2, 4), 16);
+    const b3 = Number.parseInt(ipHex.slice(0, 2), 16);
+    return { host: `${b0}.${b1}.${b2}.${b3}`, altHost: null, port, loopback: b0 === 127 };
+  }
+  const bytes: number[] = [];
+  for (let word = 0; word < 4; word++) {
+    const chunk = ipHex.slice(word * 8, word * 8 + 8);
+    bytes.push(
+      Number.parseInt(chunk.slice(6, 8), 16),
+      Number.parseInt(chunk.slice(4, 6), 16),
+      Number.parseInt(chunk.slice(2, 4), 16),
+      Number.parseInt(chunk.slice(0, 2), 16),
+    );
+  }
+  const groups = Array.from(
+    { length: 8 },
+    (_, index) => ((bytes[index * 2]! << 8) | bytes[index * 2 + 1]!).toString(16),
+  );
+  const ipv6Host = new URL(`http://[${groups.join(":")}]`).hostname;
+  const v4Mapped = bytes.slice(0, 10).every((byte) => byte === 0) && bytes[10] === 0xff && bytes[11] === 0xff;
+  if (v4Mapped) {
+    return {
+      host: `${bytes[12]}.${bytes[13]}.${bytes[14]}.${bytes[15]}`,
+      altHost: ipv6Host,
+      port,
+      loopback: bytes[12] === 127,
+    };
+  }
+  const v6Loopback = bytes.slice(0, 15).every((byte) => byte === 0) && bytes[15] === 1;
+  return { host: ipv6Host, altHost: null, port, loopback: v6Loopback };
+}
+
+export function parseAdbdTcpSockets(output: string): AdbdTcpSocketSummary {
+  if (Buffer.byteLength(output) > 1024 * 1024 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(output)) {
+    throw unverifiedWirelessError();
+  }
+  const lines = output.replaceAll("\r\n", "\n").split("\n").map((line) => line.trim()).filter(Boolean);
+  if (lines.length > 8192) throw unverifiedWirelessError();
+  let headers = 0;
+  const listenPorts = new Set<number>();
+  const established: ProcNetEndpoint[] = [];
+  for (const line of lines) {
+    if (/^sl\s+local_address\s+rem(?:ote)?_address\s+st\b/.test(line)) {
+      headers++;
+      continue;
+    }
+    const [slot, rawLocal, rawRemote, rawState, , , , rawUid] = line.split(/\s+/);
+    if (!slot || !/^\d+:$/.test(slot) || !rawLocal || !rawRemote ||
+      !rawState || !/^[0-9A-Fa-f]{2}$/.test(rawState) || !rawUid || !/^\d+$/.test(rawUid)) {
+      throw unverifiedWirelessError();
+    }
+    if (rawUid !== "2000") continue;
+    const local = parseProcNetEndpoint(rawLocal);
+    const remote = parseProcNetEndpoint(rawRemote);
+    if (!local || !remote) throw unverifiedWirelessError();
+    const state = rawState.toUpperCase();
+    if (state === "0A" && !local.loopback) {
+      listenPorts.add(local.port);
+    } else if (state === "01" && !local.loopback && !remote.loopback) {
+      established.push(local);
+    }
+  }
+  if (headers === 0) throw unverifiedWirelessError();
+  return { listenPorts, established };
+}
+
 export class AndroidBackend {
   private gestureHelperPath: string | undefined;
   private textHelperPath: string | undefined;
@@ -456,6 +551,7 @@ export class AndroidBackend {
     private readonly endpoint: DeviceEndpoint,
     private readonly targetSignal: AbortSignal,
     private readonly assertCurrent: () => void,
+    private readonly interfaceScopes: () => InterfaceScopeMap = readInterfaceIpv6Scopes,
   ) {}
 
   private async command(args: readonly string[], options: RunOptions = {}): Promise<Buffer> {
@@ -477,11 +573,7 @@ export class AndroidBackend {
   }
 
   private unverifiedWireless(): MobileUseError {
-    return new MobileUseError(
-      "TRANSPORT_UNVERIFIED",
-      "This endpoint could not be qualified as modern paired Wireless debugging.",
-      "The user must pair/connect using Android Wireless debugging's connection address. Legacy TCP and unverifiable endpoints are not supported.",
-    );
+    return unverifiedWirelessError();
   }
 
   private async globalSetting(name: string, signal?: AbortSignal): Promise<string> {
@@ -501,19 +593,70 @@ export class AndroidBackend {
     return value;
   }
 
+  private async adbdTcpSockets(signal?: AbortSignal): Promise<AdbdTcpSocketSummary> {
+    let output: Buffer;
+    try {
+      output = await this.command(["shell", "cat", "/proc/net/tcp", "/proc/net/tcp6"], signal ? { signal } : {});
+    } catch (error) {
+      if (error instanceof MobileUseError && error.code === "ADB_FAILED") {
+        throw this.unverifiedWireless();
+      }
+      throw error;
+    }
+    return parseAdbdTcpSockets(output.toString("utf8"));
+  }
+
   private async verifyRetailWirelessTls(hardwareSerial: string | null, signal?: AbortSignal): Promise<void> {
     if (!hardwareSerial) throw this.unverifiedWireless();
-    const [debuggable, wifiEnabled] = await Promise.all([
-      this.property("ro.debuggable", signal),
-      this.globalSetting("adb_wifi_enabled", signal),
-    ]);
-    if (debuggable !== "0" || wifiEnabled !== "1") {
-      throw this.unverifiedWireless();
-    }
-    const combined = signal ? AbortSignal.any([this.targetSignal, signal]) : this.targetSignal;
     const prefix = `adb-${hardwareSerial}-`;
     const matchesDeviceInstance = (instance: string): boolean =>
       instance.startsWith(prefix) && /^[A-Za-z0-9]+$/.test(instance.slice(prefix.length));
+    const endpointAddress = this.endpoint.kind === "network"
+      ? parseNetworkAddress(this.endpoint.endpointId)
+      : null;
+    if (this.endpoint.kind === "network" && !endpointAddress) {
+      throw this.unverifiedWireless();
+    }
+    const suffix = "._adb-tls-connect._tcp";
+    const expectedInstance = this.endpoint.kind === "paired-wireless" && this.endpoint.endpointId.endsWith(suffix)
+      ? this.endpoint.endpointId.slice(0, -suffix.length)
+      : null;
+    if (this.endpoint.kind === "paired-wireless" && (!expectedInstance || !matchesDeviceInstance(expectedInstance))) {
+      throw this.unverifiedWireless();
+    }
+    const [debuggable, serviceTcpPort, persistTcpPort, wifiEnabled, sockets] = await Promise.all([
+      this.property("ro.debuggable", signal),
+      this.property("service.adb.tcp.port", signal),
+      this.property("persist.adb.tcp.port", signal),
+      this.globalSetting("adb_wifi_enabled", signal),
+      this.adbdTcpSockets(signal),
+    ]);
+    if (debuggable !== "0" || wifiEnabled !== "1" ||
+      !/^(?:|0|-1)$/.test(serviceTcpPort) || !/^(?:|0|-1)$/.test(persistTcpPort)) {
+      throw this.unverifiedWireless();
+    }
+    if (sockets.listenPorts.size !== 1) {
+      throw this.unverifiedWireless();
+    }
+    const [tlsPort] = sockets.listenPorts;
+    if (!tlsPort || tlsPort < 1 || tlsPort > 65535 || tlsPort === 5555 ||
+      sockets.established.some((entry) => entry.port === 5555)) {
+      throw this.unverifiedWireless();
+    }
+    if (endpointAddress) {
+      if (endpointAddress.port !== String(tlsPort)) {
+        throw this.unverifiedWireless();
+      }
+      const isIpHost = isIP(endpointAddress.host) === 4 || endpointAddress.host.startsWith("[");
+      if (!sockets.established.some((entry) =>
+        entry.port === tlsPort &&
+        (!isIpHost || entry.host === endpointAddress.host || entry.altHost === endpointAddress.host))) {
+        throw this.unverifiedWireless();
+      }
+    } else if (!sockets.established.some((entry) => entry.port === tlsPort)) {
+      throw this.unverifiedWireless();
+    }
+    const combined = signal ? AbortSignal.any([this.targetSignal, signal]) : this.targetSignal;
     for (let attempt = 0; attempt < 2; attempt++) {
       this.assertCurrent();
       checkCancelled(signal);
@@ -530,13 +673,24 @@ export class AndroidBackend {
       this.assertCurrent();
       const services = parseMdnsServices(rawMdns.toString("utf8"));
       const deviceServices = services.filter((entry) => matchesDeviceInstance(entry.instance));
-      if (this.endpoint.kind === "network") {
-        const endpointAddress = parseNetworkAddress(this.endpoint.endpointId);
-        if (!endpointAddress) throw this.unverifiedWireless();
-        const matched = deviceServices.filter((entry) =>
-          entry.host === endpointAddress.host && entry.port === endpointAddress.port,
+      const singleInstance = new Set(deviceServices.map((entry) => entry.instance)).size === 1;
+      const allMatchTlsPort = deviceServices.length > 0 &&
+        deviceServices.every((entry) => entry.port === String(tlsPort));
+      if (endpointAddress) {
+        const scopes = this.interfaceScopes();
+        if (services.some((entry) =>
+          !matchesDeviceInstance(entry.instance) &&
+          entry.host === endpointAddress.host &&
+          entry.port === endpointAddress.port &&
+          compareNetworkZones(endpointAddress.zone, entry.zone, scopes) !== "different")) {
+          throw this.unverifiedWireless();
+        }
+        const matched = singleInstance && allMatchTlsPort && deviceServices.some((entry) =>
+          entry.host === endpointAddress.host &&
+          entry.port === endpointAddress.port &&
+          compareNetworkZones(endpointAddress.zone, entry.zone, scopes) === "same",
         );
-        if (matched.length === 0) {
+        if (!matched) {
           if (attempt === 0) {
             await setTimeout(150, undefined, { signal: combined }).catch((error: unknown) => {
               if (this.targetSignal.aborted && !signal?.aborted) this.assertCurrent();
@@ -547,23 +701,9 @@ export class AndroidBackend {
           }
           throw this.unverifiedWireless();
         }
-        if (services.some((entry) =>
-          entry.host === endpointAddress.host && entry.port === endpointAddress.port &&
-          !matchesDeviceInstance(entry.instance))) {
-          throw this.unverifiedWireless();
-        }
-        const matchedInstances = new Set(matched.map((entry) => entry.instance));
-        if (services.some((entry) => matchedInstances.has(entry.instance) && entry.port !== endpointAddress.port)) {
-          throw this.unverifiedWireless();
-        }
         return;
       }
-      const suffix = "._adb-tls-connect._tcp";
-      if (!this.endpoint.endpointId.endsWith(suffix)) throw this.unverifiedWireless();
-      const expectedInstance = this.endpoint.endpointId.slice(0, -suffix.length);
-      if (!matchesDeviceInstance(expectedInstance)) throw this.unverifiedWireless();
-      const matched = deviceServices.filter((entry) => entry.instance === expectedInstance);
-      if (matched.length === 0) {
+      if (!singleInstance || !allMatchTlsPort || deviceServices[0]?.instance !== expectedInstance) {
         if (attempt === 0) {
           await setTimeout(150, undefined, { signal: combined }).catch((error: unknown) => {
             if (this.targetSignal.aborted && !signal?.aborted) this.assertCurrent();
@@ -572,9 +712,6 @@ export class AndroidBackend {
           });
           continue;
         }
-        throw this.unverifiedWireless();
-      }
-      if (new Set(matched.map((entry) => entry.port)).size !== 1) {
         throw this.unverifiedWireless();
       }
       return;

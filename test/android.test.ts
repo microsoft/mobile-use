@@ -2,10 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseDeviceList } from "../src/adb.js";
-import { AndroidBackend, decodePng, parseDisplayState, parseHierarchy, parseKeyguardState, validatePng, validateText } from "../src/android.js";
+import type { InterfaceScopeMap } from "../src/adb.js";
+import { AndroidBackend, decodePng, parseAdbdTcpSockets, parseDisplayState, parseHierarchy, parseKeyguardState, validatePng, validateText } from "../src/android.js";
 import { MobileUseError } from "../src/errors.js";
 import { actionSchema } from "../src/types.js";
-import { chunk, FakeAdb, displayDiagnostics, editField, hasCode, hierarchy, keyguardPolicy, node, pixelPng, png, textHash, USB, WIFI } from "./helpers.js";
+import { chunk, FakeAdb, displayDiagnostics, editField, hasCode, hierarchy, keyguardPolicy, node, pixelPng, png, procNetTcpFixture, textHash, USB, WIFI } from "./helpers.js";
 
 test("PNG validation preserves binary data and handles rotated dimensions", () => {
   assert.deepEqual(validatePng(png()), { width: 80, height: 160 });
@@ -203,10 +204,10 @@ test("ordered hierarchy traversal preserves parent/child/sibling references with
   ]) assert.throws(() => parseHierarchy(invalid), hasCode("HIERARCHY_UNAVAILABLE"));
 });
 
-function backend(adb: FakeAdb, endpointId = USB): AndroidBackend {
+function backend(adb: FakeAdb, endpointId = USB, scopes: InterfaceScopeMap = new Map()): AndroidBackend {
   const endpoint = parseDeviceList(adb.inventory).find((entry) => entry.endpointId === endpointId);
   assert.ok(endpoint);
-  return new AndroidBackend(adb, endpoint, new AbortController().signal, () => {});
+  return new AndroidBackend(adb, endpoint, new AbortController().signal, () => {}, () => scopes);
 }
 
 test("primary logical display geometry is read independently for all rotations", () => {
@@ -523,10 +524,36 @@ test("TLS-connect service endpoints still require device-side Wireless debugging
   await assert.rejects(backend(adb, service).identity(), hasCode("TRANSPORT_UNVERIFIED"));
 });
 
-test("retail user builds with SELinux-hidden adbd properties qualify paired Wireless debugging via adb_wifi_enabled and _adb-tls-connect._tcp mDNS", async () => {
+test("adbd TCP socket parser extracts non-loopback uid 2000 listeners and established sockets across IPv4 and IPv6", () => {
+  const parsed = parseAdbdTcpSockets(
+    procNetTcpFixture(
+      [37891],
+      [
+        { localHex: "0A0200C0", localPort: 37891 },
+        { localHex: "0000000000000000FFFF00000A0200C0", localPort: 37891 },
+        { localHex: "000080FE000000000000000001000000", localPort: 37891 },
+        { localHex: "0100007F", localPort: 37891 },
+        { localHex: "0A0200C0", localPort: 44444, uid: 10123 },
+      ],
+    ),
+  );
+  assert.deepEqual([...parsed.listenPorts], [37891]);
+  assert.deepEqual(parsed.established, [
+    { host: "192.0.2.10", altHost: null, port: 37891, loopback: false },
+    { host: "192.0.2.10", altHost: "[::ffff:c000:20a]", port: 37891, loopback: false },
+    { host: "[fe80::1]", altHost: null, port: 37891, loopback: false },
+  ]);
+  for (const invalid of ["", "unexpected header\n", "  sl  local_address rem_address st\n   0: ZZZZ:9403 00000000:0000 0A 0 0 0 2000\n"]) {
+    assert.throws(() => parseAdbdTcpSockets(invalid), hasCode("TRANSPORT_UNVERIFIED"));
+  }
+});
+
+test("retail user builds with SELinux-hidden adbd properties qualify paired Wireless debugging via pinned socket evidence and scoped mDNS", async () => {
   const adb = new FakeAdb();
   adb.properties["service.adb.tls.port"] = "";
   adb.properties["persist.adb.tls_server.enable"] = "";
+  adb.properties["service.adb.tcp.port"] = "-1";
+  adb.properties["persist.adb.tcp.port"] = "0";
   adb.properties["ro.debuggable"] = "0";
   adb.globalSettings.adb_wifi_enabled = "1";
 
@@ -540,7 +567,6 @@ test("retail user builds with SELinux-hidden adbd properties qualify paired Wire
   };
   adb.mdns =
     "List of discovered mdns services\n" +
-    `adb-${USB}-stale0\t_adb-tls-connect._tcp\t192.0.2.10:40111\n` +
     `adb-${USB}-oqnwFu\t_adb-tls-connect._tcp\t${WIFI}\n`;
   const wifiIdentity = await backend(adb, WIFI).identity();
   assert.equal(mdnsCalls, 2);
@@ -548,27 +574,102 @@ test("retail user builds with SELinux-hidden adbd properties qualify paired Wire
   assert.equal(wifiIdentity.wirelessEvidence, "adb-tls-connect-service");
   adb.handler = undefined;
 
-  // Normalized IPv6 and paired-wireless mDNS instance endpoints also qualify when bound to ro.serialno.
-  const ipv6Endpoint = "[fe80::1%wlan0]:37891";
+  // Paired-wireless mDNS instance endpoint also qualifies when single listener + established socket match.
   const tlsServiceEndpoint = `adb-${USB}-oqnwFu._adb-tls-connect._tcp`;
+  adb.inventory = `List of devices attached\n${tlsServiceEndpoint} device transport_id:14\n`;
+  assert.equal((await backend(adb, tlsServiceEndpoint).identity()).wirelessEvidence, "adb-tls-connect-service");
+
+  // Spoofed mDNS pointing to a connected legacy TCP endpoint fails closed even while Wireless debugging is enabled!
+  const spoofedLegacy = "192.0.2.10:44444";
+  const spoofedService = `adb-${USB}-spoof0._adb-tls-connect._tcp`;
   adb.inventory =
-    `List of devices attached\n` +
-    `${ipv6Endpoint} device transport_id:13\n` +
+    "List of devices attached\n" +
+    `${WIFI} device transport_id:12\n` +
     `${tlsServiceEndpoint} device transport_id:14\n` +
-    `192.0.2.10:5555 device transport_id:15\n`;
+    `${spoofedLegacy} device transport_id:15\n` +
+    `${spoofedService} device transport_id:16\n` +
+    "192.0.2.10:5555 device transport_id:17\n";
+  // Case A: legacy TCP listener + Wireless debugging TLS listener both active on device, spoofed mDNS advertises legacy port (alone or alongside real TLS port).
+  adb.procNetTcp = procNetTcpFixture(
+    [37891, 44444],
+    [{ localHex: "0A0200C0", localPort: 44444 }],
+  );
+  for (const mdns of [
+    `List of discovered mdns services\nadb-${USB}-spoof0\t_adb-tls-connect._tcp\t${spoofedLegacy}\n`,
+    `List of discovered mdns services\nadb-${USB}-oqnwFu\t_adb-tls-connect._tcp\t${WIFI}\nadb-${USB}-spoof0\t_adb-tls-connect._tcp\t${spoofedLegacy}\n`,
+  ]) {
+    adb.mdns = mdns;
+    await assert.rejects(backend(adb, spoofedLegacy).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+    await assert.rejects(backend(adb, spoofedService).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+    await assert.rejects(backend(adb, WIFI).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+  }
+  // Case B: single listener on 37891, but conflicting mDNS advertisement for same serial or spoofed port 5555/44444.
+  adb.procNetTcp = procNetTcpFixture();
   adb.mdns =
     "List of discovered mdns services\n" +
     `adb-${USB}-oqnwFu\t_adb-tls-connect._tcp\t${WIFI}\n` +
-    `adb-${USB}-oqnwFu\t_adb-tls-connect._tcp\tFE80::1%2:37891\n` +
-    `adb-${USB}-legacy\t_adb._tcp\t192.0.2.10:5555\n`;
-  assert.equal((await backend(adb, ipv6Endpoint).identity()).wirelessEvidence, "adb-tls-connect-service");
-  assert.equal((await backend(adb, tlsServiceEndpoint).identity()).wirelessEvidence, "adb-tls-connect-service");
-
-  // Legacy unencrypted adb tcpip 5555 on the same phone is still rejected even while Wireless debugging is enabled!
+    `adb-${USB}-spoof0\t_adb-tls-connect._tcp\t${spoofedLegacy}\n`;
+  await assert.rejects(backend(adb, WIFI).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+  await assert.rejects(backend(adb, spoofedLegacy).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+  adb.mdns = `List of discovered mdns services\nadb-${USB}-oqnwFu\t_adb-tls-connect._tcp\t192.0.2.10:5555\n`;
+  adb.procNetTcp = procNetTcpFixture([5555], [{ localHex: "0A0200C0", localPort: 5555 }]);
   await assert.rejects(backend(adb, "192.0.2.10:5555").identity(), hasCode("TRANSPORT_UNVERIFIED"));
+
+  // Case C: positive legacy TCP port properties or missing established socket on tlsPort fail closed.
+  adb.procNetTcp = procNetTcpFixture();
+  adb.mdns = `List of discovered mdns services\nadb-${USB}-oqnwFu\t_adb-tls-connect._tcp\t${WIFI}\n`;
+  for (const prop of ["service.adb.tcp.port", "persist.adb.tcp.port"] as const) {
+    adb.properties[prop] = "44444";
+    await assert.rejects(backend(adb, WIFI).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+    adb.properties[prop] = "0";
+  }
+  adb.procNetTcp = procNetTcpFixture([37891], [{ localHex: "0B0200C0", localPort: 37891 }]);
+  await assert.rejects(backend(adb, WIFI).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+  adb.procNetTcp = procNetTcpFixture([37891], []);
+  await assert.rejects(backend(adb, tlsServiceEndpoint).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+
+  // Scoped IPv6 link-local endpoints preserve zone identity across numeric and named scopes.
+  const ipv6Numeric3 = "[fe80::1%3]:37891";
+  const ipv6NamedWlan0 = "[fe80::1%wlan0]:37891";
+  adb.inventory =
+    "List of devices attached\n" +
+    `${ipv6Numeric3} device transport_id:18\n` +
+    `${ipv6NamedWlan0} device transport_id:19\n`;
+  adb.procNetTcp = procNetTcpFixture(
+    [37891],
+    [{ localHex: "000080FE000000000000000001000000", localPort: 37891 }],
+  );
+  // Different numeric zone (%3 vs %2) must never qualify.
+  adb.mdns = `List of discovered mdns services\nadb-${USB}-oqnwFu\t_adb-tls-connect._tcp\tFE80::1%2:37891\n`;
+  await assert.rejects(backend(adb, ipv6Numeric3).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+  // Matching numeric zone (%3 vs %3) qualifies even when another device uses fe80::1%2:37891 on a different interface.
+  adb.mdns =
+    "List of discovered mdns services\n" +
+    `adb-${USB}-oqnwFu\t_adb-tls-connect._tcp\tFE80::1%3:37891\n` +
+    "adb-OTHER_PHONE-oqnwFu\t_adb-tls-connect._tcp\tFE80::1%2:37891\n";
+  assert.equal((await backend(adb, ipv6Numeric3).identity()).wirelessEvidence, "adb-tls-connect-service");
+  // Same numeric zone (%3) advertised by another serial fails closed as a true conflict.
+  adb.mdns =
+    "List of discovered mdns services\n" +
+    `adb-${USB}-oqnwFu\t_adb-tls-connect._tcp\tFE80::1%3:37891\n` +
+    "adb-OTHER_PHONE-oqnwFu\t_adb-tls-connect._tcp\tFE80::1%3:37891\n";
+  await assert.rejects(backend(adb, ipv6Numeric3).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+  // Interface name vs numeric scope requires a verified mapping.
+  adb.mdns =
+    "List of discovered mdns services\n" +
+    `adb-${USB}-oqnwFu\t_adb-tls-connect._tcp\tFE80::1%2:37891\n` +
+    "adb-OTHER_PHONE-oqnwFu\t_adb-tls-connect._tcp\tFE80::1%3:37891\n";
+  await assert.rejects(backend(adb, ipv6NamedWlan0, new Map()).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+  await assert.rejects(backend(adb, ipv6NamedWlan0, new Map([["wlan0", 3]])).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+  assert.equal(
+    (await backend(adb, ipv6NamedWlan0, new Map([["wlan0", 2]])).identity()).wirelessEvidence,
+    "adb-tls-connect-service",
+  );
 
   // Non-retail (ro.debuggable=1), disabled adb_wifi_enabled, unknown serial, or serial mismatch fail closed.
   adb.inventory = `List of devices attached\n${WIFI} device transport_id:12\n`;
+  adb.procNetTcp = procNetTcpFixture();
+  adb.mdns = `List of discovered mdns services\nadb-${USB}-oqnwFu\t_adb-tls-connect._tcp\t${WIFI}\n`;
   adb.properties["ro.debuggable"] = "1";
   await assert.rejects(backend(adb, WIFI).identity(), hasCode("TRANSPORT_UNVERIFIED"));
   adb.properties["ro.debuggable"] = "0";

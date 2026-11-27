@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { accessSync, constants, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createConnection, isIP } from "node:net";
 import type { Socket } from "node:net";
+import { networkInterfaces } from "node:os";
 import path from "node:path";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { LocalAdbServer, localAdbAddress, serverStartupError } from "./adb-server.js";
@@ -593,12 +594,72 @@ export function parseDeviceList(output: string, requireHeader = true): DeviceEnd
 export interface NetworkAddress {
   host: string;
   port: string;
+  zone: string | null;
 }
 
 export interface MdnsTlsService {
   instance: string;
   host: string;
   port: string;
+  zone: string | null;
+}
+
+export type InterfaceScopeMap = ReadonlyMap<string, number>;
+
+function parseIpv6Zone(rawZone: string): string | null {
+  if (!rawZone || rawZone.length > 64 || /[\u0000-\u0020\u007f%[\]/\\:]/.test(rawZone)) {
+    return null;
+  }
+  if (/^\d+$/.test(rawZone)) {
+    if (!/^[1-9]\d{0,9}$/.test(rawZone) || Number(rawZone) > 0xffff_ffff) return null;
+  }
+  return rawZone;
+}
+
+export function readInterfaceIpv6Scopes(
+  interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
+): InterfaceScopeMap {
+  const scopes = new Map<string, number>();
+  const ambiguous = new Set<string>();
+  for (const [name, entries] of Object.entries(interfaces)) {
+    if (!name || !entries) continue;
+    for (const entry of entries) {
+      if (entry.family !== "IPv6") continue;
+      const scopeId = entry.scopeid;
+      if (!Number.isSafeInteger(scopeId) || scopeId <= 0 || scopeId > 0xffff_ffff) continue;
+      const prior = scopes.get(name);
+      if (prior !== undefined && prior !== scopeId) {
+        scopes.delete(name);
+        ambiguous.add(name);
+        break;
+      }
+      if (!ambiguous.has(name)) {
+        scopes.set(name, scopeId);
+      }
+    }
+  }
+  return scopes;
+}
+
+function resolveIpv6ZoneIndex(zone: string, scopes: InterfaceScopeMap): number | null {
+  if (/^[1-9]\d{0,9}$/.test(zone)) return Number(zone);
+  return scopes.get(zone) ?? null;
+}
+
+export function compareNetworkZones(
+  first: string | null,
+  second: string | null,
+  scopes: InterfaceScopeMap = new Map(),
+): "same" | "different" | "unknown" {
+  if (first === null && second === null) return "same";
+  if (first === null || second === null) return "unknown";
+  if (first === second) return "same";
+  const firstIndex = resolveIpv6ZoneIndex(first, scopes);
+  const secondIndex = resolveIpv6ZoneIndex(second, scopes);
+  if (firstIndex !== null && secondIndex !== null) {
+    return firstIndex === secondIndex ? "same" : "different";
+  }
+  return "unknown";
 }
 
 export function parseNetworkAddress(value: string): NetworkAddress | null {
@@ -614,23 +675,23 @@ export function parseNetworkAddress(value: string): NetworkAddress | null {
     const bracketed = rawHost.slice(1, -1);
     const zoneSep = bracketed.indexOf("%");
     const ipPart = zoneSep === -1 ? bracketed : bracketed.slice(0, zoneSep);
-    const zonePart = zoneSep === -1 ? "0" : bracketed.slice(zoneSep + 1);
-    if (!zonePart || zonePart.includes("%") || isIP(ipPart) !== 6) return null;
-    return { host: new URL(`http://[${ipPart}]`).hostname, port };
+    const zone = zoneSep === -1 ? null : parseIpv6Zone(bracketed.slice(zoneSep + 1));
+    if ((zoneSep !== -1 && zone === null) || isIP(ipPart) !== 6) return null;
+    return { host: new URL(`http://[${ipPart}]`).hostname, port, zone };
   }
   if (rawHost.includes(":")) {
     const zoneSep = rawHost.indexOf("%");
     const ipPart = zoneSep === -1 ? rawHost : rawHost.slice(0, zoneSep);
-    const zonePart = zoneSep === -1 ? "0" : rawHost.slice(zoneSep + 1);
-    if (!zonePart || zonePart.includes("%") || isIP(ipPart) !== 6) return null;
-    return { host: new URL(`http://[${ipPart}]`).hostname, port };
+    const zone = zoneSep === -1 ? null : parseIpv6Zone(rawHost.slice(zoneSep + 1));
+    if ((zoneSep !== -1 && zone === null) || isIP(ipPart) !== 6) return null;
+    return { host: new URL(`http://[${ipPart}]`).hostname, port, zone };
   }
   if (isIP(rawHost) === 4) {
     if (!/^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(rawHost)) return null;
-    return { host: rawHost, port };
+    return { host: rawHost, port, zone: null };
   }
   if (!/^[A-Za-z0-9.-]+$/.test(rawHost) || /^\d+(?:\.\d+)*$/.test(rawHost)) return null;
-  return { host: rawHost.toLowerCase(), port };
+  return { host: rawHost.toLowerCase(), port, zone: null };
 }
 
 export function parseMdnsServices(output: string, requireHeader = true): MdnsTlsService[] {
@@ -662,7 +723,7 @@ export function parseMdnsServices(output: string, requireHeader = true): MdnsTls
     }
     const parsed = parseNetworkAddress(rawAddress);
     if (!parsed) continue;
-    services.push({ instance, host: parsed.host, port: parsed.port });
+    services.push({ instance, host: parsed.host, port: parsed.port, zone: parsed.zone });
   }
   return services;
 }

@@ -5,7 +5,7 @@ import type { Socket } from "node:net";
 import path from "node:path";
 import test from "node:test";
 import type { TestContext } from "node:test";
-import { AdbClient, adbEnvironment, AdbTrackParser, createTransportMonitor, executeCommand, parseDeviceList, parseMdnsServices, parseNetworkAddress, resolveAdbExecutable } from "../src/adb.js";
+import { AdbClient, adbEnvironment, AdbTrackParser, compareNetworkZones, createTransportMonitor, executeCommand, parseDeviceList, parseMdnsServices, parseNetworkAddress, readInterfaceIpv6Scopes, resolveAdbExecutable } from "../src/adb.js";
 import type { AdbFileSystem, CommandOptions, TransportMonitor } from "../src/adb.js";
 import { LocalAdbServer } from "../src/adb-server.js";
 import { MobileUseError } from "../src/errors.js";
@@ -769,13 +769,46 @@ test("ordinary inventory and mDNS discovery use read-only protocol queries and n
   assert.equal(mdnsQueries, 1);
 });
 
-test("network address and mDNS TLS parsers normalize IPv4/IPv6 endpoints and reject legacy or malformed records", () => {
-  assert.deepEqual(parseNetworkAddress("192.0.2.10:37891"), { host: "192.0.2.10", port: "37891" });
-  assert.deepEqual(parseNetworkAddress("[fe80::1%wlan0]:37891"), { host: "[fe80::1]", port: "37891" });
-  assert.deepEqual(parseNetworkAddress("FE80:0000:0000:0000:0000:0000:0000:0001%eth0:37891"), { host: "[fe80::1]", port: "37891" });
-  for (const invalid of ["", "192.0.2.10:0", "192.0.2.10:65536", "0177.0.0.1:5555", "[fe80::1:37891", "fe80::1%:37891"]) {
+test("network address and mDNS TLS parsers preserve IPv6 scope identity and reject legacy or malformed records", () => {
+  assert.deepEqual(parseNetworkAddress("192.0.2.10:37891"), { host: "192.0.2.10", port: "37891", zone: null });
+  assert.deepEqual(parseNetworkAddress("[2001:db8::1]:37891"), { host: "[2001:db8::1]", port: "37891", zone: null });
+  assert.deepEqual(parseNetworkAddress("[fe80::1%wlan0]:37891"), { host: "[fe80::1]", port: "37891", zone: "wlan0" });
+  assert.deepEqual(parseNetworkAddress("[fe80::1%3]:37891"), { host: "[fe80::1]", port: "37891", zone: "3" });
+  assert.deepEqual(
+    parseNetworkAddress("FE80:0000:0000:0000:0000:0000:0000:0001%eth0:37891"),
+    { host: "[fe80::1]", port: "37891", zone: "eth0" },
+  );
+  for (const invalid of [
+    "", "192.0.2.10:0", "192.0.2.10:65536", "0177.0.0.1:5555",
+    "[fe80::1:37891", "fe80::1%:37891", "[fe80::1%0]:37891", "[fe80::1%03]:37891",
+    "[fe80::1%4294967296]:37891", "[fe80::1%wlan0%2]:37891",
+  ]) {
     assert.equal(parseNetworkAddress(invalid), null);
   }
+  const scopes = readInterfaceIpv6Scopes({
+    wlan0: [
+      { address: "2001:db8::10", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", mac: "00:00:00:00:00:01", internal: false, cidr: "2001:db8::10/64", scopeid: 0 },
+      { address: "fe80::10", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", mac: "00:00:00:00:00:01", internal: false, cidr: "fe80::10/64", scopeid: 2 },
+    ],
+    eth0: [
+      { address: "fe80::20", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", mac: "00:00:00:00:00:02", internal: false, cidr: "fe80::20/64", scopeid: 3 },
+    ],
+    ambiguous0: [
+      { address: "fe80::30", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", mac: "00:00:00:00:00:03", internal: false, cidr: "fe80::30/64", scopeid: 4 },
+      { address: "fe80::31", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", mac: "00:00:00:00:00:03", internal: false, cidr: "fe80::31/64", scopeid: 5 },
+    ],
+  });
+  assert.deepEqual([...scopes.entries()], [["wlan0", 2], ["eth0", 3]]);
+  assert.equal(compareNetworkZones(null, null, scopes), "same");
+  assert.equal(compareNetworkZones("3", "3", scopes), "same");
+  assert.equal(compareNetworkZones("3", "2", scopes), "different");
+  assert.equal(compareNetworkZones("wlan0", "2", scopes), "same");
+  assert.equal(compareNetworkZones("wlan0", "3", scopes), "different");
+  assert.equal(compareNetworkZones("wlan0", "eth0", scopes), "different");
+  assert.equal(compareNetworkZones("wlan0", "2", new Map()), "unknown");
+  assert.equal(compareNetworkZones("ambiguous0", "4", scopes), "unknown");
+  assert.equal(compareNetworkZones("3", null, scopes), "unknown");
+
   const parsed = parseMdnsServices(
     "List of discovered mdns services\n" +
     "adb-POC_PHONE-oqnwFu\t_adb-tls-connect._tcp\t192.0.2.10:37891\n" +
@@ -785,8 +818,8 @@ test("network address and mDNS TLS parsers normalize IPv4/IPv6 endpoints and rej
     "legacy-tcp\t_adb._tcp\t192.0.2.10:5555\n",
   );
   assert.deepEqual(parsed, [
-    { instance: "adb-POC_PHONE-oqnwFu", host: "192.0.2.10", port: "37891" },
-    { instance: "adb-POC_PHONE-oqnwFu", host: "[fe80::1]", port: "37891" },
+    { instance: "adb-POC_PHONE-oqnwFu", host: "192.0.2.10", port: "37891", zone: null },
+    { instance: "adb-POC_PHONE-oqnwFu", host: "[fe80::1]", port: "37891", zone: "2" },
   ]);
   for (const malformed of [
     "",

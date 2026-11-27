@@ -178,9 +178,46 @@ export interface AdbCall {
   options: RunOptions;
 }
 
+export function procNetTcpFixture(
+  listenPorts: readonly number[] = [37891],
+  established: readonly {
+    localHex: string;
+    localPort: number;
+    remoteHex?: string;
+    remotePort?: number;
+    uid?: number;
+  }[] = [{ localHex: "0000000000000000FFFF00000A0200C0", localPort: 37891 }],
+): string {
+  const hexPort = (port: number): string => port.toString(16).toUpperCase().padStart(4, "0");
+  const v4Lines = [
+    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
+    "   0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000  2000        0 10001 1 0000000000000000 100 0 0 10 0",
+  ];
+  const v6Lines = [
+    "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
+  ];
+  let slot = 1;
+  for (const port of listenPorts) {
+    v6Lines.push(
+      `   ${slot++}: 00000000000000000000000000000000:${hexPort(port)} 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000  2000        0 ${17000 + slot} 1 0000000000000000 100 0 0 10 0`,
+    );
+  }
+  for (const sock of established) {
+    const isV6 = sock.localHex.length === 32;
+    const remHex = sock.remoteHex ?? (isV6 ? "0000000000000000FFFF0000010200C0" : "010200C0");
+    const remPort = hexPort(sock.remotePort ?? 51234);
+    const uid = sock.uid ?? 2000;
+    const row = `   ${slot++}: ${sock.localHex}:${hexPort(sock.localPort)} ${remHex}:${remPort} 01 00000000:00000000 00:00000000 00000000  ${uid}        0 ${18000 + slot} 1 0000000000000000 20 4 9 10 -1`;
+    if (isV6) v6Lines.push(row);
+    else v4Lines.push(row);
+  }
+  return `${v4Lines.join("\n")}\n${v6Lines.join("\n")}\n`;
+}
+
 export class FakeAdb implements AdbConnection {
   inventory = INVENTORY;
   mdns = "List of discovered mdns services\n";
+  procNetTcp = procNetTcpFixture();
   image = png();
   xml = hierarchy();
   display = displayDiagnostics();
@@ -338,6 +375,9 @@ export class FakeAdb implements AdbConnection {
     if (command.startsWith("shell getprop ")) return Buffer.from(this.properties[args[4] ?? ""] ?? "");
     if (command.startsWith("shell settings get global ")) {
       return Buffer.from(`${this.globalSettings[args[6] ?? ""] ?? "null"}\n`);
+    }
+    if (command === "shell cat /proc/net/tcp /proc/net/tcp6") {
+      return Buffer.from(this.procNetTcp);
     }
     if (command === "exec-out screencap -p") return this.image;
     if (command === "shell -tt uiautomator dump --windows /dev/tty") return Buffer.from(this.xml);
