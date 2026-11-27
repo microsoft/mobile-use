@@ -6,9 +6,13 @@ import { Client } from "@modelcontextprotocol/client";
 import { InMemoryTransport } from "@modelcontextprotocol/server";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { isRecord } from "../src/errors.js";
+import { IosMobileUseService } from "../src/ios/device-session.js";
+import { ManagedIosRuntimePool, readRuntimeConfig } from "../src/ios/runtime.js";
+import type { RuntimeCommands } from "../src/ios/runtime-process.js";
+import { usbFailure, type UsbBackend } from "../src/ios/usb.js";
 import { createIosFixture } from "./ios-fixture.js";
 import { createMobileUseServer } from "../src/tools.js";
-import { IOS_ENDPOINT, IOS_UDID, runtimeFixture, waitRuntimeState } from "./ios-runtime-fixture.js";
+import { IOS_ENDPOINT, IOS_OTHER_UDID, IOS_UDID, runtimeFixture, waitRuntimeState } from "./ios-runtime-fixture.js";
 
 function payload(result: { content?: unknown }): Record<string, unknown> {
   assert.ok(Array.isArray(result.content));
@@ -188,5 +192,68 @@ for (const mode of ["legacy", "auto"] as const) {
     const status = payload(await client.callTool({ name: "mobile_ios_runtime", arguments: { action: { kind: "status" } } }));
     assert.equal(status.state, "idle");
     assert.equal(status.runtimeToken, null);
+    const filtered = payload(await client.callTool({
+      name: "mobile_ios_runtime",
+      arguments: { action: { kind: "status", endpointId: IOS_ENDPOINT } },
+    }));
+    assert.equal(filtered.state, "idle");
+    assert.equal(filtered.udid, IOS_UDID);
+  });
+
+  test(`managed main stdio connects without MOBILE_USE_IOS_RUNNER_BUNDLE_ID and surfaces ios-runtime guidance over ${mode}`, async (t) => {
+    const cleanEnv: Record<string, string> = { ...getDefaultEnvironment(), MOBILE_USE_PLATFORM: "ios", MOBILE_USE_IOS_RUNTIME: "managed" };
+    delete cleanEnv.MOBILE_USE_IOS_RUNNER_BUNDLE_ID;
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [fileURLToPath(new URL("../src/index.js", import.meta.url))],
+      env: cleanEnv,
+      stderr: "pipe",
+    });
+    const client = new Client({ name: "unconfigured-managed-ios-fixture", version: "0.1.0" }, { versionNegotiation: { mode } });
+    t.after(() => client.close());
+    await client.connect(transport);
+    assert.ok((await client.listTools()).tools.some((tool) => tool.name === "mobile_ios_runtime"));
+
+    const doctorCall = await client.callTool({ name: "mobile_doctor", arguments: {} });
+    assert.equal(doctorCall.isError, true);
+    const doctorPayload = payload(doctorCall);
+    assert.ok(isRecord(doctorPayload.error) && doctorPayload.error.code === "IOS_RUNTIME_CONFIG_INVALID");
+    assert.ok(isRecord(doctorPayload.setup) && doctorPayload.setup.stage === "ios-runtime");
+
+    const statusCall = await client.callTool({ name: "mobile_ios_runtime", arguments: { action: { kind: "status" } } });
+    assert.equal(statusCall.isError, true);
+    const statusPayload = payload(statusCall);
+    assert.ok(isRecord(statusPayload.error) && statusPayload.error.code === "IOS_RUNTIME_CONFIG_INVALID");
+    assert.ok(isRecord(statusPayload.setup) && statusPayload.setup.stage === "ios-runtime");
+  });
+
+  test(`passive USB listing works over MCP before managed runtime env vars are configured (${mode})`, async (t) => {
+    const usb: UsbBackend = {
+      async readBuid() { return "fixture-buid"; },
+      async readPairRecord() { return Buffer.from("pair"); },
+      async list() { return [{ udid: IOS_UDID, deviceId: 1 }, { udid: IOS_OTHER_UDID, deviceId: 2 }]; },
+      async connect() { throw usbFailure("WDA_UNAVAILABLE"); },
+    };
+    const commands: RuntimeCommands = {
+      async run() { return JSON.stringify({ version: "v1.3.2" }); },
+      async start() { throw new Error("unexpected start"); },
+    };
+    const pool = new ManagedIosRuntimePool(
+      () => readRuntimeConfig({ MOBILE_USE_PLATFORM: "ios", MOBILE_USE_IOS_RUNTIME: "managed" }),
+      usb,
+      commands,
+      { platform: "win32" },
+    );
+    const service = new IosMobileUseService(undefined, Date.now, pool);
+    const server = createMobileUseServer(service);
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "passive-usb-mcp-fixture", version: "0.1.0" }, { versionNegotiation: { mode } });
+    t.after(async () => { await client.close(); await server.close(); await service.stop(); });
+    await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+
+    const listed = payload(await client.callTool({ name: "mobile_list_devices", arguments: {} }));
+    assert.ok(Array.isArray(listed.devices));
+    assert.equal(listed.devices.length, 2);
+    assert.ok(isRecord(listed.setup) && listed.setup.stage === "ios-runtime");
   });
 }

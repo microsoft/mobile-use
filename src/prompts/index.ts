@@ -15,6 +15,7 @@ export { androidServerInstructions } from "./android/instructions.js";
 export { androidPromptPack, androidToolPrompts } from "./android/tools.js";
 export {
   buildIosSelectDeviceSetup,
+  iosRuntimeSetup,
   iosSetup,
   managedIosSetup,
   type IosSetupGuidance,

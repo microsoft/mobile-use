@@ -14,7 +14,9 @@ export async function createIosFixture() {
     overlay: false,
     prettySource: true, screenshot: undefined as string | undefined,
     failAction: false, failAfterAction: false, corruptSource: false, failSessionDelete: false,
-    sourceHook: undefined as (() => void) | undefined,
+    statusHook: undefined as (() => void | Promise<void>) | undefined,
+    sourceHook: undefined as (() => void | Promise<void>) | undefined,
+    sessionCreateHook: undefined as (() => Promise<void>) | undefined,
     actionHook: undefined as (() => Promise<void>) | undefined,
   };
   const buttonRect = () => ({ ...rects.button, x: state.buttonX });
@@ -68,6 +70,7 @@ export async function createIosFixture() {
         response.end(JSON.stringify({ sessionId: state.sessionId, value }));
       };
       if (path === "/status") {
+        await state.statusHook?.();
         reply({ ready: true, os: { name: "iOS", version: state.iosVersion },
           ios: {}, build: { time: state.build, productBundleIdentifier: "example.runner" } });
         return;
@@ -77,6 +80,7 @@ export async function createIosFixture() {
         return;
       }
       if (path === "/session" && request.method === "POST") {
+        await state.sessionCreateHook?.();
         state.sessionId = `fixture-${++state.sequence}`;
         reply({ sessionId: state.sessionId });
         return;
@@ -100,7 +104,7 @@ export async function createIosFixture() {
       else if (command === "/rotation") reply({ x: state.rotationX, y: state.rotationY, z: state.rotation });
       else if (command === "/source?format=xml") {
         const xml = state.corruptSource ? "<broken" : source();
-        state.sourceHook?.();
+        await state.sourceHook?.();
         reply(xml);
       } else if (command === "/screenshot") reply(state.screenshot ??
         png(Math.round(40 * state.scale), Math.round(80 * state.scale), state.shade).toString("base64"));

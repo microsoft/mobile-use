@@ -186,19 +186,9 @@ and iOS is not an accepted plugin capability while WDA personal signing/onboardi
 device bring-up and real-hardware acceptance are incomplete. See
 [iOS MVP status and development setup](docs/ios-mvp.md).
 
-`src\service-factory.ts` chooses the existing Android `MobileUseService` by
-default, or `IosMobileUseService` for `MOBILE_USE_PLATFORM=ios`. Invalid modes
-fail explicitly; there is no automatic platform fallback. Both implement the
-explicit, implementation-independent `MobileService` tool-facing contract.
-Each service has a required `platform`; doctor results discriminate on the same
-field. Android source doctor adds `platform: "android"` while preserving its
-existing fields. The Android driver, queue, guards and helpers remain unchanged.
+`src\service-factory.ts` chooses the Android `MobileUseService` by default, or `IosMobileUseService` for `MOBILE_USE_PLATFORM=ios`. Invalid platform modes fail explicitly; there is no automatic platform fallback. Both implement the explicit, implementation-independent `MobileService` tool-facing contract and manage concurrent `targetToken`-keyed device sessions with per-target serialization queues and bounded retired-token tracking (`STALE_TARGET` vs. `TRANSPORT_LOST`). Android selection deduplicates by endpoint or matching non-null `hardwareSerial`, retiring only the re-selected physical phone while leaving other active Android sessions, prepared helpers, and recordings intact.
 
-The default `MOBILE_USE_IOS_RUNTIME=external` adapter connects only to the
-explicitly configured local WDA URL. It never deploys/starts/stops that external
-Runner or forwarding. Neither iOS mode adds a Host/IPC/Grant layer. The
-development guide describes setup and platform-specific tool semantics; iOS
-requires explicit environment configuration even in the checked-in plugin.
+The default `MOBILE_USE_IOS_RUNTIME=external` adapter connects only to the explicitly configured local WDA URL. It never deploys/starts/stops that external Runner or forwarding. Opt-in `managed` mode constructs without eagerly throwing when `MOBILE_USE_IOS_RUNNER_BUNDLE_ID` is unset: passive USB discovery (`usbmux` `ListDevices`) still surfaces attached `ios:usb:<UDID>` endpoints as unselectable with setup guidance, while `doctor` and `mobile_ios_runtime` validate configuration lazily and surface `ios-runtime` remediation (`IOS_RUNTIME_CONFIG_INVALID`). `ManagedIosRuntimePool` manages concurrent per-UDID `ManagedIosRuntime` instances (using distinct ephemeral tunnel-port pairs when `MOBILE_USE_IOS_TUNNEL_PORT=0` and per-UDID lockfiles) and can coexist alongside an optional `MOBILE_USE_WDA_URL` endpoint. Neither iOS mode adds a Host/IPC/Grant layer. The development guide describes setup and platform-specific tool semantics; iOS requires explicit environment configuration even in the checked-in plugin.
 
 Opt-in `managed` mode separates lifecycle/transport from UI semantics:
 `src\ios\runtime.ts` owns the go-ios v1.3.2 tunnel, image preparation, optional
@@ -236,9 +226,10 @@ External `doctor`/inventory read `/status` and `/wda/device/info`, require real 
 hardware, and do not capture or create sessions. The reported vendor UUID is
 IDFV, not UDID; external mode claims no physical USB discovery. Managed inventory
 reports physical USB UDIDs before readiness; managed doctor discriminates
-`runtime-not-ready` from `ready`. Only the running runtime's USB endpoint can be
-selected, and each selected request additionally revalidates USB binding and
-runtime generation. Explicit selection
+`runtime-not-ready` from `ready`. Ready managed USB endpoints (and an optional
+configured external WDA endpoint) can be selected concurrently, and each
+selected request additionally revalidates USB binding and runtime generation on
+its per-target queue. Explicit selection
 rejects a foreign session, then creates a session without an initial App,
 with automatic XCTest screenshots and terminate-on-session-end disabled.
 Noncompact element responses provide allowlisted fields for target resolution.

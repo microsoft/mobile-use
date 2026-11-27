@@ -11,7 +11,7 @@ export type AndroidSetupStage =
   | "connection"
   | "select-device";
 
-export type IosSetupStage = "connection" | "select-device";
+export type IosSetupStage = "connection" | "select-device" | "ios-runtime";
 
 export type MultiPlatformSetupStage =
   | AndroidSetupStage

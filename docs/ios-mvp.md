@@ -86,8 +86,9 @@ Appium WDA Runner (adapter protocol reference: 16.16.5), already signed and
 validated by the user for the chosen device. Complete computer trust/pairing,
 Developer Mode and device unlocking manually.
 
-Build and launch the same source development server as above, but use these
-environment settings instead of `MOBILE_USE_WDA_URL`:
+Build and launch the same source development server as above with managed
+runtime settings (`MOBILE_USE_WDA_URL` may be omitted, or retained to expose an
+external local WDA endpoint alongside managed USB devices):
 
 ```powershell
 $env:MOBILE_USE_PLATFORM = "ios"
@@ -144,15 +145,18 @@ settings cannot redirect the userspace connection to another host.
    port, starts its tunnel, prepares the developer image, verifies its mounted
    signature through `image list`, and only then optionally installs the IPA.
    The exit code of `image auto` alone is not success evidence.
-   Poll `action: { kind: "status" }` until `awaiting-developer-trust`
-   or `failed`; inspect the structured error on failure. Status remains readable
+   Poll `action: { kind: "status", runtimeToken }` (or pass `endpointId`) until
+   `awaiting-developer-trust` or `failed`; always include `runtimeToken` or
+   `endpointId` on every status request so an already-ready device in the pool
+   is not mistaken for the newly started device. Status remains readable
    during long image downloads/installations without blocking on the UI queue.
 4. The user verifies Developer App trust on that device. Only after that
    confirmation, call `action: { kind: "confirm_trust", runtimeToken }`.
    This acknowledgement does not modify device trust. The server rechecks USB
    and WDA-port ownership and starts `runwda` in the background. Confirmation
-   immediately returns `starting`; poll status for physical-device WDA
-   readiness with no foreign session. UI operations remain blocked until ready.
+   immediately returns `starting`; poll `action: { kind: "status", runtimeToken }`
+   (or pass `endpointId`) for physical-device WDA readiness with no foreign
+   session. UI operations remain blocked until ready.
 5. List devices again, explicitly select the ready USB endpoint, and use the
    normal observe/action flow. `endpoint.transportId` and `identity.udid` hold
    Apple UDID; `identity.vendorId` remains WDA's distinct IDFV.
