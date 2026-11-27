@@ -1,6 +1,7 @@
 import { crc32, inflateSync } from "node:zlib";
 import { setTimeout } from "node:timers/promises";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
+import { parseMdnsServices, parseNetworkAddress } from "./adb.js";
 import type { AdbConnection, RunOptions } from "./adb.js";
 import { localApkFile, parseAndroidUser, parseForegroundApp, parseInstalledApps, parsePackageStopped, validatePackageName } from "./apps.js";
 import { checkCancelled, isRecord, MobileUseError, publicError } from "./errors.js";
@@ -475,6 +476,112 @@ export class AndroidBackend {
     return value;
   }
 
+  private unverifiedWireless(): MobileUseError {
+    return new MobileUseError(
+      "TRANSPORT_UNVERIFIED",
+      "This endpoint could not be qualified as modern paired Wireless debugging.",
+      "The user must pair/connect using Android Wireless debugging's connection address. Legacy TCP and unverifiable endpoints are not supported.",
+    );
+  }
+
+  private async globalSetting(name: string, signal?: AbortSignal): Promise<string> {
+    let output: Buffer;
+    try {
+      output = await this.command(["shell", "settings", "get", "global", name], signal ? { signal } : {});
+    } catch (error) {
+      if (error instanceof MobileUseError && error.code === "ADB_FAILED") {
+        throw this.unverifiedWireless();
+      }
+      throw error;
+    }
+    const value = output.toString("utf8").trim();
+    if (output.length > 512 || /[\u0000-\u001f\u007f]/.test(value)) {
+      throw new MobileUseError("DEVICE_METADATA_UNAVAILABLE", "A device setting is malformed or exceeds the POC's limit.", "Check the selected device's build and authorization.");
+    }
+    return value;
+  }
+
+  private async verifyRetailWirelessTls(hardwareSerial: string | null, signal?: AbortSignal): Promise<void> {
+    if (!hardwareSerial) throw this.unverifiedWireless();
+    const [debuggable, wifiEnabled] = await Promise.all([
+      this.property("ro.debuggable", signal),
+      this.globalSetting("adb_wifi_enabled", signal),
+    ]);
+    if (debuggable !== "0" || wifiEnabled !== "1") {
+      throw this.unverifiedWireless();
+    }
+    const combined = signal ? AbortSignal.any([this.targetSignal, signal]) : this.targetSignal;
+    const prefix = `adb-${hardwareSerial}-`;
+    const matchesDeviceInstance = (instance: string): boolean =>
+      instance.startsWith(prefix) && /^[A-Za-z0-9]+$/.test(instance.slice(prefix.length));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      this.assertCurrent();
+      checkCancelled(signal);
+      let rawMdns: Buffer;
+      try {
+        rawMdns = await this.adb.run(["mdns", "services"], { signal: combined });
+      } catch (error) {
+        if (this.targetSignal.aborted && !signal?.aborted) this.assertCurrent();
+        if (error instanceof MobileUseError && error.code === "ADB_FAILED") {
+          throw this.unverifiedWireless();
+        }
+        throw error;
+      }
+      this.assertCurrent();
+      const services = parseMdnsServices(rawMdns.toString("utf8"));
+      const deviceServices = services.filter((entry) => matchesDeviceInstance(entry.instance));
+      if (this.endpoint.kind === "network") {
+        const endpointAddress = parseNetworkAddress(this.endpoint.endpointId);
+        if (!endpointAddress) throw this.unverifiedWireless();
+        const matched = deviceServices.filter((entry) =>
+          entry.host === endpointAddress.host && entry.port === endpointAddress.port,
+        );
+        if (matched.length === 0) {
+          if (attempt === 0) {
+            await setTimeout(150, undefined, { signal: combined }).catch((error: unknown) => {
+              if (this.targetSignal.aborted && !signal?.aborted) this.assertCurrent();
+              checkCancelled(signal);
+              throw error;
+            });
+            continue;
+          }
+          throw this.unverifiedWireless();
+        }
+        if (services.some((entry) =>
+          entry.host === endpointAddress.host && entry.port === endpointAddress.port &&
+          !matchesDeviceInstance(entry.instance))) {
+          throw this.unverifiedWireless();
+        }
+        const matchedInstances = new Set(matched.map((entry) => entry.instance));
+        if (services.some((entry) => matchedInstances.has(entry.instance) && entry.port !== endpointAddress.port)) {
+          throw this.unverifiedWireless();
+        }
+        return;
+      }
+      const suffix = "._adb-tls-connect._tcp";
+      if (!this.endpoint.endpointId.endsWith(suffix)) throw this.unverifiedWireless();
+      const expectedInstance = this.endpoint.endpointId.slice(0, -suffix.length);
+      if (!matchesDeviceInstance(expectedInstance)) throw this.unverifiedWireless();
+      const matched = deviceServices.filter((entry) => entry.instance === expectedInstance);
+      if (matched.length === 0) {
+        if (attempt === 0) {
+          await setTimeout(150, undefined, { signal: combined }).catch((error: unknown) => {
+            if (this.targetSignal.aborted && !signal?.aborted) this.assertCurrent();
+            checkCancelled(signal);
+            throw error;
+          });
+          continue;
+        }
+        throw this.unverifiedWireless();
+      }
+      if (new Set(matched.map((entry) => entry.port)).size !== 1) {
+        throw this.unverifiedWireless();
+      }
+      return;
+    }
+    throw this.unverifiedWireless();
+  }
+
   async screenRecording(action: RecordingAction, requestSignal?: AbortSignal): Promise<RecordingResult> {
     const signal = requestSignal ? AbortSignal.any([this.targetSignal, requestSignal]) : this.targetSignal;
     if (action.kind === "capabilities") return this.recorder.capabilities(signal);
@@ -505,26 +612,28 @@ export class AndroidBackend {
     if (apiLevel < 30 || qemu === "1" || this.endpoint.kind === "emulator") {
       throw new MobileUseError("DEVICE_UNSUPPORTED", "A real Android 11+ phone or tablet is required.", "Select supported physical hardware.");
     }
+    const hardwareSerial = serial && !/^(unknown|null|0+)$/i.test(serial) ? serial : null;
     let wirelessEvidence: DeviceIdentity["wirelessEvidence"] = "not-applicable";
     if (this.endpoint.kind === "network" || this.endpoint.kind === "paired-wireless") {
       const [tlsPort, enabled] = await Promise.all([
         this.property("service.adb.tls.port", signal),
         this.property("persist.adb.tls_server.enable", signal),
       ]);
-      const validPort = /^\d+$/.test(tlsPort) && Number(tlsPort) > 0 && Number(tlsPort) <= 65535;
-      const addressPort = /:(\d+)$/.exec(this.endpoint.endpointId)?.[1];
-      if (!validPort || !["1", "true"].includes(enabled) ||
-        (this.endpoint.kind === "network" && addressPort !== tlsPort)) {
-        throw new MobileUseError(
-          "TRANSPORT_UNVERIFIED",
-          "This endpoint could not be qualified as modern paired Wireless debugging.",
-          "The user must pair/connect using Android Wireless debugging's connection address. Legacy TCP and unverifiable endpoints are not supported.",
-        );
+      if (tlsPort !== "" || enabled !== "") {
+        const validPort = /^[1-9]\d{0,4}$/.test(tlsPort) && Number(tlsPort) <= 65535;
+        const addressPort = /:(\d+)$/.exec(this.endpoint.endpointId)?.[1];
+        if (!validPort || !["1", "true"].includes(enabled) ||
+          (this.endpoint.kind === "network" && addressPort !== tlsPort)) {
+          throw this.unverifiedWireless();
+        }
+        wirelessEvidence = this.endpoint.kind === "network" ? "device-tls-port" : "adb-tls-connect-service";
+      } else {
+        await this.verifyRetailWirelessTls(hardwareSerial, signal);
+        wirelessEvidence = "adb-tls-connect-service";
       }
-      wirelessEvidence = this.endpoint.kind === "network" ? "device-tls-port" : "adb-tls-connect-service";
     }
     return {
-      hardwareSerial: serial && !/^(unknown|null|0+)$/i.test(serial) ? serial : null,
+      hardwareSerial,
       androidVersion, apiLevel, wirelessEvidence,
     };
   }

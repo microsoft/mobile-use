@@ -39220,7 +39220,7 @@ var require_fast_uri = /* @__PURE__ */ __commonJSMin(((exports2, module) => {
       query: void 0,
       fragment: void 0
     };
-    let isIP = false;
+    let isIP2 = false;
     if (options.reference === "suffix") if (options.scheme) uri = options.scheme + ":" + uri;
     else uri = "//" + uri;
     const matches = uri.match(URI_PARSE);
@@ -39236,8 +39236,8 @@ var require_fast_uri = /* @__PURE__ */ __commonJSMin(((exports2, module) => {
       if (parsed.host) if (isIPv4(parsed.host) === false) {
         const ipv6result = normalizeIPv6(parsed.host);
         parsed.host = ipv6result.host.toLowerCase();
-        isIP = ipv6result.isIPV6;
-      } else isIP = true;
+        isIP2 = ipv6result.isIPV6;
+      } else isIP2 = true;
       if (parsed.scheme === void 0 && parsed.userinfo === void 0 && parsed.host === void 0 && parsed.port === void 0 && parsed.query === void 0 && !parsed.path) parsed.reference = "same-document";
       else if (parsed.scheme === void 0) parsed.reference = "relative";
       else if (parsed.fragment === void 0) parsed.reference = "absolute";
@@ -39245,7 +39245,7 @@ var require_fast_uri = /* @__PURE__ */ __commonJSMin(((exports2, module) => {
       if (options.reference && options.reference !== "suffix" && options.reference !== parsed.reference) parsed.error = parsed.error || "URI is not a " + options.reference + " reference.";
       const schemeHandler = getSchemeHandler(options.scheme || parsed.scheme);
       if (!options.unicodeSupport && (!schemeHandler || !schemeHandler.unicodeSupport)) {
-        if (parsed.host && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP === false && nonSimpleDomain(parsed.host)) try {
+        if (parsed.host && (options.domainHost || schemeHandler && schemeHandler.domainHost) && isIP2 === false && nonSimpleDomain(parsed.host)) try {
           parsed.host = URL.domainToASCII(parsed.host.toLowerCase());
         } catch (e) {
           parsed.error = parsed.error || "Host's domain name can not be converted to ASCII: " + e;
@@ -45199,7 +45199,7 @@ function checkCancelled(signal) {
 // src/adb.ts
 import { execFile } from "node:child_process";
 import { accessSync, constants, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { createConnection as createConnection2 } from "node:net";
+import { createConnection as createConnection2, isIP } from "node:net";
 import path from "node:path";
 
 // node_modules/fast-xml-parser/src/util.js
@@ -49418,7 +49418,7 @@ var LocalAdbServer = class {
   }
   connect;
   spawnProcess;
-  query(request, signal, timeoutMs = 1e3) {
+  query(request, signal, timeoutMs = 1e3, allowFail = false) {
     return new Promise((resolve, reject) => {
       checkCancelled(signal);
       const socket = this.connect();
@@ -49451,13 +49451,16 @@ var LocalAdbServer = class {
         if (pending.length + chunk.length > maxLength + 8) return finish(conflict());
         pending = Buffer.concat([pending, chunk]);
         if (pending.length < 4) return;
-        if (pending.subarray(0, 4).toString("latin1") !== "OKAY") return finish(conflict());
+        const status = pending.subarray(0, 4).toString("latin1");
+        if (status !== "OKAY" && !(allowFail && status === "FAIL")) return finish(conflict());
         if (pending.length < 8) return;
         const prefix = pending.subarray(4, 8).toString("latin1");
         if (!/^[0-9a-f]{4}$/i.test(prefix)) return finish(conflict());
         const size = Number.parseInt(prefix, 16);
         if (size > maxLength || pending.length > size + 8) return finish(conflict());
-        if (pending.length === size + 8) finish(null, pending.subarray(8));
+        if (pending.length === size + 8) {
+          finish(null, status === "FAIL" ? Buffer.alloc(0) : pending.subarray(8));
+        }
       });
       socket.once("error", (error62) => {
         finish(!connected && error62.code === "ECONNREFUSED" ? null : conflict());
@@ -49509,6 +49512,17 @@ var LocalAdbServer = class {
       );
     }
     return inventory;
+  }
+  async mdnsServices(signal) {
+    const services = await this.query("host:mdns:services", signal, 5e3, true);
+    if (services === null) {
+      throw new MobileUseError(
+        "ADB_SERVER_UNAVAILABLE",
+        "The local ADB server is unavailable for discovery.",
+        "Use mobile_start_adb_server for the requested Android task. Do not automatically replay startup or restart a shared server."
+      );
+    }
+    return services;
   }
   async ensureRunning(executable, env, version2, signal) {
     let startupAttempted = false;
@@ -49961,6 +49975,9 @@ var AdbClient = class {
     if (args.length === 2 && args[0] === "devices" && args[1] === "-l") {
       return Buffer.concat([Buffer.from("List of devices attached\n"), await this.server.inventory(signal)]);
     }
+    if (args.length === 2 && args[0] === "mdns" && args[1] === "services") {
+      return Buffer.concat([Buffer.from("List of discovered mdns services\n"), await this.server.mdnsServices(signal)]);
+    }
     return this.runner(executable, ["-H", "127.0.0.1", "-P", "5037", ...args], {
       ...options,
       signal,
@@ -50029,6 +50046,67 @@ function parseDeviceList(output2, requireHeader = true) {
     });
   }
   return devices;
+}
+function parseNetworkAddress(value) {
+  if (!value || value.length > 512 || /[\u0000-\u0020\u007f]/.test(value)) return null;
+  const portMatch = /:([1-9]\d{0,4})$/.exec(value);
+  if (!portMatch?.[1]) return null;
+  const port = portMatch[1];
+  if (Number(port) > 65535) return null;
+  const rawHost = value.slice(0, value.length - port.length - 1);
+  if (!rawHost) return null;
+  if (rawHost.startsWith("[") || rawHost.endsWith("]")) {
+    if (!rawHost.startsWith("[") || !rawHost.endsWith("]")) return null;
+    const bracketed = rawHost.slice(1, -1);
+    const zoneSep = bracketed.indexOf("%");
+    const ipPart = zoneSep === -1 ? bracketed : bracketed.slice(0, zoneSep);
+    const zonePart = zoneSep === -1 ? "0" : bracketed.slice(zoneSep + 1);
+    if (!zonePart || zonePart.includes("%") || isIP(ipPart) !== 6) return null;
+    return { host: new URL(`http://[${ipPart}]`).hostname, port };
+  }
+  if (rawHost.includes(":")) {
+    const zoneSep = rawHost.indexOf("%");
+    const ipPart = zoneSep === -1 ? rawHost : rawHost.slice(0, zoneSep);
+    const zonePart = zoneSep === -1 ? "0" : rawHost.slice(zoneSep + 1);
+    if (!zonePart || zonePart.includes("%") || isIP(ipPart) !== 6) return null;
+    return { host: new URL(`http://[${ipPart}]`).hostname, port };
+  }
+  if (isIP(rawHost) === 4) {
+    if (!/^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(rawHost)) return null;
+    return { host: rawHost, port };
+  }
+  if (!/^[A-Za-z0-9.-]+$/.test(rawHost) || /^\d+(?:\.\d+)*$/.test(rawHost)) return null;
+  return { host: rawHost.toLowerCase(), port };
+}
+function parseMdnsServices(output2, requireHeader = true) {
+  const unverified = () => new MobileUseError(
+    "TRANSPORT_UNVERIFIED",
+    "This endpoint could not be qualified as modern paired Wireless debugging.",
+    "The user must pair/connect using Android Wireless debugging's connection address. Legacy TCP and unverifiable endpoints are not supported."
+  );
+  if (Buffer.byteLength(output2) > 512 * 1024 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(output2)) {
+    throw unverified();
+  }
+  const lines = output2.replaceAll("\r\n", "\n").split("\n").map((line) => line.trim()).filter(Boolean);
+  if (requireHeader && lines.shift() !== "List of discovered mdns services") {
+    throw unverified();
+  }
+  if (lines.length > 256) throw unverified();
+  const services = [];
+  for (const line of lines) {
+    const columns = line.includes("	") ? line.split("	").map((part) => part.trim()) : line.split(/\s+/);
+    const [instance, serviceType, rawAddress] = columns;
+    if (columns.length !== 3 || !instance || !serviceType || !rawAddress || columns.some((part) => part.length > 512)) {
+      throw unverified();
+    }
+    if (serviceType !== "_adb-tls-connect._tcp" && serviceType !== "_adb-tls-connect._tcp.") {
+      continue;
+    }
+    const parsed = parseNetworkAddress(rawAddress);
+    if (!parsed) continue;
+    services.push({ instance, host: parsed.host, port: parsed.port });
+  }
+  return services;
 }
 var AdbTrackParser = class {
   pending = Buffer.alloc(0);
@@ -51660,6 +51738,106 @@ var AndroidBackend = class {
     }
     return value;
   }
+  unverifiedWireless() {
+    return new MobileUseError(
+      "TRANSPORT_UNVERIFIED",
+      "This endpoint could not be qualified as modern paired Wireless debugging.",
+      "The user must pair/connect using Android Wireless debugging's connection address. Legacy TCP and unverifiable endpoints are not supported."
+    );
+  }
+  async globalSetting(name, signal) {
+    let output2;
+    try {
+      output2 = await this.command(["shell", "settings", "get", "global", name], signal ? { signal } : {});
+    } catch (error62) {
+      if (error62 instanceof MobileUseError && error62.code === "ADB_FAILED") {
+        throw this.unverifiedWireless();
+      }
+      throw error62;
+    }
+    const value = output2.toString("utf8").trim();
+    if (output2.length > 512 || /[\u0000-\u001f\u007f]/.test(value)) {
+      throw new MobileUseError("DEVICE_METADATA_UNAVAILABLE", "A device setting is malformed or exceeds the POC's limit.", "Check the selected device's build and authorization.");
+    }
+    return value;
+  }
+  async verifyRetailWirelessTls(hardwareSerial, signal) {
+    if (!hardwareSerial) throw this.unverifiedWireless();
+    const [debuggable, wifiEnabled] = await Promise.all([
+      this.property("ro.debuggable", signal),
+      this.globalSetting("adb_wifi_enabled", signal)
+    ]);
+    if (debuggable !== "0" || wifiEnabled !== "1") {
+      throw this.unverifiedWireless();
+    }
+    const combined = signal ? AbortSignal.any([this.targetSignal, signal]) : this.targetSignal;
+    const prefix = `adb-${hardwareSerial}-`;
+    const matchesDeviceInstance = (instance) => instance.startsWith(prefix) && /^[A-Za-z0-9]+$/.test(instance.slice(prefix.length));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      this.assertCurrent();
+      checkCancelled(signal);
+      let rawMdns;
+      try {
+        rawMdns = await this.adb.run(["mdns", "services"], { signal: combined });
+      } catch (error62) {
+        if (this.targetSignal.aborted && !signal?.aborted) this.assertCurrent();
+        if (error62 instanceof MobileUseError && error62.code === "ADB_FAILED") {
+          throw this.unverifiedWireless();
+        }
+        throw error62;
+      }
+      this.assertCurrent();
+      const services = parseMdnsServices(rawMdns.toString("utf8"));
+      const deviceServices = services.filter((entry) => matchesDeviceInstance(entry.instance));
+      if (this.endpoint.kind === "network") {
+        const endpointAddress = parseNetworkAddress(this.endpoint.endpointId);
+        if (!endpointAddress) throw this.unverifiedWireless();
+        const matched2 = deviceServices.filter(
+          (entry) => entry.host === endpointAddress.host && entry.port === endpointAddress.port
+        );
+        if (matched2.length === 0) {
+          if (attempt === 0) {
+            await setTimeout2(150, void 0, { signal: combined }).catch((error62) => {
+              if (this.targetSignal.aborted && !signal?.aborted) this.assertCurrent();
+              checkCancelled(signal);
+              throw error62;
+            });
+            continue;
+          }
+          throw this.unverifiedWireless();
+        }
+        if (services.some((entry) => entry.host === endpointAddress.host && entry.port === endpointAddress.port && !matchesDeviceInstance(entry.instance))) {
+          throw this.unverifiedWireless();
+        }
+        const matchedInstances = new Set(matched2.map((entry) => entry.instance));
+        if (services.some((entry) => matchedInstances.has(entry.instance) && entry.port !== endpointAddress.port)) {
+          throw this.unverifiedWireless();
+        }
+        return;
+      }
+      const suffix = "._adb-tls-connect._tcp";
+      if (!this.endpoint.endpointId.endsWith(suffix)) throw this.unverifiedWireless();
+      const expectedInstance = this.endpoint.endpointId.slice(0, -suffix.length);
+      if (!matchesDeviceInstance(expectedInstance)) throw this.unverifiedWireless();
+      const matched = deviceServices.filter((entry) => entry.instance === expectedInstance);
+      if (matched.length === 0) {
+        if (attempt === 0) {
+          await setTimeout2(150, void 0, { signal: combined }).catch((error62) => {
+            if (this.targetSignal.aborted && !signal?.aborted) this.assertCurrent();
+            checkCancelled(signal);
+            throw error62;
+          });
+          continue;
+        }
+        throw this.unverifiedWireless();
+      }
+      if (new Set(matched.map((entry) => entry.port)).size !== 1) {
+        throw this.unverifiedWireless();
+      }
+      return;
+    }
+    throw this.unverifiedWireless();
+  }
   async screenRecording(action, requestSignal) {
     const signal = requestSignal ? AbortSignal.any([this.targetSignal, requestSignal]) : this.targetSignal;
     if (action.kind === "capabilities") return this.recorder.capabilities(signal);
@@ -51689,25 +51867,27 @@ var AndroidBackend = class {
     if (apiLevel < 30 || qemu === "1" || this.endpoint.kind === "emulator") {
       throw new MobileUseError("DEVICE_UNSUPPORTED", "A real Android 11+ phone or tablet is required.", "Select supported physical hardware.");
     }
+    const hardwareSerial = serial && !/^(unknown|null|0+)$/i.test(serial) ? serial : null;
     let wirelessEvidence = "not-applicable";
     if (this.endpoint.kind === "network" || this.endpoint.kind === "paired-wireless") {
       const [tlsPort, enabled] = await Promise.all([
         this.property("service.adb.tls.port", signal),
         this.property("persist.adb.tls_server.enable", signal)
       ]);
-      const validPort = /^\d+$/.test(tlsPort) && Number(tlsPort) > 0 && Number(tlsPort) <= 65535;
-      const addressPort = /:(\d+)$/.exec(this.endpoint.endpointId)?.[1];
-      if (!validPort || !["1", "true"].includes(enabled) || this.endpoint.kind === "network" && addressPort !== tlsPort) {
-        throw new MobileUseError(
-          "TRANSPORT_UNVERIFIED",
-          "This endpoint could not be qualified as modern paired Wireless debugging.",
-          "The user must pair/connect using Android Wireless debugging's connection address. Legacy TCP and unverifiable endpoints are not supported."
-        );
+      if (tlsPort !== "" || enabled !== "") {
+        const validPort = /^[1-9]\d{0,4}$/.test(tlsPort) && Number(tlsPort) <= 65535;
+        const addressPort = /:(\d+)$/.exec(this.endpoint.endpointId)?.[1];
+        if (!validPort || !["1", "true"].includes(enabled) || this.endpoint.kind === "network" && addressPort !== tlsPort) {
+          throw this.unverifiedWireless();
+        }
+        wirelessEvidence = this.endpoint.kind === "network" ? "device-tls-port" : "adb-tls-connect-service";
+      } else {
+        await this.verifyRetailWirelessTls(hardwareSerial, signal);
+        wirelessEvidence = "adb-tls-connect-service";
       }
-      wirelessEvidence = this.endpoint.kind === "network" ? "device-tls-port" : "adb-tls-connect-service";
     }
     return {
-      hardwareSerial: serial && !/^(unknown|null|0+)$/i.test(serial) ? serial : null,
+      hardwareSerial,
       androidVersion,
       apiLevel,
       wirelessEvidence

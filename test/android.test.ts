@@ -523,6 +523,74 @@ test("TLS-connect service endpoints still require device-side Wireless debugging
   await assert.rejects(backend(adb, service).identity(), hasCode("TRANSPORT_UNVERIFIED"));
 });
 
+test("retail user builds with SELinux-hidden adbd properties qualify paired Wireless debugging via adb_wifi_enabled and _adb-tls-connect._tcp mDNS", async () => {
+  const adb = new FakeAdb();
+  adb.properties["service.adb.tls.port"] = "";
+  adb.properties["persist.adb.tls_server.enable"] = "";
+  adb.properties["ro.debuggable"] = "0";
+  adb.globalSettings.adb_wifi_enabled = "1";
+
+  // Lagging mDNS discovery retries once and qualifies matching IPv4 network endpoint.
+  let mdnsCalls = 0;
+  adb.handler = (call) => {
+    if (call.args.join(" ") === "mdns services" && ++mdnsCalls === 1) {
+      return Buffer.from("List of discovered mdns services\n");
+    }
+    return undefined;
+  };
+  adb.mdns =
+    "List of discovered mdns services\n" +
+    `adb-${USB}-stale0\t_adb-tls-connect._tcp\t192.0.2.10:40111\n` +
+    `adb-${USB}-oqnwFu\t_adb-tls-connect._tcp\t${WIFI}\n`;
+  const wifiIdentity = await backend(adb, WIFI).identity();
+  assert.equal(mdnsCalls, 2);
+  assert.equal(wifiIdentity.hardwareSerial, USB);
+  assert.equal(wifiIdentity.wirelessEvidence, "adb-tls-connect-service");
+  adb.handler = undefined;
+
+  // Normalized IPv6 and paired-wireless mDNS instance endpoints also qualify when bound to ro.serialno.
+  const ipv6Endpoint = "[fe80::1%wlan0]:37891";
+  const tlsServiceEndpoint = `adb-${USB}-oqnwFu._adb-tls-connect._tcp`;
+  adb.inventory =
+    `List of devices attached\n` +
+    `${ipv6Endpoint} device transport_id:13\n` +
+    `${tlsServiceEndpoint} device transport_id:14\n` +
+    `192.0.2.10:5555 device transport_id:15\n`;
+  adb.mdns =
+    "List of discovered mdns services\n" +
+    `adb-${USB}-oqnwFu\t_adb-tls-connect._tcp\t${WIFI}\n` +
+    `adb-${USB}-oqnwFu\t_adb-tls-connect._tcp\tFE80::1%2:37891\n` +
+    `adb-${USB}-legacy\t_adb._tcp\t192.0.2.10:5555\n`;
+  assert.equal((await backend(adb, ipv6Endpoint).identity()).wirelessEvidence, "adb-tls-connect-service");
+  assert.equal((await backend(adb, tlsServiceEndpoint).identity()).wirelessEvidence, "adb-tls-connect-service");
+
+  // Legacy unencrypted adb tcpip 5555 on the same phone is still rejected even while Wireless debugging is enabled!
+  await assert.rejects(backend(adb, "192.0.2.10:5555").identity(), hasCode("TRANSPORT_UNVERIFIED"));
+
+  // Non-retail (ro.debuggable=1), disabled adb_wifi_enabled, unknown serial, or serial mismatch fail closed.
+  adb.inventory = `List of devices attached\n${WIFI} device transport_id:12\n`;
+  adb.properties["ro.debuggable"] = "1";
+  await assert.rejects(backend(adb, WIFI).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+  adb.properties["ro.debuggable"] = "0";
+
+  adb.globalSettings.adb_wifi_enabled = "0";
+  await assert.rejects(backend(adb, WIFI).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+  adb.globalSettings.adb_wifi_enabled = "1";
+
+  adb.properties["ro.serialno"] = "unknown";
+  await assert.rejects(backend(adb, WIFI).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+  adb.properties["ro.serialno"] = USB;
+
+  adb.mdns = `List of discovered mdns services\nadb-OTHER_PHONE-oqnwFu\t_adb-tls-connect._tcp\t${WIFI}\n`;
+  await assert.rejects(backend(adb, WIFI).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+
+  // Readable disagreeing TLS properties never fall back to mDNS.
+  adb.mdns = `List of discovered mdns services\nadb-${USB}-oqnwFu\t_adb-tls-connect._tcp\t${WIFI}\n`;
+  adb.properties["service.adb.tls.port"] = "44444";
+  adb.properties["persist.adb.tls_server.enable"] = "1";
+  await assert.rejects(backend(adb, WIFI).identity(), hasCode("TRANSPORT_UNVERIFIED"));
+});
+
 test("identity properties stay bounded and cannot produce an unbounded tool result", async () => {
   const adb = new FakeAdb();
   adb.properties["ro.serialno"] = "A".repeat(513);

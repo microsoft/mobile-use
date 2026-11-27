@@ -1490,3 +1490,25 @@ test("USB-to-Wi-Fi reselection preserves the healthy USB session if Wi-Fi discon
   assert.equal(nextUsbScreen.observation.targetToken, selectedUsb.targetToken);
 });
 
+test("retail Android wireless selection qualifies via mDNS and deduplicates USB-to-Wi-Fi sessions by hardwareSerial", async (t) => {
+  const { adb, service } = harness(t);
+  adb.properties["service.adb.tls.port"] = "";
+  adb.properties["persist.adb.tls_server.enable"] = "";
+  adb.properties["ro.debuggable"] = "0";
+  adb.globalSettings.adb_wifi_enabled = "1";
+  adb.mdns = `List of discovered mdns services\nadb-${USB}-oqnwFu\t_adb-tls-connect._tcp\t${WIFI}\n`;
+
+  const usb = await service.selectDevice(USB);
+  const wifi = await service.selectDevice(WIFI);
+  assert.equal(wifi.endpoint.kind, "paired-wireless");
+  assert.equal(wifi.identity.wirelessEvidence, "adb-tls-connect-service");
+  assert.equal(wifi.identity.hardwareSerial, usb.identity.hardwareSerial);
+  await assert.rejects(service.observe(usb.targetToken), hasCode("STALE_TARGET"));
+
+  const screen = await service.observe(wifi.targetToken);
+  const action = await service.act(wifi.targetToken, screen.observation.observationId, { kind: "key", key: "HOME" });
+  assert.equal(action.dispatchStatus, "dispatched");
+  assert.deepEqual(adb.inputs.map((call) => call.args.slice(0, 2)), [["-t", "12"]]);
+});
+
+

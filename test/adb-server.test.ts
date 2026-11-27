@@ -246,3 +246,30 @@ test("readiness alone is not success when the subsequent discovery fails", async
   await assert.rejects(server.ensureRunning("C:\\fixture\\adb.exe", {}, 41), hasCode("ADB_SERVER_CONFLICT"));
   assert.deepEqual(fixture.requests, ["host:version", "host:devices-l"]);
 });
+
+test("mDNS discovery reads host:mdns:services directly, treats disabled mDNS FAIL frames as empty, and rejects malformed listeners", async (t) => {
+  const entry = "adb-POC_PHONE-oqnwFu\t_adb-tls-connect._tcp\t192.0.2.10:37891\n";
+  const okFixture = await listener(t, (request) => {
+    assert.equal(request, "host:mdns:services");
+    return frame(entry);
+  });
+  const okServer = new LocalAdbServer(okFixture.connect, () => assert.fail("mDNS query must never launch a server"));
+  assert.equal((await okServer.mdnsServices()).toString("utf8"), entry);
+  assert.deepEqual(okFixture.requests, ["host:mdns:services"]);
+
+  const disabledMsg = "mdns services unavailable";
+  const disabledFrame = `FAIL${Buffer.byteLength(disabledMsg).toString(16).padStart(4, "0")}${disabledMsg}`;
+  const disabledFixture = await listener(t, () => disabledFrame);
+  const disabledServer = new LocalAdbServer(disabledFixture.connect, () => assert.fail("mDNS query must never launch a server"));
+  assert.equal((await disabledServer.mdnsServices()).length, 0);
+
+  for (const malformed of ["FAILzzzzbad", "HTTP/1.1 200 OK\r\n", "FAIL0006short"]) {
+    const badFixture = await listener(t, () => malformed);
+    const badServer = new LocalAdbServer(badFixture.connect, () => assert.fail("conflict must not launch a server"));
+    await assert.rejects(badServer.mdnsServices(), hasCode("ADB_SERVER_CONFLICT"));
+  }
+
+  const missingServer = new LocalAdbServer(refused, () => assert.fail("mDNS query must not start a server"));
+  await assert.rejects(missingServer.mdnsServices(), hasCode("ADB_SERVER_UNAVAILABLE"));
+});
+

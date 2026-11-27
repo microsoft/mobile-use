@@ -180,6 +180,7 @@ export interface AdbCall {
 
 export class FakeAdb implements AdbConnection {
   inventory = INVENTORY;
+  mdns = "List of discovered mdns services\n";
   image = png();
   xml = hierarchy();
   display = displayDiagnostics();
@@ -194,8 +195,11 @@ export class FakeAdb implements AdbConnection {
   };
   properties: Record<string, string> = {
     "ro.build.version.sdk": "30", "ro.build.version.release": "11",
-    "ro.serialno": USB, "ro.kernel.qemu": "0",
+    "ro.serialno": USB, "ro.kernel.qemu": "0", "ro.debuggable": "0",
     "service.adb.tls.port": "37891", "persist.adb.tls_server.enable": "1",
+  };
+  globalSettings: Record<string, string> = {
+    adb_wifi_enabled: "1",
   };
   calls: AdbCall[] = [];
   stopped = false;
@@ -230,6 +234,7 @@ export class FakeAdb implements AdbConnection {
     const custom = await this.handler?.(call);
     if (custom !== undefined) return custom;
     if (args.join(" ") === "devices -l") return Buffer.from(this.inventory);
+    if (args.join(" ") === "mdns services") return Buffer.from(this.mdns);
     if (args.join(" ") === "version") return Buffer.from("Android Debug Bridge version 1.0.41\nVersion 36.0.0-12345\n");
     assert.equal(args[0], "-t", "all device-bound fixture commands need an exact transport");
     assert.match(args[1] ?? "", /^\d+$/);
@@ -331,6 +336,9 @@ export class FakeAdb implements AdbConnection {
       return Buffer.from("Performing Streamed Install\nSuccess\n");
     }
     if (command.startsWith("shell getprop ")) return Buffer.from(this.properties[args[4] ?? ""] ?? "");
+    if (command.startsWith("shell settings get global ")) {
+      return Buffer.from(`${this.globalSettings[args[6] ?? ""] ?? "null"}\n`);
+    }
     if (command === "exec-out screencap -p") return this.image;
     if (command === "shell -tt uiautomator dump --windows /dev/tty") return Buffer.from(this.xml);
     if (command === "shell dumpsys window displays") return Buffer.from(this.display);
