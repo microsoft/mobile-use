@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { accessSync, constants, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { createConnection } from "node:net";
+import { createConnection, isIP } from "node:net";
 import type { Socket } from "node:net";
+import { networkInterfaces } from "node:os";
 import path from "node:path";
 import { XMLParser, XMLValidator } from "fast-xml-parser";
 import { LocalAdbServer, localAdbAddress, serverStartupError } from "./adb-server.js";
@@ -510,9 +511,12 @@ export class AdbClient implements AdbConnection {
       : this.shutdown.signal;
     checkCancelled(signal);
     const executable = this.executable();
-    // Native client discovery can start or replace a daemon; inventory must remain read-only.
+    // Native client discovery can start or replace a daemon; inventory and mDNS reads must remain read-only.
     if (args.length === 2 && args[0] === "devices" && args[1] === "-l") {
       return Buffer.concat([Buffer.from("List of devices attached\n"), await this.server.inventory(signal)]);
+    }
+    if (args.length === 2 && args[0] === "mdns" && args[1] === "services") {
+      return Buffer.concat([Buffer.from("List of discovered mdns services\n"), await this.server.mdnsServices(signal)]);
     }
     return this.runner(executable, ["-H", "127.0.0.1", "-P", "5037", ...args], {
       ...options,
@@ -585,6 +589,143 @@ export function parseDeviceList(output: string, requireHeader = true): DeviceEnd
     });
   }
   return devices;
+}
+
+export interface NetworkAddress {
+  host: string;
+  port: string;
+  zone: string | null;
+}
+
+export interface MdnsTlsService {
+  instance: string;
+  host: string;
+  port: string;
+  zone: string | null;
+}
+
+export type InterfaceScopeMap = ReadonlyMap<string, number>;
+
+function parseIpv6Zone(rawZone: string): string | null {
+  if (!rawZone || rawZone.length > 64 || /[\u0000-\u0020\u007f%[\]/\\:]/.test(rawZone)) {
+    return null;
+  }
+  if (/^\d+$/.test(rawZone)) {
+    if (!/^[1-9]\d{0,9}$/.test(rawZone) || Number(rawZone) > 0xffff_ffff) return null;
+  }
+  return rawZone;
+}
+
+export function readInterfaceIpv6Scopes(
+  interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
+): InterfaceScopeMap {
+  const scopes = new Map<string, number>();
+  const ambiguous = new Set<string>();
+  for (const [name, entries] of Object.entries(interfaces)) {
+    if (!name || !entries) continue;
+    for (const entry of entries) {
+      if (entry.family !== "IPv6") continue;
+      const scopeId = entry.scopeid;
+      if (!Number.isSafeInteger(scopeId) || scopeId <= 0 || scopeId > 0xffff_ffff) continue;
+      const prior = scopes.get(name);
+      if (prior !== undefined && prior !== scopeId) {
+        scopes.delete(name);
+        ambiguous.add(name);
+        break;
+      }
+      if (!ambiguous.has(name)) {
+        scopes.set(name, scopeId);
+      }
+    }
+  }
+  return scopes;
+}
+
+function resolveIpv6ZoneIndex(zone: string, scopes: InterfaceScopeMap): number | null {
+  if (/^[1-9]\d{0,9}$/.test(zone)) return Number(zone);
+  return scopes.get(zone) ?? null;
+}
+
+export function compareNetworkZones(
+  first: string | null,
+  second: string | null,
+  scopes: InterfaceScopeMap = new Map(),
+): "same" | "different" | "unknown" {
+  if (first === null && second === null) return "same";
+  if (first === null || second === null) return "unknown";
+  if (first === second) return "same";
+  const firstIndex = resolveIpv6ZoneIndex(first, scopes);
+  const secondIndex = resolveIpv6ZoneIndex(second, scopes);
+  if (firstIndex !== null && secondIndex !== null) {
+    return firstIndex === secondIndex ? "same" : "different";
+  }
+  return "unknown";
+}
+
+export function parseNetworkAddress(value: string): NetworkAddress | null {
+  if (!value || value.length > 512 || /[\u0000-\u0020\u007f]/.test(value)) return null;
+  const portMatch = /:([1-9]\d{0,4})$/.exec(value);
+  if (!portMatch?.[1]) return null;
+  const port = portMatch[1];
+  if (Number(port) > 65535) return null;
+  const rawHost = value.slice(0, value.length - port.length - 1);
+  if (!rawHost) return null;
+  if (rawHost.startsWith("[") || rawHost.endsWith("]")) {
+    if (!rawHost.startsWith("[") || !rawHost.endsWith("]")) return null;
+    const bracketed = rawHost.slice(1, -1);
+    const zoneSep = bracketed.indexOf("%");
+    const ipPart = zoneSep === -1 ? bracketed : bracketed.slice(0, zoneSep);
+    const zone = zoneSep === -1 ? null : parseIpv6Zone(bracketed.slice(zoneSep + 1));
+    if ((zoneSep !== -1 && zone === null) || isIP(ipPart) !== 6) return null;
+    return { host: new URL(`http://[${ipPart}]`).hostname, port, zone };
+  }
+  if (rawHost.includes(":")) {
+    const zoneSep = rawHost.indexOf("%");
+    const ipPart = zoneSep === -1 ? rawHost : rawHost.slice(0, zoneSep);
+    const zone = zoneSep === -1 ? null : parseIpv6Zone(rawHost.slice(zoneSep + 1));
+    if ((zoneSep !== -1 && zone === null) || isIP(ipPart) !== 6) return null;
+    return { host: new URL(`http://[${ipPart}]`).hostname, port, zone };
+  }
+  if (isIP(rawHost) === 4) {
+    if (!/^(?:0|[1-9]\d{0,2})(?:\.(?:0|[1-9]\d{0,2})){3}$/.test(rawHost)) return null;
+    return { host: rawHost, port, zone: null };
+  }
+  if (!/^[A-Za-z0-9.-]+$/.test(rawHost) || /^\d+(?:\.\d+)*$/.test(rawHost)) return null;
+  return { host: rawHost.toLowerCase(), port, zone: null };
+}
+
+export function parseMdnsServices(output: string, requireHeader = true): MdnsTlsService[] {
+  const unverified = (): MobileUseError => new MobileUseError(
+    "TRANSPORT_UNVERIFIED",
+    "This endpoint could not be qualified as modern paired Wireless debugging.",
+    "The user must pair/connect using Android Wireless debugging's connection address. Legacy TCP and unverifiable endpoints are not supported.",
+  );
+  if (Buffer.byteLength(output) > 512 * 1024 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(output)) {
+    throw unverified();
+  }
+  const lines = output.replaceAll("\r\n", "\n").split("\n").map((line) => line.trim()).filter(Boolean);
+  if (requireHeader && lines.shift() !== "List of discovered mdns services") {
+    throw unverified();
+  }
+  if (lines.length > 256) throw unverified();
+  const services: MdnsTlsService[] = [];
+  for (const line of lines) {
+    const columns = line.includes("\t")
+      ? line.split("\t").map((part) => part.trim())
+      : line.split(/\s+/);
+    const [instance, serviceType, rawAddress] = columns;
+    if (columns.length !== 3 || !instance || !serviceType || !rawAddress ||
+      columns.some((part) => part.length > 512)) {
+      throw unverified();
+    }
+    if (serviceType !== "_adb-tls-connect._tcp" && serviceType !== "_adb-tls-connect._tcp.") {
+      continue;
+    }
+    const parsed = parseNetworkAddress(rawAddress);
+    if (!parsed) continue;
+    services.push({ instance, host: parsed.host, port: parsed.port, zone: parsed.zone });
+  }
+  return services;
 }
 
 export interface TransportMonitor {

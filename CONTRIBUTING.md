@@ -1144,7 +1144,14 @@ depth 64, and 500 retained elements; normalized element data is capped at
 Inventory is limited to 256 endpoints/512 KiB, with at most 65535 payload bytes
 per ADB protocol inventory response, and identity properties to 512 bytes each.
 Oversized/malformed data is reported explicitly, not silently truncated.
-Wireless qualification may reject an OEM whose TLS evidence cannot be read.
+On retail `user` builds where SELinux hides `adbd` TLS properties from `shell`,
+wireless qualification falls back to verifying `settings get global adb_wifi_enabled`,
+disabled legacy TCP port properties, and a single non-loopback `uid 2000` (`adbd`)
+listener plus active socket in `/proc/net/tcp` and `/proc/net/tcp6` on the pinned
+transport, corroborated by a single-instance `_adb-tls-connect._tcp` mDNS
+advertisement (preserving IPv6 scope identity and equating interface names with
+numeric scope indices only through verified host interface metadata); wireless
+endpoints fail closed when any pinned-transport or mDNS check cannot be verified.
 
 App inventories are bounded to 1 MiB and 10,000 packages, foreground activity
 diagnostics to 2 MiB, and package-state diagnostics to 1 MiB. Raw app diagnostics

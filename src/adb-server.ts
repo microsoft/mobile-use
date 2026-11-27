@@ -33,7 +33,12 @@ export class LocalAdbServer {
     private readonly spawnProcess: ServerSpawner = spawn,
   ) {}
 
-  private query(request: "host:version" | "host:devices-l", signal?: AbortSignal, timeoutMs = 1000): Promise<Buffer | null> {
+  private query(
+    request: "host:version" | "host:devices-l" | "host:mdns:services",
+    signal?: AbortSignal,
+    timeoutMs = 1000,
+    allowFail = false,
+  ): Promise<Buffer | null> {
     return new Promise((resolve, reject) => {
       checkCancelled(signal);
       const socket = this.connect();
@@ -64,13 +69,16 @@ export class LocalAdbServer {
         if (pending.length + chunk.length > maxLength + 8) return finish(conflict());
         pending = Buffer.concat([pending, chunk]);
         if (pending.length < 4) return;
-        if (pending.subarray(0, 4).toString("latin1") !== "OKAY") return finish(conflict());
+        const status = pending.subarray(0, 4).toString("latin1");
+        if (status !== "OKAY" && !(allowFail && status === "FAIL")) return finish(conflict());
         if (pending.length < 8) return;
         const prefix = pending.subarray(4, 8).toString("latin1");
         if (!/^[0-9a-f]{4}$/i.test(prefix)) return finish(conflict());
         const size = Number.parseInt(prefix, 16);
         if (size > maxLength || pending.length > size + 8) return finish(conflict());
-        if (pending.length === size + 8) finish(null, pending.subarray(8));
+        if (pending.length === size + 8) {
+          finish(null, status === "FAIL" ? Buffer.alloc(0) : pending.subarray(8));
+        }
       });
       socket.once("error", (error: NodeJS.ErrnoException) => {
         finish(!connected && error.code === "ECONNREFUSED" ? null : conflict());
@@ -123,6 +131,17 @@ export class LocalAdbServer {
       );
     }
     return inventory;
+  }
+
+  async mdnsServices(signal?: AbortSignal): Promise<Buffer> {
+    const services = await this.query("host:mdns:services", signal, 5000, true);
+    if (services === null) {
+      throw new MobileUseError(
+        "ADB_SERVER_UNAVAILABLE", "The local ADB server is unavailable for discovery.",
+        "Use mobile_start_adb_server for the requested Android task. Do not automatically replay startup or restart a shared server.",
+      );
+    }
+    return services;
   }
 
   async ensureRunning(executable: string, env: NodeJS.ProcessEnv, version: number, signal?: AbortSignal): Promise<{

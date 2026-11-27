@@ -5,7 +5,7 @@ import type { Socket } from "node:net";
 import path from "node:path";
 import test from "node:test";
 import type { TestContext } from "node:test";
-import { AdbClient, adbEnvironment, AdbTrackParser, createTransportMonitor, executeCommand, parseDeviceList, resolveAdbExecutable } from "../src/adb.js";
+import { AdbClient, adbEnvironment, AdbTrackParser, compareNetworkZones, createTransportMonitor, executeCommand, parseDeviceList, parseMdnsServices, parseNetworkAddress, readInterfaceIpv6Scopes, resolveAdbExecutable } from "../src/adb.js";
 import type { AdbFileSystem, CommandOptions, TransportMonitor } from "../src/adb.js";
 import { LocalAdbServer } from "../src/adb-server.js";
 import { MobileUseError } from "../src/errors.js";
@@ -742,20 +742,92 @@ test("local startup pins the executable, sanitizes the daemon environment, and p
   assert.equal(startupCalls, 1);
 });
 
-test("ordinary inventory uses read-only protocol discovery and never launches an ADB client", async (t) => {
+test("ordinary inventory and mDNS discovery use read-only protocol queries and never launch an ADB client", async (t) => {
   const { executable } = await executableFixture(t);
   const server = new LocalAdbServer();
-  let queries = 0;
+  let inventoryQueries = 0;
+  let mdnsQueries = 0;
   server.inventory = async (signal) => {
     assert.ok(signal);
-    queries++;
+    inventoryQueries++;
     return Buffer.from(`${USB_LINE}\n`);
   };
+  server.mdnsServices = async (signal) => {
+    assert.ok(signal);
+    mdnsQueries++;
+    return Buffer.from("adb-POC_PHONE-oqnwFu\t_adb-tls-connect._tcp\t192.0.2.10:37891\n");
+  };
   const client = new AdbClient({ MOBILE_USE_ADB_PATH: executable }, async () =>
-    assert.fail("inventory must not invoke a client with automatic daemon startup/replacement"), process.platform, server);
+    assert.fail("discovery must not invoke a client with automatic daemon startup/replacement"), process.platform, server);
   t.after(() => client.stop());
   assert.equal((await client.run(["devices", "-l"])).toString(), `List of devices attached\n${USB_LINE}\n`);
-  assert.equal(queries, 1);
+  assert.equal(
+    (await client.run(["mdns", "services"])).toString(),
+    "List of discovered mdns services\nadb-POC_PHONE-oqnwFu\t_adb-tls-connect._tcp\t192.0.2.10:37891\n",
+  );
+  assert.equal(inventoryQueries, 1);
+  assert.equal(mdnsQueries, 1);
+});
+
+test("network address and mDNS TLS parsers preserve IPv6 scope identity and reject legacy or malformed records", () => {
+  assert.deepEqual(parseNetworkAddress("192.0.2.10:37891"), { host: "192.0.2.10", port: "37891", zone: null });
+  assert.deepEqual(parseNetworkAddress("[2001:db8::1]:37891"), { host: "[2001:db8::1]", port: "37891", zone: null });
+  assert.deepEqual(parseNetworkAddress("[fe80::1%wlan0]:37891"), { host: "[fe80::1]", port: "37891", zone: "wlan0" });
+  assert.deepEqual(parseNetworkAddress("[fe80::1%3]:37891"), { host: "[fe80::1]", port: "37891", zone: "3" });
+  assert.deepEqual(
+    parseNetworkAddress("FE80:0000:0000:0000:0000:0000:0000:0001%eth0:37891"),
+    { host: "[fe80::1]", port: "37891", zone: "eth0" },
+  );
+  for (const invalid of [
+    "", "192.0.2.10:0", "192.0.2.10:65536", "0177.0.0.1:5555",
+    "[fe80::1:37891", "fe80::1%:37891", "[fe80::1%0]:37891", "[fe80::1%03]:37891",
+    "[fe80::1%4294967296]:37891", "[fe80::1%wlan0%2]:37891",
+  ]) {
+    assert.equal(parseNetworkAddress(invalid), null);
+  }
+  const scopes = readInterfaceIpv6Scopes({
+    wlan0: [
+      { address: "2001:db8::10", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", mac: "00:00:00:00:00:01", internal: false, cidr: "2001:db8::10/64", scopeid: 0 },
+      { address: "fe80::10", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", mac: "00:00:00:00:00:01", internal: false, cidr: "fe80::10/64", scopeid: 2 },
+    ],
+    eth0: [
+      { address: "fe80::20", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", mac: "00:00:00:00:00:02", internal: false, cidr: "fe80::20/64", scopeid: 3 },
+    ],
+    ambiguous0: [
+      { address: "fe80::30", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", mac: "00:00:00:00:00:03", internal: false, cidr: "fe80::30/64", scopeid: 4 },
+      { address: "fe80::31", netmask: "ffff:ffff:ffff:ffff::", family: "IPv6", mac: "00:00:00:00:00:03", internal: false, cidr: "fe80::31/64", scopeid: 5 },
+    ],
+  });
+  assert.deepEqual([...scopes.entries()], [["wlan0", 2], ["eth0", 3]]);
+  assert.equal(compareNetworkZones(null, null, scopes), "same");
+  assert.equal(compareNetworkZones("3", "3", scopes), "same");
+  assert.equal(compareNetworkZones("3", "2", scopes), "different");
+  assert.equal(compareNetworkZones("wlan0", "2", scopes), "same");
+  assert.equal(compareNetworkZones("wlan0", "3", scopes), "different");
+  assert.equal(compareNetworkZones("wlan0", "eth0", scopes), "different");
+  assert.equal(compareNetworkZones("wlan0", "2", new Map()), "unknown");
+  assert.equal(compareNetworkZones("ambiguous0", "4", scopes), "unknown");
+  assert.equal(compareNetworkZones("3", null, scopes), "unknown");
+
+  const parsed = parseMdnsServices(
+    "List of discovered mdns services\n" +
+    "adb-POC_PHONE-oqnwFu\t_adb-tls-connect._tcp\t192.0.2.10:37891\n" +
+    "adb-POC_PHONE-oqnwFu\t_adb-tls-connect._tcp.\t[FE80::1%2]:37891\n" +
+    "adb-POC_PHONE-pending\t_adb-tls-connect._tcp\t0.0.0.0:0\n" +
+    "adb-POC_PHONE-pair\t_adb-tls-pairing._tcp\t192.0.2.10:41234\n" +
+    "legacy-tcp\t_adb._tcp\t192.0.2.10:5555\n",
+  );
+  assert.deepEqual(parsed, [
+    { instance: "adb-POC_PHONE-oqnwFu", host: "192.0.2.10", port: "37891", zone: null },
+    { instance: "adb-POC_PHONE-oqnwFu", host: "[fe80::1]", port: "37891", zone: "2" },
+  ]);
+  for (const malformed of [
+    "",
+    "Unexpected header\nadb-POC_PHONE-oqnwFu\t_adb-tls-connect._tcp\t192.0.2.10:37891\n",
+    "List of discovered mdns services\nmalformed-single-column\n",
+  ]) {
+    assert.throws(() => parseMdnsServices(malformed), hasCode("TRANSPORT_UNVERIFIED"));
+  }
 });
 
 test("malformed post-start inventory is an error with startup uncertainty, not an empty list", async (t) => {
